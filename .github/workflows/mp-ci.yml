@@ -297,12 +297,15 @@ jobs:
           version: "35.1"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: ilammy/setup-nasm@v1
-      # TQUIC builds BoringSSL with CMake. The cmake crate cannot name a
-      # Visual Studio generator for this runner's VS; Ninja in the MSVC
-      # developer environment (what vcvars64.bat gave the .99 builds) can.
+      # TQUIC builds BoringSSL with CMake. The cmake crate (0.1.54) knows no
+      # generator for this runner's Visual Studio 18, so name it; a Visual
+      # Studio (multi-config) generator also puts the libraries in
+      # build/Release, where TQUIC's build.rs looks for them.
       - uses: ilammy/msvc-dev-cmd@v1
-      - uses: seanmiddleditch/gha-setup-ninja@v5
-      - run: echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+      - run: |
+          cmake --version
+          cmake --help | awk '/Visual Studio 1[0-9] /'
+          echo "CMAKE_GENERATOR=Visual Studio 18 2026" >> "$GITHUB_ENV"
       # The steps run in Git Bash, whose /usr/bin/link (coreutils) comes
       # before MSVC's link.exe on PATH: name MSVC's linker for cargo.
       - name: Use MSVC's link.exe
