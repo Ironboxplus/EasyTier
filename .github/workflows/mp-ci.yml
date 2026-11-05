@@ -272,7 +272,7 @@ jobs:
   # (the features the .99 release script used). Full release profile.
   windows:
     needs: plan
-    runs-on: windows-latest
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
@@ -297,21 +297,13 @@ jobs:
           version: "35.1"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: ilammy/setup-nasm@v1
-      # TQUIC builds BoringSSL with CMake. The cmake crate (0.1.54) knows no
-      # generator for this runner's Visual Studio 18, so name it; a Visual
-      # Studio (multi-config) generator also puts the libraries in
-      # build/Release, where TQUIC's build.rs looks for them.
+      # TQUIC builds BoringSSL with CMake. The cmake crate (0.1.54) names the
+      # Visual Studio generator itself only up to VS 2022, and only for a
+      # generator it picked does it pass the CRT choice (/MT, matching the
+      # +crt-static Rust build) through CMAKE_<LANG>_FLAGS_RELEASE. So: the
+      # runner image with VS 2022, its developer environment, no generator
+      # override -- the setup the .99 builds had (vcvars64.bat, VS 2022).
       - uses: ilammy/msvc-dev-cmd@v1
-      - run: |
-          cmake --version
-          cmake --help | awk '/Visual Studio 1[0-9] /'
-          echo "CMAKE_GENERATOR=Visual Studio 18 2026" >> "$GITHUB_ENV"
-          # Rust links the static CRT (.cargo/config.toml: +crt-static).
-          # Under CMP0091 CMake picks the CRT from CMAKE_MSVC_RUNTIME_LIBRARY,
-          # whose default is the DLL one, and BoringSSL then fails to link.
-          toolchain="$RUNNER_TEMP/static-crt.cmake"
-          echo 'set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")' > "$toolchain"
-          echo "CMAKE_TOOLCHAIN_FILE=$(cygpath -m "$toolchain")" >> "$GITHUB_ENV"
       # The steps run in Git Bash, whose /usr/bin/link (coreutils) comes
       # before MSVC's link.exe on PATH: name MSVC's linker for cargo.
       - name: Use MSVC's link.exe
