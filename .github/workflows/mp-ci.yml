@@ -267,8 +267,85 @@ jobs:
           path: apk/*.apk
           retention-days: 1
 
+  # The Windows release binaries that get deployed: easytier-gui.exe (as
+  # upstream gui.yml builds it, without the installer) and easytier-cli.exe
+  # (the features the .99 release script used). Full release profile.
+  windows:
+    needs: plan
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [gui, cli]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ilammy/setup-nasm@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+          key: windows-${{ matrix.part }}
+      - name: Build easytier-cli
+        if: matrix.part == 'cli'
+        working-directory: et
+        run: cargo build --locked --release -p easytier --features mpquic,faketcp,mimalloc --bin easytier-cli
+      - uses: pnpm/action-setup@v5
+        if: matrix.part == 'gui'
+        with:
+          package_json_file: et/package.json
+          run_install: false
+      - uses: actions/setup-node@v5
+        if: matrix.part == 'gui'
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: et/pnpm-lock.yaml
+      - name: Build easytier-gui
+        if: matrix.part == 'gui'
+        working-directory: et
+        run: |
+          find easytier/third_party/x86_64 -maxdepth 1 -type f \( -name '*.dll' -o -name '*.sys' \) -exec cp {} easytier-gui/src-tauri/ \;
+          pnpm -r install
+          # tauri's beforeBuildCommand builds frontend-lib and the GUI front
+          # end; only the vpnservice plugin's dist-js is left. Its rollup on
+          # Windows has been seen to write the files and never exit.
+          timeout 300 pnpm --filter tauri-plugin-vpnservice-api build || test -f tauri-plugin-vpnservice/dist-js/index.js
+          cd easytier-gui
+          pnpm tauri build --no-bundle
+      - name: Collect
+        run: |
+          mkdir out
+          if [ "${{ matrix.part }}" = gui ]; then cp et/target/release/easytier-gui.exe out/; else cp et/target/release/easytier-cli.exe out/; fi
+          sha256sum out/*
+      - uses: actions/upload-artifact@v5
+        with:
+          name: windows-${{ matrix.part }}
+          path: out/*
+          retention-days: 1
+
   result:
-    needs: [build, test, tquic, frontend, android]
+    needs: [build, test, tquic, frontend, android, windows]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
