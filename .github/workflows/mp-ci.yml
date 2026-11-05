@@ -92,11 +92,13 @@ jobs:
       - name: Build test archive
         working-directory: et
         run: cargo nextest archive --archive-file ../tests.tar.zst --package easytier --features mpquic
-      - uses: actions/upload-artifact@v5
+      # Handed to the test jobs through the Actions cache, not as an
+      # artifact: artifacts count against the account's 500 MB storage, the
+      # cache does not. `result` deletes the entry when the run is done.
+      - uses: actions/cache/save@v4
         with:
-          name: tests
           path: tests.tar.zst
-          retention-days: 3
+          key: tests-${{ github.run_id }}-${{ github.run_attempt }}
 
   test:
     name: test (${{ matrix.shard }}/16)
@@ -120,9 +122,11 @@ jobs:
           sudo sysctl net.ipv6.conf.lo.disable_ipv6=0
           sudo ip addr add 2001:db8::2/64 dev lo
       - uses: taiki-e/install-action@nextest
-      - uses: actions/download-artifact@v5
+      - uses: actions/cache/restore@v4
         with:
-          name: tests
+          path: tests.tar.zst
+          key: tests-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
       - name: Run partition ${{ matrix.shard }}
         run: |
           sudo prlimit --pid $$ --nofile=1048576:1048576
@@ -160,10 +164,10 @@ jobs:
         with:
           version: "35.1"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      # pnpm first: setup-node caches the pnpm store and looks for pnpm.
+      # pnpm first: setup-node caches the pnpm store and looks for pnpm. Its
+      # version is package.json's packageManager.
       - uses: pnpm/action-setup@v5
         with:
-          version: 10
           run_install: false
       - uses: actions/setup-node@v5
         with:
@@ -234,7 +238,7 @@ jobs:
           key: android
       - uses: pnpm/action-setup@v5
         with:
-          version: 10
+          package_json_file: et/package.json
           run_install: false
       - uses: actions/setup-node@v5
         with:
@@ -261,12 +265,18 @@ jobs:
         with:
           name: android-arm64
           path: apk/*.apk
-          retention-days: 7
+          retention-days: 1
 
   result:
     needs: [build, test, tquic, frontend, android]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
     steps:
+      - name: Delete this run's test archive from the cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh cache delete "tests-${{ github.run_id }}-${{ github.run_attempt }}" -R "$GITHUB_REPOSITORY" || true
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
