@@ -1,0 +1,3 @@
+# build.rs checks csrc/linux/sch_cake.c byte for byte against upstream; a
+# checkout must not convert line endings (core.autocrlf on Windows does).
+csrc/** -text
