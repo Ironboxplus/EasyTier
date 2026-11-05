@@ -1,0 +1,449 @@
+syntax = "proto3";
+
+import "error.proto";
+
+package common;
+
+message FlagsInConfig {
+  string default_protocol = 1;
+  string dev_name = 2;
+  bool enable_encryption = 3;
+  bool enable_ipv6 = 4;
+  uint32 mtu = 5;
+  bool latency_first = 6;
+  bool enable_exit_node = 7;
+  bool no_tun = 8;
+  bool use_smoltcp = 9;
+  string relay_network_whitelist = 10;
+  bool disable_p2p = 11;
+  bool relay_all_peer_rpc = 12;
+  bool disable_udp_hole_punching = 13;
+  // string ipv6_listener = 14; [deprecated = true]; use -l udp://[::]:12345
+  // instead
+  bool multi_thread = 15;
+  CompressionAlgoPb data_compress_algo = 16;
+  bool bind_device = 17;
+
+  // should we convert all tcp streams into kcp streams
+  bool enable_kcp_proxy = 18;
+  // does this peer allow kcp input
+  bool disable_kcp_input = 19;
+  // disable relay local network kcp packets
+  bool disable_relay_kcp = 20;
+  bool proxy_forward_by_system = 21;
+
+  // enable magic dns or not
+  bool accept_dns = 22;
+  // enable private mode
+  bool private_mode = 23;
+
+  // should we convert all tcp streams into quic streams
+  bool enable_quic_proxy = 24;
+  // does this peer allow quic input
+  bool disable_quic_input = 25;
+  // disable relay local network quic packets
+  bool disable_relay_quic = 35;
+
+  // quic listen port
+  uint32 quic_listen_port = 33 [deprecated = true];
+
+  // a global relay limit, only work for foreign network
+  uint64 foreign_relay_bps_limit = 26;
+
+  uint32 multi_thread_count = 27;
+
+  // enable relay foreign network kcp packets
+  bool enable_relay_foreign_network_kcp = 28;
+
+  // enable relay foreign network quic packets
+  bool enable_relay_foreign_network_quic = 36;
+
+  // encryption algorithm to use, empty string means default (aes-gcm)
+  string encryption_algorithm = 29;
+
+  // disable symmetric nat hole punching, treat symmetric as cone when enabled
+  bool disable_sym_hole_punching = 30;
+
+   // tld dns zone for magic dns
+  string tld_dns_zone = 31;
+
+  bool p2p_only = 32;
+
+  bool disable_tcp_hole_punching = 34;
+
+  bool lazy_p2p = 37;
+  bool need_p2p = 38;
+  uint64 instance_recv_bps_limit = 39;
+  bool disable_upnp = 40;
+  bool disable_relay_data = 41;
+  bool enable_udp_broadcast_relay = 42;
+
+  // Linux-only: SO_MARK (fwmark) value applied to every outbound underlay
+  // socket (TCP/UDP/QUIC/WS/WG connectors and listeners). Unset = leave
+  // SO_MARK untouched (kernel default 0). Any set value (including 0) is
+  // applied via setsockopt. Requires CAP_NET_ADMIN; silently ignored on
+  // non-Linux platforms.
+  optional uint32 socket_mark = 43;
+
+  // Transport selected after a TCP NAT hole punch succeeds.
+  // Accepted values: "auto" (try FakeTCP MPQUIC, then fall back),
+  // "faketcp" (require FakeTCP MPQUIC), and "tcp" (legacy TCP tunnel).
+  string tcp_hole_punch_mode = 44;
+
+  // Endpoint-level TQUIC multipath aggregation. The nested message is the
+  // single backend source of truth for CLI/API/config/GUI.
+  MpConfig mp = 45;
+
+  // Minimal static pre-send wire-rate ceiling (bits/s) for every physical
+  // egress this instance owns (MP_SQM_PLAN.md §4.4 (b) prelude to the full
+  // §5.2 TransportQualityConfig API). Unset means no static ceiling: a scope
+  // stays NativeOnly until something else (e.g. the MP control tick's
+  // autorate estimator) publishes a dynamic budget for it. When set, it is
+  // an upper bound applied at every egress scope this instance resolves --
+  // an estimator-published budget is clamped down to it, never allowed to
+  // exceed it.
+  optional uint64 egress_wire_limit_bps = 46;
+}
+
+message MpResourceGroupConfig {
+  string name = 1;
+  repeated string egress_devices = 2;
+  uint64 capacity_bps = 3;
+  // Remote IPs or socket endpoints that are known to share one ingress/
+  // egress bottleneck. An IP entry matches every port on that address.
+  repeated string remote_endpoints = 4;
+}
+
+message MpConfig {
+  // Phase 4 removed the Top-K optimizer and its five tunables. Their numbers
+  // are never reused; an old config that still names them is accepted and the
+  // fields are dropped on read (`remove_retired_mp_fields`).
+  reserved 2, 6, 7, 8, 9, 10, 12;
+  reserved "optimizer", "lambda", "churn_penalty", "path_penalty", "switch_margin", "confirm_rounds", "max_sample_age_ms";
+  bool enabled = 1;
+  // Fast TQUIC packet scheduler: sqm-weighted, min-rtt, round-robin, redundant.
+  string packet_scheduler = 3;
+  // Plugin-specific parameters. Kept as JSON so third-party compile-time
+  // plugins can add tunables without changing this protobuf.
+  string scheduler_params_json = 4;
+  // How many paths carry data at once; the others stand by.
+  uint32 kmax = 5;
+  uint64 control_interval_ms = 11;
+  // udp-direct, udp-punch, faketcp-punch, relay-next-hop, manual.
+  repeated string providers = 13;
+  // Physical underlay interfaces only. TUN/loopback names are rejected.
+  repeated string egress_devices = 14;
+  repeated MpResourceGroupConfig resource_groups = 15;
+  repeated string manual_paths = 16;
+  bool disable_overlay_weighted_routing = 17;
+  // Maximum time a newly created endpoint MPQUIC session may wait for its
+  // initial handshake to become ready. This is an establishment guard, not an
+  // idle timeout or a NAT-hole-punch retry budget.
+  uint64 establishment_timeout_ms = 18;
+  // TQUIC congestion-control profile for mpquic:// sessions. Empty means the
+  // historical TQUIC default (BBR), preserving old serialized configuration.
+  // Supported normal profiles: engine-default, bbr, cubic, bbr3, copa, brutal.
+  string congestion_control = 19;
+  // User-authored path overrides (MP_SQM_PLAN.md S2.3): pin/exclude/pause/
+  // prefer, matched by (egress_device, carrier_kind, remote_endpoint).
+  repeated MpPathPolicy path_policies = 20;
+  // Plugin-specific congestion-control parameters, same shape/convention as
+  // scheduler_params_json (MP_SQM_PLAN.md S2.4, e.g. Brutal's up_mbps/
+  // down_mbps/disable_loss_compensation).
+  string congestion_control_params_json = 21;
+  // Per-NIC override of egress_wire_limit_bps (MP_SQM_PLAN.md S2.1).
+  repeated MpEgressLimit egress_limits = 22;
+  // SQM settings (MP_SQM_PLAN.md S2.5): target_ms/interval_ms are the CAKE
+  // send queue's target and rtt.
+  MpSqmConfig sqm = 23;
+  // Bump to force every mpquic session for this instance to rebuild, so
+  // reconnect-only field changes (MP_SQM_PLAN.md S2.6's field-effect table)
+  // take effect without a full instance restart.
+  //
+  // Unrelated to the identically-named `session_generation` in
+  // `peers/secure_datagram.rs`/`peer_conn.rs`/`peer_session.rs`/
+  // `relay_peer_map.rs` (the per-peer-connection noise/secure-datagram rekey
+  // epoch counter exchanged during the handshake). This is a per-instance MP
+  // config generation; that one is a per-connection crypto epoch. Same name,
+  // different layer, no shared code path -- kept as-is (no rename) since
+  // this field is already load-bearing in the GUI/proto contract.
+  uint64 session_generation = 24;
+  // MP_SQM_PLAN.md S2.14: how many native hole punches MP runs per peer to
+  // spread paths across WANs a multi-WAN router (mwan3) picks per connection.
+  // 0 is treated as the default 1; capped at 8.
+  uint32 punch_attempts = 25;
+  // MP_SQM_PLAN.md S2.9-S2.11: datagram data plane. Absent = disabled, the
+  // single reliable stream data plane as before.
+  MpDataPlaneConfig data_plane = 26;
+  // Hole-punch packets each NIC may send per second; 0 = unlimited. Packets
+  // over the budget are dropped, not delayed (punch RPCs have tight timeouts).
+  uint32 punch_pps = 27;
+  // Per-NIC override of punch_pps.
+  repeated MpPunchRateLimit punch_rate_limits = 28;
+}
+
+message MpPunchRateLimit {
+  string egress_device = 1;
+  // 0 = unlimited on this NIC.
+  uint32 pps = 2;
+}
+
+message MpDataPlaneConfig {
+  bool enabled = 1;
+  // icmp_ptb|fragment; empty = icmp_ptb (RFC 9484 section 10.1). The old
+  // "stream" value is read as icmp_ptb.
+  string oversize = 2;
+  // 3 was datagram_bypass_cwnd: datagram classes always bypass the congestion
+  // window now (RFC 9484 section 10.2), the egress CAKE queue is the AQM.
+  reserved 3;
+  reserved "datagram_bypass_cwnd";
+  // Per-class mode; classes not listed use datagram.
+  repeated MpClassPolicy class_policies = 4;
+  // User classification rules, first match wins.
+  repeated MpClassRule class_rules = 5;
+  // 0 = default 64.
+  uint32 reliable_stream_max = 6;
+  // 0 = default 30000.
+  uint32 reliable_stream_idle_ms = 7;
+}
+
+message MpClassPolicy {
+  // et_control|tcp|udp|icmp|proxy|other|<rule name>
+  string class = 1;
+  // datagram|reliable_stream
+  string mode = 2;
+  // Bounded ARQ and FEC parameters, dropped before release.
+  reserved 3 to 11;
+}
+
+message MpClassRule {
+  string name = 1;
+  // tcp|udp|icmp|any
+  string protocol = 2;
+  // "22" / "27015-27030" / empty
+  string port_range = 3;
+  string dst_cidr = 4;
+  bool enabled = 5;
+}
+
+message MpPathPolicy {
+  // Empty means "any" (wildcard) for all three match_* fields below.
+  string match_egress_device = 1;
+  string match_carrier_kind = 2;
+  string match_remote_endpoint = 3;
+  // pin|exclude|pause|prefer.
+  string action = 4;
+  double prefer_weight = 5;
+  bool enabled = 6;
+  string note = 7;
+}
+
+message MpEgressLimit {
+  string egress_device = 1;
+  uint64 limit_bps = 2;
+}
+
+message MpSqmConfig {
+  bool enabled = 1;
+  uint32 target_ms = 2;
+  uint32 interval_ms = 3;
+  // 4 was autorate_enforce: shaping to the Autorate estimate is always on.
+  // `config.rs` drops the key from old config files (flags reject unknown
+  // fields).
+  reserved 4;
+  reserved "autorate_enforce";
+  uint64 autorate_min_bps = 5;
+  uint64 autorate_max_bps = 6;
+  // Public ICMP-timestamp reflectors Autorate measures the card's queue
+  // against (IPv4 addresses). Empty: the built-in six
+  // (`common::egress_quality::reflectors::DEFAULT_REFLECTORS`).
+  repeated string reflectors = 7;
+  // Do not probe public reflectors: Autorate then uses the MP peer's delay
+  // only, as before.
+  bool reflectors_disabled = 8;
+}
+
+message RpcDescriptor {
+  // allow same service registered multiple times in different domain
+  string domain_name = 1;
+
+  string proto_name = 2;
+  string service_name = 3;
+  uint32 method_index = 4;
+}
+
+message RpcRequest {
+  RpcDescriptor descriptor = 1 [ deprecated = true ];
+
+  bytes request = 2;
+  int32 timeout_ms = 3;
+}
+
+message RpcResponse {
+  bytes response = 1;
+  error.Error error = 2;
+
+  uint64 runtime_us = 3;
+}
+
+enum CompressionAlgoPb {
+  Invalid = 0;
+  None = 1;
+  Zstd = 2;
+}
+
+message RpcCompressionInfo {
+  // use this to compress the content
+  CompressionAlgoPb algo = 1;
+
+  // tell the peer which compression algo is used to compress the next
+  // response/request
+  CompressionAlgoPb accepted_algo = 2;
+}
+
+message RpcPacket {
+  uint32 from_peer = 1;
+  uint32 to_peer = 2;
+  int64 transaction_id = 3;
+
+  RpcDescriptor descriptor = 4;
+  bytes body = 5;
+  bool is_request = 6;
+
+  uint32 total_pieces = 7;
+  uint32 piece_idx = 8;
+
+  int32 trace_id = 9;
+
+  RpcCompressionInfo compression_info = 10;
+}
+
+message Void {}
+
+message UUID {
+  uint32 part1 = 1;
+  uint32 part2 = 2;
+  uint32 part3 = 3;
+  uint32 part4 = 4;
+}
+
+enum NatType {
+  // has NAT; but own a single public IP, port is not changed
+  Unknown = 0;
+  OpenInternet = 1;
+  NoPAT = 2;
+  FullCone = 3;
+  Restricted = 4;
+  PortRestricted = 5;
+  Symmetric = 6;
+  SymUdpFirewall = 7;
+  SymmetricEasyInc = 8;
+  SymmetricEasyDec = 9;
+}
+
+message Ipv4Addr { uint32 addr = 1; }
+
+message Ipv6Addr {
+  uint32 part1 = 1;
+  uint32 part2 = 2;
+  uint32 part3 = 3;
+  uint32 part4 = 4;
+}
+
+message IpAddr {
+  oneof ip {
+    Ipv4Addr ipv4 = 1;
+    Ipv6Addr ipv6 = 2;
+  };
+}
+
+message Ipv4Inet {
+  Ipv4Addr address = 1;
+  uint32 network_length = 2;
+}
+
+message Ipv6Inet {
+  Ipv6Addr address = 1;
+  uint32 network_length = 2;
+}
+
+message IpInet {
+  oneof ip {
+    Ipv4Inet ipv4 = 1;
+    Ipv6Inet ipv6 = 2;
+  };
+}
+
+message Url { string url = 1; }
+
+message SocketAddr {
+  oneof ip {
+    Ipv4Addr ipv4 = 1;
+    Ipv6Addr ipv6 = 2;
+  };
+  uint32 port = 3;
+}
+
+message TunnelInfo {
+  string tunnel_type = 1;
+  common.Url local_addr = 2;
+  common.Url remote_addr = 3;
+  common.Url resolved_remote_addr = 4;
+}
+
+message StunInfo {
+  NatType udp_nat_type = 1;
+  NatType tcp_nat_type = 2;
+  int64 last_update_time = 3;
+  repeated string public_ip = 4;
+  uint32 min_port = 5;
+  uint32 max_port = 6;
+}
+
+message PeerFeatureFlag {
+  bool is_public_server = 1;
+  bool avoid_relay_data = 2;
+  bool kcp_input = 3;
+  bool no_relay_kcp = 4;
+  bool support_conn_list_sync = 5;
+  bool quic_input = 6;
+  bool no_relay_quic = 7;
+  bool is_credential_peer = 8;
+  bool need_p2p = 9;
+  bool disable_p2p = 10;
+  bool ipv6_public_addr_provider = 11;
+  // MP is enabled on this node: it answers MP relay datagrams. Official builds
+  // never set it, so nobody opens relay-next-hop MP sessions towards them.
+  bool mp_enabled = 12;
+}
+
+enum SocketType {
+  TCP = 0;
+  UDP = 1;
+}
+
+message PortForwardConfigPb {
+  SocketAddr bind_addr = 1;
+  SocketAddr dst_addr = 2;
+  SocketType socket_type = 3;
+}
+
+message ProxyDstInfo { SocketAddr dst_addr = 1; }
+
+message LimiterConfig {
+  optional uint64 burst_rate =
+      1; // default 1 means no burst (capacity is same with bps)
+  optional uint64 bps = 2; // default 0 means no limit (unit is B/s)
+  optional uint64 fill_duration_ms =
+      3; // default 10ms, the period to fill the bucket
+}
+
+message SecureModeConfig {
+  bool enabled = 1;
+
+  // base64(X25519 private key), used by shared node to present a stable identity
+  optional string local_private_key = 2;
+
+  // base64(X25519 public key), required if local_private_key is set
+  optional string local_public_key = 3;
+}

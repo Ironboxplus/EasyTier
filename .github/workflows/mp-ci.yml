@@ -1,0 +1,175 @@
+name: MP CI
+
+# Builds and tests for this fork's MP work. A `ci/**` branch is made by the
+# development repository's `_tools/ci_push.sh`: its tree is EasyTier, plus
+# `.ci/refs.env`, which pins the tquic and netwatcher fork commits that sit
+# next to EasyTier (`../vendor/*` path dependencies), and optionally
+# `.ci/filter`, a nextest filter expression to run instead of every test.
+#
+# One job builds a nextest archive once; many jobs then each run a hash
+# partition of it, as root (the netns and TUN tests need it), in parallel.
+
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  SHARDS: 16
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      tquic_ref: ${{ steps.refs.outputs.tquic_ref }}
+      netwatcher_ref: ${{ steps.refs.outputs.netwatcher_ref }}
+      filter: ${{ steps.refs.outputs.filter }}
+      shards: ${{ steps.refs.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .ci
+      - id: refs
+        run: |
+          source .ci/refs.env
+          echo "tquic_ref=$TQUIC_REF" >> "$GITHUB_OUTPUT"
+          echo "netwatcher_ref=$NETWATCHER_REF" >> "$GITHUB_OUTPUT"
+          filter="all()"
+          [ -s .ci/filter ] && filter="$(cat .ci/filter)"
+          echo "filter=$filter" >> "$GITHUB_OUTPUT"
+          echo "shards=$(seq -s, 1 "$SHARDS" | sed 's/^/[/;s/$/]/')" >> "$GITHUB_OUTPUT"
+          echo "tquic $TQUIC_REF, netwatcher $NETWATCHER_REF, filter: $filter"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -qqy build-essential mold musl-tools cmake clang libssl-dev pkg-config
+          mkdir -p et/easytier-gui/dist
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+      - uses: taiki-e/install-action@nextest
+      - name: Build test archive
+        working-directory: et
+        run: cargo nextest archive --archive-file ../tests.tar.zst --package easytier --features full,mpquic
+      - uses: actions/upload-artifact@v5
+        with:
+          name: tests
+          path: tests.tar.zst
+          retention-days: 3
+
+  test:
+    name: test (${{ matrix.shard }}/16)
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - name: Prepare system for tests
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qqy bridge-utils miniupnpd miniupnpd-iptables iptables
+          sudo modprobe br_netfilter
+          sudo sysctl net.bridge.bridge-nf-call-iptables=0
+          sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
+          sudo sysctl net.ipv6.conf.lo.disable_ipv6=0
+          sudo ip addr add 2001:db8::2/64 dev lo
+      - uses: taiki-e/install-action@nextest
+      - uses: actions/download-artifact@v5
+        with:
+          name: tests
+      - name: Run partition ${{ matrix.shard }}
+        run: |
+          sudo prlimit --pid $$ --nofile=1048576:1048576
+          sudo -E env "PATH=$PATH" cargo nextest run \
+            --archive-file tests.tar.zst \
+            --workspace-remap "$GITHUB_WORKSPACE/et" \
+            --partition "hash:${{ matrix.shard }}/$SHARDS" \
+            -E '${{ needs.plan.outputs.filter }}' \
+            --test-threads 1 --no-fail-fast --no-tests pass
+
+  tquic:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          submodules: recursive
+      - run: sudo apt-get update && sudo apt-get install -qqy cmake clang
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --lib
+
+  frontend:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10
+          run_install: false
+      - run: pnpm -r install
+      - run: pnpm -C easytier-web/frontend-lib test:config-ui
+
+  result:
+    needs: [build, test, tquic, frontend]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
