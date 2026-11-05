@@ -455,6 +455,21 @@ pub(crate) struct MpSessionManager {
 pub(crate) const FAKETCP_FALLBACK_AFTER_FAILURES: u32 = 2;
 pub(crate) const FAKETCP_FALLBACK_HOLD: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Whether this build can take a punched TCP connection over as FakeTCP at
+/// all. Android only has the `AF_PACKET` backend (`PnetTun`): an app without
+/// root has no CAP_NET_RAW and SELinux denies `untrusted_app` packet sockets,
+/// so every upgrade failed and closed the punched connection it was given.
+/// There `auto` offers plain TCP; the peer then negotiates plain TCP too.
+pub(crate) const FAKETCP_UPGRADE_POSSIBLE: bool = !cfg!(target_os = "android");
+
+fn offers_plain_tcp(
+    upgrade_possible: bool,
+    record: Option<&FakeTcpUpgradeRecord>,
+    now: std::time::Instant,
+) -> bool {
+    !upgrade_possible || record.is_some_and(|record| record.plain_tcp_fallback(now))
+}
+
 /// How upgrading TCP-punched carriers to FakeTCP has gone for one peer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct FakeTcpUpgradeRecord {
@@ -2293,10 +2308,13 @@ impl MpSessionManager {
             .record(result, std::time::Instant::now());
     }
 
+    /// Whether `auto` offers `peer_id` plain TCP instead of a FakeTCP upgrade.
     pub(crate) fn faketcp_plain_tcp_fallback(&self, peer_id: PeerId) -> bool {
-        self.faketcp_upgrades
-            .get(&peer_id)
-            .is_some_and(|record| record.plain_tcp_fallback(std::time::Instant::now()))
+        offers_plain_tcp(
+            FAKETCP_UPGRADE_POSSIBLE,
+            self.faketcp_upgrades.get(&peer_id).as_deref(),
+            std::time::Instant::now(),
+        )
     }
 
     /// EasyTier's peer map is the authority for connection liveness.  When it
@@ -5310,6 +5328,18 @@ mod tests {
         assert_eq!(record.failures, 2, "the total keeps counting");
     }
 
+    #[test]
+    fn a_build_that_cannot_upgrade_offers_plain_tcp_from_the_first_punch() {
+        let now = std::time::Instant::now();
+        assert!(offers_plain_tcp(false, None, now));
+        assert!(!offers_plain_tcp(true, None, now));
+        assert!(
+            offers_plain_tcp(false, Some(&FakeTcpUpgradeRecord::default()), now),
+            "an upgrade that once worked does not make the next one possible"
+        );
+        assert_eq!(FAKETCP_UPGRADE_POSSIBLE, !cfg!(target_os = "android"));
+    }
+
     #[tokio::test]
     async fn faketcp_upgrade_record_shows_up_in_runtime_snapshots() {
         let manager = MpSessionManager::new(test_egress_quality_manager());
@@ -7957,13 +7987,18 @@ mod tests {
             "an unchanged manual path must not create a duplicate carrier"
         );
 
+        // The removed path is the session's only one, and QUIC multipath does
+        // not abandon the last open path short of closing the connection
+        // (`retire_path_unless_last`): it stays up and stays tracked, so the
+        // next reconcile retires it once another path exists.
         config_a.manual_paths.clear();
         manager_a.set_config(config_a).await.unwrap();
         manager_a
             .reconcile_manual_paths(&global_a, 1)
             .await
             .unwrap();
-        assert!(!manager_a.has_live_carrier(2, CarrierKind::Manual).await);
+        assert!(manager_a.has_live_carrier(2, CarrierKind::Manual).await);
+        assert!(manager_a.manual_paths.contains_key(&source_a));
     }
 
     #[test]

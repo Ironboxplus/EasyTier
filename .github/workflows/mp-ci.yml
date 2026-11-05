@@ -85,9 +85,13 @@ jobs:
         with:
           workspaces: et -> target
       - uses: taiki-e/install-action@nextest
+      # Default features plus mpquic (which brings aes-gcm): `full` without
+      # openssl-crypto. Vendored OpenSSL and TQUIC's static BoringSSL export
+      # the same C symbols, and OpenSSL ChaCha20 then crashes (SIGSEGV); no
+      # shipped build enables openssl-crypto.
       - name: Build test archive
         working-directory: et
-        run: cargo nextest archive --archive-file ../tests.tar.zst --package easytier --features full,mpquic
+        run: cargo nextest archive --archive-file ../tests.tar.zst --package easytier --features mpquic
       - uses: actions/upload-artifact@v5
         with:
           name: tests
@@ -156,18 +160,111 @@ jobs:
         with:
           version: "35.1"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
+      # pnpm first: setup-node caches the pnpm store and looks for pnpm.
       - uses: pnpm/action-setup@v5
         with:
           version: 10
           run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - run: pnpm -r install
       - run: pnpm -C easytier-web/frontend-lib test:config-ui
 
+  # The arm64 APK, as upstream mobile.yml builds it, signed with the repo's
+  # upload keystore (the key the installed app was signed with). TQUIC builds
+  # BoringSSL with the NDK's CMake toolchain (ANDROID_NDK_HOME), and bindgen
+  # needs the NDK sysroot or it parses the host's /usr/include.
+  android:
+    needs: plan
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 26.0.10792818
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 12.0
+          packages: "build-tools;34.0.0 ndk;26.0.10792818 platform-tools platforms;android-34"
+      - name: Android environment
+        run: |
+          ndk=$ANDROID_HOME/ndk/$NDK_VERSION
+          llvm=$ndk/toolchains/llvm/prebuilt/linux-x86_64
+          echo "$llvm/bin" >> "$GITHUB_PATH"
+          {
+            echo "NDK_HOME=$ndk"
+            echo "ANDROID_NDK_HOME=$ndk"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=$llvm/sysroot"
+          } >> "$GITHUB_ENV"
+          sudo apt-get update && sudo apt-get install -qqy cmake
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          target: aarch64-linux-android
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+          key: android
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: et/pnpm-lock.yaml
+      - name: Build frontend packages
+        working-directory: et
+        run: |
+          pnpm -r install
+          pnpm -r --workspace-concurrency=1 build
+      - name: Build APK
+        working-directory: et/easytier-gui
+        run: pnpm tauri android build --ci --apk --target aarch64 --split-per-abi
+      - name: Check signature and collect
+        run: |
+          mkdir -p apk
+          find et/easytier-gui/src-tauri/gen/android/app/build/outputs/apk -name '*.apk' -exec mv -t apk {} +
+          for apk in apk/*.apk; do
+            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" | head -4
+          done
+          sha256sum apk/*.apk
+      - uses: actions/upload-artifact@v5
+        with:
+          name: android-arm64
+          path: apk/*.apk
+          retention-days: 7
+
   result:
-    needs: [build, test, tquic, frontend]
+    needs: [build, test, tquic, frontend, android]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
