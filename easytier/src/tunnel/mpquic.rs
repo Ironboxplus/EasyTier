@@ -2591,6 +2591,7 @@ fn unregister_path(
         .write()
         .map_err(|_| anyhow::anyhow!("MP path registry poisoned"))?
         .unregister(key);
+    tracing::debug!(target: "mpq", ?key, removed_carrier, "MP path unregistered");
     if removed_carrier && let Some(recv_task) = recv_tasks.remove(&key.carrier_id) {
         recv_task.abort();
     }

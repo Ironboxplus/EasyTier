@@ -349,6 +349,7 @@ impl RelayNextHopTransport {
             ));
         }
         let (path, created) = self.get_or_create_path(identity, egress_first_hop_peer_id);
+        tracing::debug!(?identity, created, egress_first_hop_peer_id, "relay MP inbound admission");
         Ok(RelayInboundAdmission {
             identity,
             source_peer_id: datagram.source_peer_id,
@@ -383,7 +384,15 @@ impl RelayNextHopTransport {
             source_addr: datagram.source_addr,
             payload: datagram.payload,
         }) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                // Backlog that only grows means no carrier reads this queue.
+                tracing::debug!(
+                    ?identity,
+                    backlog = inbound_tx.max_capacity() - inbound_tx.capacity(),
+                    "relay MP datagram queued"
+                );
+                Ok(())
+            }
             Err(mpsc::error::TrySendError::Full(_)) => {
                 // A full queue is normal under a burst, but one nobody reads
                 // drops everything for its path: say so (rate-limited), so a

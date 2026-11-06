@@ -1544,7 +1544,12 @@ impl PeerManager {
                                         transport.retire_path(&admission_for_attach.identity);
                                     }
                                 }
-                                Ok(OfferPathResult::PathAdded) => {}
+                                Ok(OfferPathResult::PathAdded) => {
+                                    tracing::debug!(
+                                        identity = ?admission_for_attach.identity,
+                                        "relay MP server carrier offered to the existing session"
+                                    );
+                                }
                                 Err(error) => {
                                     tracing::warn!(
                                         ?error,

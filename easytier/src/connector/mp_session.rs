@@ -2089,6 +2089,7 @@ impl MpSessionManager {
             // one, and only by finishing its own handshake (below).
             if handle.is_closed() || !preferred || self.direction_preferred(peer_id, current_is_server) {
                 if already_tracked {
+                    tracing::debug!(peer_id, ?key, "MP path offer for a tracked candidate; carrier not added");
                     return Ok(OfferPathResult::PathAdded);
                 }
                 return self.add_path_to_session(peer_id, &slot, handle, &candidate_slot, &key, path, remote, nic_scope)
