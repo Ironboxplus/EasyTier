@@ -1,0 +1,655 @@
+syntax = "proto3";
+
+import "common.proto";
+import "peer_rpc.proto";
+import "acl.proto";
+
+package api.instance;
+
+message InstanceIdentifier {
+  message InstanceSelector { optional string name = 1; }
+
+  oneof selector {
+    common.UUID id = 1;
+    InstanceSelector instance_selector = 2;
+  }
+}
+
+message Status {
+  int32 code = 1;
+  string message = 2;
+}
+
+message PeerConnStats {
+  uint64 rx_bytes = 1;
+  uint64 tx_bytes = 2;
+
+  uint64 rx_packets = 3;
+  uint64 tx_packets = 4;
+
+  uint64 latency_us = 5;
+}
+
+message PeerConnInfo {
+  string conn_id = 1;
+  uint32 my_peer_id = 2;
+  uint32 peer_id = 3;
+  repeated string features = 4;
+  common.TunnelInfo tunnel = 5;
+  PeerConnStats stats = 6;
+  float loss_rate = 7;
+  bool is_client = 8;
+  string network_name = 9;
+  bool is_closed = 10;
+  bytes noise_local_static_pubkey = 11;
+  bytes noise_remote_static_pubkey = 12;
+  peer_rpc.SecureAuthLevel secure_auth_level = 13;
+  peer_rpc.PeerIdentityType peer_identity_type = 14;
+  // Was MpSqmQueueStatus, a per-connection queue (removed: the queue is one
+  // CAKE per egress, see MpEgressResourceStatus.cake).
+  reserved 15;
+}
+
+message PeerInfo {
+  uint32 peer_id = 1;
+  repeated PeerConnInfo conns = 2;
+  common.UUID default_conn_id = 3;
+  repeated common.UUID directly_connected_conns = 4;
+}
+
+message ListPeerRequest { InstanceIdentifier instance = 1; }
+
+message ListPeerResponse {
+  repeated PeerInfo peer_infos = 1;
+  NodeInfo my_info = 2;
+}
+
+message Route {
+  uint32 peer_id = 1;
+  common.Ipv4Inet ipv4_addr = 2;
+
+  uint32 next_hop_peer_id = 3;
+  int32 cost = 4;
+  int32 path_latency = 11;
+
+  repeated string proxy_cidrs = 5;
+  string hostname = 6;
+  common.StunInfo stun_info = 7;
+  string inst_id = 8;
+  string version = 9;
+  common.PeerFeatureFlag feature_flag = 10;
+
+  optional uint32 next_hop_peer_id_latency_first = 12;
+  optional int32 cost_latency_first = 13;
+  optional int32 path_latency_latency_first = 14;
+
+  common.Ipv6Inet ipv6_addr = 15;
+  common.Ipv6Inet public_ipv6_addr = 16;
+  common.Ipv6Inet ipv6_public_addr_prefix = 17;
+}
+
+message PeerRoutePair {
+  Route route = 1;
+  PeerInfo peer = 2;
+}
+
+message NodeInfo {
+  uint32 peer_id = 1;
+  string ipv4_addr = 2;
+  repeated string proxy_cidrs = 3;
+  string hostname = 4;
+  common.StunInfo stun_info = 5;
+  string inst_id = 6;
+  repeated string listeners = 7;
+  string config = 8;
+  string version = 9;
+  common.PeerFeatureFlag feature_flag = 10;
+  peer_rpc.GetIpListResponse ip_list = 11;
+  common.Ipv6Inet public_ipv6_addr = 12;
+  common.Ipv6Inet ipv6_public_addr_prefix = 13;
+}
+
+message ShowNodeInfoRequest { InstanceIdentifier instance = 1; }
+
+message ShowNodeInfoResponse { NodeInfo node_info = 1; }
+
+message PublicIpv6LeaseInfo {
+  uint32 peer_id = 1;
+  string inst_id = 2;
+  common.Ipv6Inet leased_addr = 3;
+  int64 valid_until_unix_seconds = 4;
+  bool reused = 5;
+}
+
+message ListPublicIpv6InfoRequest { InstanceIdentifier instance = 1; }
+
+message ListPublicIpv6InfoResponse {
+  common.Ipv6Inet provider_prefix = 1;
+  repeated PublicIpv6LeaseInfo provider_leases = 2;
+}
+
+message ListRouteRequest { InstanceIdentifier instance = 1; }
+
+message ListRouteResponse { repeated Route routes = 1; }
+
+message DumpRouteRequest { InstanceIdentifier instance = 1; }
+
+message DumpRouteResponse { string result = 1; }
+
+// The JSON payloads use the versioned, serde-backed egress DTOs from the core.
+// Keeping this first bridge opaque avoids duplicating platform-specific stable-ID
+// unions in protobuf while still giving GUI/WebUI clients a read-only API.
+message GetEgressInventoryRequest { InstanceIdentifier instance = 1; }
+
+message GetEgressInventoryResponse {
+  string snapshot_json = 1;
+  uint32 schema_version = 2;
+  string health_json = 3;
+}
+
+message ResolveEgressRouteRequest {
+  InstanceIdentifier instance = 1;
+  string target = 2;
+  // Empty means an unconstrained kernel best-route lookup.
+  string egress_id_json = 3;
+}
+
+message ResolveEgressRouteResponse {
+  string resolution_json = 1;
+  uint32 schema_version = 2;
+}
+
+message ListForeignNetworkRequest {
+  InstanceIdentifier instance = 1;
+  bool include_trusted_keys = 2;
+}
+
+enum TrustedKeySourcePb {
+  TRUSTED_KEY_SOURCE_PB_UNSPECIFIED = 0;
+  TRUSTED_KEY_SOURCE_PB_OSPF_NODE = 1;
+  TRUSTED_KEY_SOURCE_PB_OSPF_CREDENTIAL = 2;
+}
+
+message TrustedKeyInfoPb {
+  bytes pubkey = 1;
+  TrustedKeySourcePb source = 2;
+  optional int64 expiry_unix = 3;
+}
+
+message ForeignNetworkEntryPb {
+  repeated PeerInfo peers = 1;
+  bytes network_secret_digest = 2;
+  uint32 my_peer_id_for_this_network = 3;
+  repeated TrustedKeyInfoPb trusted_keys = 4;
+}
+
+message ListForeignNetworkResponse {
+  // foreign network in local
+  map<string, ForeignNetworkEntryPb> foreign_networks = 1;
+}
+
+message ListGlobalForeignNetworkRequest { InstanceIdentifier instance = 1; }
+
+message ListGlobalForeignNetworkResponse {
+  // foreign network in the entire network
+  message OneForeignNetwork {
+    string network_name = 1;
+    repeated uint32 peer_ids = 2;
+    string last_updated = 3;
+    uint32 version = 4;
+  }
+
+  message ForeignNetworks { repeated OneForeignNetwork foreign_networks = 1; }
+
+  map<uint32, ForeignNetworks> foreign_networks = 1;
+}
+
+message GetForeignNetworkSummaryRequest { InstanceIdentifier instance = 1; }
+
+message GetForeignNetworkSummaryResponse {
+  peer_rpc.RouteForeignNetworkSummary summary = 1;
+}
+
+service PeerManageRpc {
+  rpc ListPeer(ListPeerRequest) returns (ListPeerResponse);
+  rpc ListPublicIpv6Info(ListPublicIpv6InfoRequest)
+      returns (ListPublicIpv6InfoResponse);
+  rpc ListRoute(ListRouteRequest) returns (ListRouteResponse);
+  rpc DumpRoute(DumpRouteRequest) returns (DumpRouteResponse);
+  rpc GetEgressInventory(GetEgressInventoryRequest)
+      returns (GetEgressInventoryResponse);
+  rpc ResolveEgressRoute(ResolveEgressRouteRequest)
+      returns (ResolveEgressRouteResponse);
+  rpc ListForeignNetwork(ListForeignNetworkRequest)
+      returns (ListForeignNetworkResponse);
+  rpc ListGlobalForeignNetwork(ListGlobalForeignNetworkRequest)
+      returns (ListGlobalForeignNetworkResponse);
+  rpc ShowNodeInfo(ShowNodeInfoRequest) returns (ShowNodeInfoResponse);
+  rpc GetForeignNetworkSummary(GetForeignNetworkSummaryRequest)
+      returns (GetForeignNetworkSummaryResponse);
+}
+
+enum ConnectorStatus {
+  CONNECTED = 0;
+  DISCONNECTED = 1;
+  CONNECTING = 2;
+}
+
+message Connector {
+  common.Url url = 1;
+  ConnectorStatus status = 2;
+}
+
+message ListConnectorRequest { InstanceIdentifier instance = 1; }
+
+message ListConnectorResponse { repeated Connector connectors = 1; }
+
+service ConnectorManageRpc {
+  rpc ListConnector(ListConnectorRequest) returns (ListConnectorResponse);
+}
+
+message MappedListener { common.Url url = 1; }
+
+message ListMappedListenerRequest { InstanceIdentifier instance = 1; }
+
+message ListMappedListenerResponse {
+  repeated MappedListener mappedlisteners = 1;
+}
+
+service MappedListenerManageRpc {
+  rpc ListMappedListener(ListMappedListenerRequest)
+      returns (ListMappedListenerResponse);
+}
+
+message VpnPortalInfo {
+  string vpn_type = 1;
+  string client_config = 2;
+  repeated string connected_clients = 3;
+}
+
+message GetVpnPortalInfoRequest { InstanceIdentifier instance = 1; }
+message GetVpnPortalInfoResponse { VpnPortalInfo vpn_portal_info = 1; }
+
+service VpnPortalRpc {
+  rpc GetVpnPortalInfo(GetVpnPortalInfoRequest)
+      returns (GetVpnPortalInfoResponse);
+}
+
+enum TcpProxyEntryTransportType {
+  TCP = 0;
+  KCP = 1;
+  QUIC = 2;
+}
+
+enum TcpProxyEntryState {
+  Unknown = 0;
+  // receive syn packet but not start connecting to dst
+  SynReceived = 1;
+  // connecting to dst
+  ConnectingDst = 2;
+  // connected to dst
+  Connected = 3;
+  // connection closed
+  Closed = 4;
+  // closing src
+  ClosingSrc = 5;
+  // closing dst
+  ClosingDst = 6;
+}
+
+message TcpProxyEntry {
+  common.SocketAddr src = 1;
+  common.SocketAddr dst = 2;
+  uint64 start_time = 3;
+  TcpProxyEntryState state = 4;
+  TcpProxyEntryTransportType transport_type = 5;
+}
+
+message ListTcpProxyEntryRequest { InstanceIdentifier instance = 1; }
+
+message ListTcpProxyEntryResponse { repeated TcpProxyEntry entries = 1; }
+
+service TcpProxyRpc {
+  rpc ListTcpProxyEntry(ListTcpProxyEntryRequest)
+      returns (ListTcpProxyEntryResponse);
+}
+
+message GetAclStatsRequest { InstanceIdentifier instance = 1; }
+
+message GetAclStatsResponse { acl.AclStats acl_stats = 1; }
+
+service AclManageRpc {
+  rpc GetAclStats(GetAclStatsRequest) returns (GetAclStatsResponse);
+  rpc GetWhitelist(GetWhitelistRequest) returns (GetWhitelistResponse);
+}
+
+message GetWhitelistRequest { InstanceIdentifier instance = 1; }
+
+message GetWhitelistResponse {
+  repeated string tcp_ports = 1;
+  repeated string udp_ports = 2;
+}
+
+message ListPortForwardRequest { InstanceIdentifier instance = 1; }
+
+message ListPortForwardResponse {
+  repeated common.PortForwardConfigPb cfgs = 1;
+}
+
+service PortForwardManageRpc {
+  rpc ListPortForward(ListPortForwardRequest) returns (ListPortForwardResponse);
+}
+
+message MetricSnapshot {
+  string name = 1;
+  uint64 value = 2;
+  map<string, string> labels = 3;
+}
+
+message GetStatsRequest { InstanceIdentifier instance = 1; }
+
+message MpPathIdentity {
+  uint64 carrier_id = 1;
+  string local_addr = 2;
+  string remote_addr = 3;
+}
+
+message MpPathStatus {
+  MpPathIdentity path = 1;
+  string carrier_kind = 2;
+  string lifecycle_state = 3;
+  string local_resource = 4;
+  string local_resource_kind = 5;
+  string remote_resource = 6;
+  string remote_resource_kind = 7;
+
+  uint64 btlbw_bps = 8;
+  uint64 delivery_rate_bps = 9;
+  uint64 srtt_micros = 10;
+  double loss_rate = 11;
+  bool app_limited = 12;
+  optional uint64 sample_age_micros = 13;
+  string congestion_control_state = 14;
+  optional uint64 target_rate_bps = 15;
+
+  string validation_state = 16;
+  bool bandwidth_model_valid = 17;
+  uint64 min_rtt_micros = 18;
+  uint64 sent_bytes = 19;
+  uint64 recv_bytes = 20;
+  uint64 lost_bytes = 21;
+
+  // Populated only for relay-next-hop carriers.  `first_hop_peer_id` is the
+  // first hop that identifies the virtual end-to-end TQUIC path, while
+  // `egress_first_hop_peer_id` is the direct peer used for the local packet
+  // egress (it can differ on the reverse direction).
+  optional uint64 first_hop_peer_id = 22;
+  optional uint64 egress_first_hop_peer_id = 23;
+  optional uint64 route_generation = 24;
+
+  // MP_SQM_PLAN.md S2.2/S2.3/S2.4.
+  uint64 cwnd_bytes = 25;
+  uint64 pacing_rate_bps = 26;
+  uint64 bytes_in_flight = 27;
+  optional double brutal_ack_rate = 28;
+  // Action of the matched user MpPathPolicy (pin|exclude|pause|prefer), or
+  // empty when none matched.
+  string user_policy = 29;
+  string egress_device = 30;
+  // MP_SQM_PLAN.md S2.14: our public endpoint as the peer reports it for this
+  // path (TQUIC OBSERVED_ADDRESS); empty when not reported.
+  string observed_public_addr = 31;
+
+  // What the path selection ranks and skips by.
+  // The path's propagation delay (TQUIC's 300 s windowed minimum RTT), 0
+  // until the first sample.
+  uint64 windowed_min_rtt_micros = 32;
+  // Moving average of the share of bytes lost on this path; unset until
+  // enough has been sent.
+  optional double recent_loss = 33;
+  // EasyTier ping loss of a relay path's physical first hop.
+  optional double first_hop_loss = 34;
+  // The path's probe timeouts keep firing, so it is passed over for data.
+  bool backed_off = 35;
+  // Why the path is not a selection candidate: not-established | policy |
+  // lossy-path | lossy-first-hop, or empty.
+  string not_selected_reason = 36;
+}
+
+message MpPeerStatus {
+  uint64 peer_id = 1;
+  uint32 candidate_count = 2;
+  uint32 eligible_count = 3;
+  repeated MpPathStatus paths = 4;
+  repeated MpPathIdentity active_paths = 5;
+  // Phase 4 removed the optimizer's allocation, utility breakdown, resource
+  // graph and Top-K decision; the numbers are never reused.
+  reserved 6, 7, 8, 9;
+  reserved "allocated_bps", "utility", "graph", "decision";
+  // Stable transport-quality readback. These are effective engine/session
+  // values, not a claim that an external SQM ceiling is installed.
+  string effective_engine = 10;
+  string effective_congestion_control = 11;
+  string path_mode = 12;
+  string scheduler_state = 13;
+  optional string unsupported_reason = 14;
+  // MP_SQM_PLAN.md S2.4/S2.6.
+  string desired_congestion_control = 15;
+  bool reconnect_required = 16;
+  // MP_SQM_PLAN.md S1.4: this peer's mpquic session was opened directly
+  // (not MpSessionManager-managed) -- see `MpSessionHandle`/
+  // `standalone_sessions`.
+  bool standalone = 17;
+  // Read-only recovery/loss-detection scheme name, currently always
+  // "tquic-rfc9002".
+  string effective_recovery = 18;
+  optional uint64 brutal_tx_bps = 19;
+  optional uint64 peer_advertised_rx_bps = 20;
+  // MP_SQM_PLAN.md S2.10.
+  MpDataPlaneStatus data_plane = 21;
+  // Upgrades of TCP-punched carriers to FakeTCP paths toward this peer;
+  // unset when none was attempted.
+  MpFakeTcpUpgradeStatus faketcp_upgrade = 22;
+}
+
+message MpFakeTcpUpgradeStatus {
+  uint64 failures = 1;
+  uint32 consecutive_failures = 2;
+  string last_error = 3;
+  // `auto` mode currently punches plain TCP to this peer after repeated
+  // upgrade failures; FakeTCP is tried again once the hold expires.
+  bool plain_tcp_fallback = 4;
+}
+
+message MpDataPlaneStatus {
+  // datagram|stream_fallback|disabled
+  string negotiated = 1;
+  string fallback_reason = 2;
+  uint32 max_datagram_bytes = 3;
+  uint32 recommended_mtu = 4;
+  repeated MpClassStatus classes = 5;
+  // Packets too large for a datagram that were dropped with no ICMP answer.
+  uint64 oversize_dropped = 6;
+  uint64 oversize_ptb = 7;
+  uint64 frag_sent = 8;
+  uint64 frag_reassembled = 9;
+  uint64 frag_timeout = 10;
+  uint64 dgram_queue_dropped = 11;
+  uint32 circuit_breaker_trips = 12;
+  // CAKE_SQM_PLAN.md B5: inner frames the reliable-stream queues dropped on
+  // purpose (COBALT on queueing time), and because a stream's queue was over
+  // its limit.
+  uint64 stream_aqm_drops = 13;
+  uint64 stream_overlimit_drops = 14;
+  // Datagram frames the queue in front of QUIC dropped on purpose (COBALT on
+  // queueing time), and because its packet memory was over its limit.
+  uint64 dgram_aqm_drops = 15;
+  uint64 dgram_overlimit_drops = 16;
+}
+
+message MpClassStatus {
+  string class = 1;
+  string mode = 2;
+  uint64 tx_packets = 3;
+  uint64 tx_bytes = 4;
+  uint64 rx_packets = 5;
+  uint64 rx_bytes = 6;
+  uint32 open_streams = 7;
+  uint64 streams_recycled = 8;
+  // Bounded ARQ and FEC counters, dropped before release.
+  reserved 9 to 17;
+}
+
+message MpEgressResourceStatus {
+  string resource = 1;
+  string resource_kind = 2;
+  uint64 capacity_bps = 3;
+  uint64 achieved_bps = 4;
+  uint64 queue_delay_micros = 5;
+  uint32 path_count = 6;
+  // MP_SQM_PLAN.md S2.1.
+  string egress_device = 7;
+  optional uint64 ceiling_bps = 8;
+  // none|static|per_device|autorate.
+  string ceiling_source = 9;
+  optional uint64 autorate_estimate_bps = 10;
+  // 11 was autorate_enforced: shaping to the estimate is always on.
+  reserved 11;
+  reserved "autorate_enforced";
+  // Token-bucket accounting of the removed egress governor.
+  reserved 12 to 15;
+  bool fallback_scope = 16;
+  // The WAN-level scope's public IP of the removed per-WAN queues.
+  reserved 17;
+  // Whether autorate_estimate_bps was ever adjusted by a measurement: until
+  // the link is loaded (or shows bloat under load) it is the start value.
+  bool autorate_measured = 18;
+  // CAKE_SQM_PLAN.md C2: the CAKE queue of this egress; unset while SQM is off
+  // or no packet has used the egress yet.
+  optional MpCakeStatus cake = 19;
+  // OWD_AUTORATE_PLAN.md 1.4: where queue_delay_micros came from, one of
+  // reflectors (the third smallest upstream delay of the public ICMP
+  // timestamp reflectors and the peer), one-way (the data direction's
+  // measured delay), round-trip (QUIC's round trip, for a peer that sends no
+  // one-way delay) or held (no usable sample this tick: the estimate was left
+  // as it was).
+  string queue_delay_source = 20;
+  // S-I10: where achieved_bps came from, one of nic-counter (the interface's
+  // own byte counters: all traffic on the NIC, as cake-autorate reads it) or
+  // path-sent-bytes (only the MP paths' sent bytes: no counter was readable).
+  string achieved_source = 21;
+  // How many public reflectors the last Autorate tick's delay was taken
+  // from (queue_delay_source "reflectors"); 0 when none answered or the
+  // card has none.
+  uint32 reflector_count = 22;
+}
+
+// CAKE_SQM_PLAN.md C2: the one send queue of an egress (NIC, or NIC and WAN):
+// Linux's CAKE, with the names and meaning of `tc -s qdisc show`.
+message MpCakeStatus {
+  // The rate CAKE shapes to: the autorate estimate, in bits per second.
+  uint64 bandwidth_bps = 1;
+  uint32 target_us = 2;
+  uint32 interval_us = 3;
+  uint32 qlen_packets = 4;
+  uint64 backlog_bytes = 5;
+  // Packet memory in use now, its peak, and the limit.
+  uint32 memory_used = 6;
+  uint32 memory_peak = 7;
+  uint32 memory_limit = 8;
+  uint64 sent_packets = 9;
+  uint64 sent_bytes = 10;
+  // Dropped by the AQM (COBALT, including BLUE) while sending.
+  uint64 dropped_packets = 11;
+  // Dropped because the packet memory was full.
+  uint64 overlimit_drops = 12;
+  uint32 peak_delay_us = 13;
+  uint32 avg_delay_us = 14;
+  uint32 base_delay_us = 15;
+  uint32 sparse_flows = 16;
+  uint32 bulk_flows = 17;
+  uint32 unresponsive_flows = 18;
+  uint32 way_collisions = 19;
+  // Inner frames the reliable-stream queues of the sessions on this egress
+  // dropped on purpose (COBALT on queueing time) or because a stream's queue
+  // was over its limit.
+  uint64 stream_aqm_drops = 20;
+  uint64 stream_overlimit_drops = 21;
+}
+
+// MP_SQM_PLAN.md S2.2: carried in api.manage.NetworkInstanceRunningInfo.
+message MpRuntimeInfo {
+  repeated MpPeerStatus peers = 1;
+  repeated MpEgressResourceStatus egress = 2;
+  // Was the per-connection queues; the queue is one CAKE per egress.
+  reserved 3;
+  // Monotonic core clock; the GUI differences counters against this, never
+  // its own wall clock.
+  uint64 sample_time_ms = 4;
+}
+
+message GetStatsResponse {
+  repeated MetricSnapshot metrics = 1;
+  repeated MpPeerStatus mp_peers = 2;
+  repeated MpEgressResourceStatus mp_egress_resources = 3;
+  reserved 4;
+}
+
+message GetPrometheusStatsRequest { InstanceIdentifier instance = 1; }
+
+message GetPrometheusStatsResponse { string prometheus_text = 1; }
+
+service StatsRpc {
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  rpc GetPrometheusStats(GetPrometheusStatsRequest)
+      returns (GetPrometheusStatsResponse);
+}
+
+// Credential management messages
+
+message GenerateCredentialRequest {
+  repeated string groups = 1;   // optional: ACL groups for this credential
+  bool allow_relay = 2;         // optional: allow relay through credential node
+  repeated string allowed_proxy_cidrs = 3; // optional: restrict proxy_cidrs
+  int64 ttl_seconds = 4;        // must be > 0: credential TTL in seconds (0 / omitted is invalid)
+  optional string credential_id = 5; // optional: user-specified credential id, reused if already exists
+  InstanceIdentifier instance = 6;   // target network instance
+  optional bool reusable = 7;   // default true: allow multiple peers to reuse this credential
+}
+
+message GenerateCredentialResponse {
+  string credential_id = 1;       // UUID
+  string credential_secret = 2;   // private key base64
+}
+
+message RevokeCredentialRequest {
+  string credential_id = 1;
+  InstanceIdentifier instance = 2;   // target network instance
+}
+
+message RevokeCredentialResponse {
+  bool success = 1;
+}
+
+message ListCredentialsRequest {
+  InstanceIdentifier instance = 1;   // target network instance
+}
+
+message CredentialInfo {
+  string credential_id = 1;       // UUID
+  repeated string groups = 2;
+  bool allow_relay = 3;
+  int64 expiry_unix = 4;
+  repeated string allowed_proxy_cidrs = 5;
+  optional bool reusable = 6;
+}
+
+message ListCredentialsResponse {
+  repeated CredentialInfo credentials = 1;
+}
+
+service CredentialManageRpc {
+  rpc GenerateCredential(GenerateCredentialRequest) returns (GenerateCredentialResponse);
+  rpc RevokeCredential(RevokeCredentialRequest) returns (RevokeCredentialResponse);
+  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse);
+}
