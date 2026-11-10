@@ -1868,7 +1868,8 @@ def s34_hot_selection(run, args):
         if mtu == expected:
             break
         time.sleep(2)
-    run.evidence["mtu"] = {"nic": mtu, "recommended": expected}
+    run.evidence["mtu"] = {"nic": mtu, "recommended": expected,
+                            "links": sh("ip", "-o", "link", "show", ns="s3a", capture=True)}
     run.check("automatic MTU follows the data plane", expected > 0 and mtu == expected, nic=mtu, recommended=expected)
     grey("end")
 
