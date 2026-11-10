@@ -603,8 +603,70 @@ jobs:
           path: out/*
           retention-days: 1
 
+  # Black-box protocol and data-plane tests (tests/blackbox/s3.py): real
+  # easytier-core and easytier-cli processes, from the `linux` job of this
+  # run, in network namespaces with NAT routers, a relay and netem links. One
+  # job per scenario, in parallel; s33_soak runs a shortened soak. The two
+  # official-core comparisons and the upstream interop scenarios get the
+  # latest EasyTier release as the reference core. Evidence JSON is uploaded.
+  blackbox:
+    name: blackbox (${{ matrix.scenario }})
+    needs: [plan, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [s31_legacy, s31_native_punch, s31_cli_compat, s31_faketcp_numbers, s32_cc_matrix, s32_rate_limit, s32_brutal_loss, s32_sqm, s32_multi_egress, s32_relay_then_punch, s32_punch_rate, s32_relay_beside_punch, s32_path_policy, s32_dataplane, s32_reliable_class, s32_oversize, s32_split_proxy, s3x_harsh, s3x_vs_official, s32_mwan3, s33_churn, s33_soak, s33_route_loop, s34_hot_selection]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: tests/blackbox
+      - uses: actions/download-artifact@v5
+        with:
+          name: linux-x86_64
+          path: bin
+      - name: Prepare system
+        run: |
+          sudo apt-get update
+          sudo apt-get install -qqy iproute2 iptables tcpdump ethtool iputils-ping python3 unzip             "linux-modules-extra-$(uname -r)" || true
+          for m in sch_netem sch_htb sch_cake ifb nf_conntrack nf_nat; do sudo modprobe "$m" || echo "no $m"; done
+          chmod +x bin/*
+          bin/easytier-core --version
+      - name: Reference core
+        if: startsWith(matrix.scenario, 's31_') || startsWith(matrix.scenario, 's3x_')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R EasyTier/EasyTier --pattern 'easytier-linux-x86_64-v*.zip' -D ref
+          unzip -q -o ref/*.zip -d ref
+          dir="$(dirname "$(find ref -name easytier-core | head -1)")"
+          chmod +x "$dir"/*
+          echo "UPSTREAM=$PWD/$dir" >> "$GITHUB_ENV"
+          "$dir/easytier-core" --version
+      - name: Run ${{ matrix.scenario }}
+        run: |
+          extra=""
+          [ -n "$UPSTREAM" ] && extra="--b-bin $UPSTREAM"
+          [ "${{ matrix.scenario }}" = s33_soak ] && extra="--hours 0.08"
+          sudo unshare --pid --fork --mount-proc --mount --net --propagation private -- bash -c "
+            set -e
+            mkdir -p /run/netns
+            mount -t tmpfs netns /run/netns
+            ip link set lo up
+            exec python3 '$PWD/tests/blackbox/s3.py' --bin '$PWD/bin' --out '$PWD/out' $extra ${{ matrix.scenario }}"
+      - name: Verdict
+        if: always()
+        run: cat out/results.txt || true
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: blackbox-${{ matrix.scenario }}
+          path: out
+          retention-days: 1
+
   result:
-    needs: [build, test, tquic, frontend, android, windows, windows-test-build, windows-test, linux, linux-gui]
+    needs: [build, test, tquic, frontend, android, windows, windows-test-build, windows-test, linux, linux-gui, blackbox]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:

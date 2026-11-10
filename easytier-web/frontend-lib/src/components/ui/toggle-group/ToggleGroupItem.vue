@@ -24,7 +24,6 @@ const forwardedProps = useForwardProps(delegatedProps)
 
 <template>
   <ToggleGroupItem
-    v-slot="slotProps"
     data-slot="toggle-group-item"
     v-bind="forwardedProps"
     :class="cn(
@@ -32,6 +31,6 @@ const forwardedProps = useForwardProps(delegatedProps)
       'w-auto min-w-0 shrink-0 rounded-none px-3 first:rounded-l-md last:rounded-r-md focus:z-10 focus-visible:z-10',
       props.class)"
   >
-    <slot v-bind="slotProps" />
+    <slot />
   </ToggleGroupItem>
 </template>
