@@ -1719,6 +1719,11 @@ def selected_paths(stats):
     return sorted((pa.get("carrier_kind"), pa.get("egress_device") or "") for pa in paths_of(stats) if pa.get("selected"))
 
 
+def sending_nics(stats):
+    """The NICs with a path in the sending set (a1 carries a direct and a punched path: both suffer its loss)."""
+    return {dev for _, dev in selected_paths(stats)}
+
+
 def path_identity(stats):
     """The direct and relay paths: they are the ones a selection change must leave alone. A native
     punch path may come and go by itself (a punch retires when a better path exists)."""
@@ -1832,19 +1837,19 @@ def s34_hot_selection(run, args):
     stop = time.time() + 120
     while time.time() < stop:
         run.payload("loss on a1", 2 << 20)
-        if ("udp-direct", "a1") not in selected_paths(a.stats()):
+        if "a1" not in sending_nics(a.stats()):
             break
     s, _ = grey("loss 20 %")
     run.check("loss 20 %: the lossy path stays out at the default threshold",
-              ("udp-direct", "a1") not in selected_paths(s), selected=selected_paths(s))
+              "a1" not in sending_nics(s), selected=selected_paths(s))
     a.mp_set(selection={"lossy_percent": 40})
     stop = time.time() + 120
     while time.time() < stop:
         run.payload("loss threshold 40", 2 << 20)
-        if ("udp-direct", "a1") in selected_paths(a.stats()):
+        if "a1" in sending_nics(a.stats()):
             break
     s, _ = grey("lossy threshold 40")
-    run.check("loss threshold 40: the path is back", ("udp-direct", "a1") in selected_paths(s),
+    run.check("loss threshold 40: the path is back", "a1" in sending_nics(s),
               selected=selected_paths(s))
     sh("tc", "qdisc", "replace", "dev", "ra1", "root", "netem", "delay", "10ms", ns="s3ra")
     sh("tc", "qdisc", "del", "dev", "a1", "root", ns="s3a", check=False)

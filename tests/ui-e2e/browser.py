@@ -40,6 +40,7 @@ OUT = pathlib.Path(args.out)
 SHOTS = OUT / "shots"
 SHOTS.mkdir(parents=True, exist_ok=True)
 CHECKS: list[dict] = []
+API_LOG: list[str] = []
 EVIDENCE: dict = {}
 INSTANCE = str(uuid.uuid4())
 
@@ -50,7 +51,8 @@ def check(name, ok, **detail):
 
 
 def save_report():
-    (OUT / "report.json").write_text(json.dumps({"checks": CHECKS, "evidence": EVIDENCE}, indent=1, default=str))
+    (OUT / "report.json").write_text(json.dumps({"checks": CHECKS, "evidence": EVIDENCE, "api_tail": API_LOG[-60:]},
+                                                 indent=1, default=str))
 
 
 # ---------------------------------------------------------------- the core, as the CLI sees it
@@ -142,7 +144,19 @@ def device_url(instance=None):
 
 def toast_and_undo(page, what, undo=True):
     toast = page.locator('[data-testid="mp-undo-toast"]')
-    toast.wait_for(state="visible", timeout=15000)
+    try:
+        toast.wait_for(state="visible", timeout=15000)
+    except Exception:
+        # Say what the page was doing: a picture, the visible toasts, the API calls so far.
+        page.screenshot(path=str(SHOTS / f"no-toast-{what.replace(' ', '_')}.png"), full_page=True)
+        EVIDENCE["no_toast"] = {
+            "what": what,
+            "toasts": page.locator(".p-toast-message").all_inner_texts(),
+            "shield_handles": page.locator('[data-testid="runway-shield"]').count(),
+            "busy": page.locator('[data-testid="path-runway"]').get_attribute("aria-busy"),
+            "api": API_LOG[-12:],
+        }
+        raise
     check(f"{what}: the page says it applied the change", True)
     if undo:
         page.locator('[data-testid="mp-undo"]').first.click()
@@ -175,6 +189,8 @@ def run() -> None:
         page = ctx.new_page()
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
+        page.on("response", lambda r: API_LOG.append(f"{r.request.method} {r.url.split('/api/v1')[-1]} {r.status}") if "/api/v1" in r.url else None)
 
         # ---- login through the page
         page.goto(f"{args.web}/#/auth")
