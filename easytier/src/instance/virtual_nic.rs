@@ -1485,6 +1485,7 @@ impl NicCtx {
                     continue;
                 }
                 let mtu = effective_nic_mtu(&global_ctx);
+                tracing::warn!(mtu, applied, pmtu = ?egress_pmtu(&global_ctx), dp = datagram_data_plane_enabled(&global_ctx.get_flags()), "DIAG mtu updater");
                 if mtu == applied || mtu == 0 {
                     continue;
                 }

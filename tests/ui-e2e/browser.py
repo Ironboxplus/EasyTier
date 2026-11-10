@@ -127,6 +127,8 @@ def wait_for(pred, secs=30, what="state"):
 # ---------------------------------------------------------------- the page
 
 def drag(page, locator, dx, dy):
+    # The runway ignores a pointer while a change is still being applied.
+    page.locator('[data-testid="path-runway"][aria-busy="false"]').wait_for(state="visible", timeout=30000)
     locator.scroll_into_view_if_needed()
     box = locator.bounding_box()
     cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
@@ -251,6 +253,8 @@ def run() -> None:
 
         # the relay dot into the primary lane, 30 px to the left, then undo
         relay = page.locator('[data-testid="runway-path"]:has(svg.lucide-waypoints) [data-testid="runway-dot"]').first
+        page.locator('[data-testid="path-runway"][aria-busy="false"]').wait_for(state="visible", timeout=30000)
+        relay.scroll_into_view_if_needed()
         lane = page.locator('[data-testid="runway-lane-primary"]').first.bounding_box()
         dot = relay.bounding_box()
         drag(page, relay, -30, lane["y"] + lane["height"] / 2 - (dot["y"] + dot["height"] / 2))
