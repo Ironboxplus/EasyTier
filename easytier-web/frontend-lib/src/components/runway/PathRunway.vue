@@ -282,7 +282,7 @@ const kindTier = (p: RunwayPath) => kindRuleValues(savedSelection.value, p.kind)
 
 <template>
   <TooltipProvider :delay-duration="200">
-    <section class="overflow-hidden rounded-2xl border border-zinc-200 bg-white text-zinc-900 shadow-sm" data-testid="path-runway">
+    <section class="overflow-hidden rounded-2xl border border-zinc-200 bg-white text-zinc-900 shadow-sm" data-testid="path-runway" :aria-busy="busy ? 'true' : 'false'">
       <!-- the peer: the origin of the runway -->
       <header class="flex items-center gap-3 border-b border-zinc-200 bg-gradient-to-b from-zinc-50 to-white px-4 py-3">
         <span class="grid size-9 shrink-0 place-items-center rounded-xl bg-zinc-900 text-white shadow-sm"><Monitor class="size-[18px]" /></span>

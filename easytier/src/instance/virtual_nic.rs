@@ -1485,7 +1485,7 @@ impl NicCtx {
                     continue;
                 }
                 let mtu = effective_nic_mtu(&global_ctx);
-                tracing::warn!(mtu, applied, pmtu = ?egress_pmtu(&global_ctx), dp = datagram_data_plane_enabled(&global_ctx.get_flags()), "DIAG mtu updater");
+                tracing::warn!(mtu, applied, pmtu = ?egress_pmtu(&global_ctx), dp = datagram_data_plane_enabled(&global_ctx.get_flags()), inv = ?global_ctx.get_egress_inventory().map(|i| i.snapshot().interfaces.values().map(|x| (x.platform_name.clone(), x.is_eligible, x.mtu, x.exclusion_reasons.clone())).collect::<Vec<_>>()), "DIAG mtu updater");
                 if mtu == applied || mtu == 0 {
                     continue;
                 }

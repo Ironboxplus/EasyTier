@@ -494,12 +494,14 @@ jobs:
           #   test_windows_set_primary_server: rewrites a real adapter's DNS.
           #   test_magic_dns_update_replaces_records_for_same_client: needs a
           #     TUN adapter (wintun driver).
+          #   test_magic_dns_server_instance: also needs the TUN adapter, and listens
+          #     on port 53 of it (WSAEACCES, os error 10013, on the runner).
           #   kernel_entry_connections_keep_a_fixed_buffer: asserts Linux
           #     socket buffer auto-tuning.
           #   bind_same_port: two sockets on one port (SO_REUSEPORT), not on Windows.
           #   hole_punching_symmetric_only_random, cone_hole_punch_registers_a_udp_carrier_in_one_mpquic_session: the NAT mock in
           #     connector/udp_hole_punch, which this branch does not touch.
-          skip='test(~faketcp_pingpong) | test(~ipv6_domain_pingpong) | test(~test_v6_hole_punch_packet) | test(~test_socket_addrs) | test(~test_windows_set_primary_server) | test(~test_magic_dns_update_replaces_records_for_same_client) | test(~kernel_entry_connections_keep_a_fixed_buffer) | test(~bind_same_port) | test(~hole_punching_symmetric_only_random) | test(~cone_hole_punch_registers_a_udp_carrier_in_one_mpquic_session)'
+          skip='test(~faketcp_pingpong) | test(~ipv6_domain_pingpong) | test(~test_v6_hole_punch_packet) | test(~test_socket_addrs) | test(~test_windows_set_primary_server) | test(~test_magic_dns_update_replaces_records_for_same_client) | test(~test_magic_dns_server_instance) | test(~kernel_entry_connections_keep_a_fixed_buffer) | test(~bind_same_port) | test(~hole_punching_symmetric_only_random) | test(~cone_hole_punch_registers_a_udp_carrier_in_one_mpquic_session)'
           cargo nextest run \
             --archive-file tests-windows.tar.zst \
             --workspace-remap "$(cygpath -m "$PWD")/et" \
