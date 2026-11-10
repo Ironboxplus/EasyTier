@@ -129,6 +129,8 @@ def wait_for(pred, secs=30, what="state"):
 def drag(page, locator, dx, dy):
     # The runway ignores a pointer while a change is still being applied.
     page.locator('[data-testid="path-runway"][aria-busy="false"]').wait_for(state="visible", timeout=30000)
+    # A toast left from the step before would pass for this step's: wait until none is shown.
+    page.locator(".p-toast-message").first.wait_for(state="detached", timeout=30000)
     locator.scroll_into_view_if_needed()
     box = locator.bounding_box()
     cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
@@ -193,7 +195,9 @@ def run() -> None:
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
-        page.on("response", lambda r: API_LOG.append(f"{r.request.method} {r.url.split('/api/v1')[-1]} {r.status}") if "/api/v1" in r.url else None)
+        page.on("response", lambda r: API_LOG.append(f"{r.request.method} {r.url.split('/api/v1')[-1]} {r.status}"
+                                                    + (f" {(r.request.post_data or '')[:300]}" if r.request.method == "PATCH" else ""))
+                if "/api/v1" in r.url else None)
 
         # ---- login through the page
         page.goto(f"{args.web}/#/auth")
