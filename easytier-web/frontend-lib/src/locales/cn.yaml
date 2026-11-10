@@ -241,6 +241,44 @@ mp_policy:
   pause_help: 暂停：停止在此路径发数据，保持验证
   exclude_help: 排除：永不使用此路径
   clear_help: 清除此路径的策略
+mp_live:
+  title: 多路径设置
+  hint: 在这里修改，立即作用于运行中的网络；每项标明何时生效。
+  applied: 已应用多路径设置
+  egress_limit: 网卡发送速率上限
+  sqm_enabled: 智能队列管理
+  sqm_target: 队列时延目标
+  data_plane: 数据报数据面
+  hole_mode: TCP 打洞方式
+  punch_attempts: 打洞尝试次数
+  punch_pps: 打洞每秒包数（0 为不限）
+  apply: 应用
+  discard: 放弃修改
+mp_restart:
+  title: 需要重启
+  message: "对 {0} 的修改要在网络重启后才生效。现在保存并重启？"
+  accept: 保存并重启
+  reject: 取消
+core_switches:
+  title: 核心开关
+  default_protocol: 默认协议
+  default_protocol_auto: 自动
+  multi_thread_count: 线程数
+  multi_thread_count_placeholder: 自动
+  disable_relay_kcp: 不经本机转发 KCP
+  disable_relay_quic: 不经本机转发 QUIC
+  relay_foreign_kcp: 为其他网络转发 KCP
+  relay_foreign_quic: 为其他网络转发 QUIC
+  foreign_relay_limit: 为其他网络转发的限速
+  unlimited: 不限
+  tld_dns_zone: 魔法 DNS 域名区域
+  ipv6: 静态 IPv6 地址
+  netns: 网络命名空间
+  tcp_whitelist: TCP 端口白名单
+  udp_whitelist: UDP 端口白名单
+  stun_servers: STUN 服务器
+  tcp_stun_servers: TCP STUN 服务器
+  stun_servers_v6: IPv6 STUN 服务器
 mp_runway:
   details: 路径明细
   undo: 撤销

@@ -448,7 +448,7 @@ async fn test_bidirect_rpc_manager() {
 
     let server_test_done = Arc::new(Notify::new());
     let server_test_done_clone = server_test_done.clone();
-    let mut tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:55443".parse().unwrap());
+    let mut tcp_listener = TcpTunnelListener::new("tcp://127.0.0.1:55443".parse().unwrap());
     let s_task = AbortOnDropHandle::new(tokio::spawn(async move {
         tcp_listener.listen().await.unwrap();
         let tunnel = tcp_listener.accept().await.unwrap();
@@ -476,7 +476,7 @@ async fn test_bidirect_rpc_manager() {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let mut tcp_connector = TcpTunnelConnector::new("tcp://0.0.0.0:55443".parse().unwrap());
+    let mut tcp_connector = TcpTunnelConnector::new("tcp://127.0.0.1:55443".parse().unwrap());
     let c_tunnel = tcp_connector.connect().await.unwrap();
     c.run_with_tunnel(c_tunnel);
 

@@ -9,6 +9,7 @@ import { ipv4InetToString, ipv4ToString, ipv6ToString, UuidToStr } from '../modu
 import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
 import NetworkChart from './NetworkChart.vue'
 import MpEgressPanel from './MpEgressPanel.vue'
+import MpLiveSettings, { type LiveChange } from './MpLiveSettings.vue'
 import MpRuntimePanel from './MpRuntimePanel.vue'
 import type { CongestionModel, MpConfig, MpPolicyAction, MpPolicyMatch } from '../types/mpConfig'
 
@@ -20,12 +21,15 @@ const props = defineProps<{
   mpBusy?: boolean,
   /** Saved MTU of the running instance, for the data plane's MTU recommendation. */
   mtu?: number | null,
+  /** Saved hole punch mode of the running instance. */
+  tcpHolePunchMode?: string | null,
 }>()
 
 const emit = defineEmits<{
   'mp-set-policy': [match: MpPolicyMatch, action: MpPolicyAction | null]
   'mp-reconnect': []
   'mp-edit': [label: string, update: (mp: MpConfig) => MpConfig]
+  'mp-live-apply': [label: string, change: LiveChange]
   'mp-apply-mtu': [mtu: number]
   'mp-set-congestion-control': [model: CongestionModel]
 }>()
@@ -494,6 +498,9 @@ function showEventLogs() {
 
       <template v-if="showEgressPanel">
         <MpEgressPanel :runtime="mpRuntime" :mp-config="mpConfig" :egress-wire-limit-bps="egressWireLimitBps" />
+        <MpLiveSettings v-if="mpConfig" :mp-config="mpConfig" :egress-wire-limit-bps="egressWireLimitBps"
+          :tcp-hole-punch-mode="tcpHolePunchMode" :busy="mpBusy" class="mt-3"
+          @apply="(label, change) => emit('mp-live-apply', label, change)" />
         <Divider />
       </template>
 

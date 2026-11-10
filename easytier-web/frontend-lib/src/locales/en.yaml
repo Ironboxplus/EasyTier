@@ -240,6 +240,44 @@ mp_policy:
   pause_help: Pause - stop data on this path, keep it validated
   exclude_help: Exclude - never use this path
   clear_help: Remove the policy for this path
+mp_live:
+  title: Multipath settings
+  hint: Edited here, applied to the running network at once; each field says when it takes effect.
+  applied: Multipath settings applied
+  egress_limit: Send rate limit of the network cards
+  sqm_enabled: Smart queue management
+  sqm_target: Queue delay target
+  data_plane: Datagram data plane
+  hole_mode: TCP hole punch mode
+  punch_attempts: Hole punch attempts
+  punch_pps: Hole punch packets per second (0 = unlimited)
+  apply: Apply
+  discard: Discard
+mp_restart:
+  title: Restart needed
+  message: "Changes to {0} only take effect when the network restarts. Save and restart now?"
+  accept: Save and restart
+  reject: Cancel
+core_switches:
+  title: Core switches
+  default_protocol: Default protocol
+  default_protocol_auto: Automatic
+  multi_thread_count: Thread count
+  multi_thread_count_placeholder: Automatic
+  disable_relay_kcp: Do not relay KCP through this node
+  disable_relay_quic: Do not relay QUIC through this node
+  relay_foreign_kcp: Relay KCP for other networks
+  relay_foreign_quic: Relay QUIC for other networks
+  foreign_relay_limit: Limit for relaying other networks
+  unlimited: Unlimited
+  tld_dns_zone: Magic DNS zone
+  ipv6: Static IPv6 address
+  netns: Network namespace
+  tcp_whitelist: TCP port whitelist
+  udp_whitelist: UDP port whitelist
+  stun_servers: STUN servers
+  tcp_stun_servers: TCP STUN servers
+  stun_servers_v6: IPv6 STUN servers
 mp_runway:
   details: Path details
   undo: Undo

@@ -118,7 +118,9 @@ vi.mock('primevue', async () => {
     Select: SelectStub,
     Tag: PassThrough,
     Toast: PassThrough,
-    useConfirm: () => ({ require: vi.fn() }),
+    ConfirmDialog: PassThrough,
+    // The restart prompt is accepted at once; other confirmations are only recorded.
+    useConfirm: () => ({ require: vi.fn((options: any) => { if (options?.group === 'restart') options.accept?.() }) }),
     useToast: () => ({ add: vi.fn(), remove: vi.fn() }),
   }
 })

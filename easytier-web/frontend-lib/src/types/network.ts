@@ -43,7 +43,7 @@ export {
 export type NetworkConfig = Omit<
   ProtoNetworkConfig,
   'instance_id' | 'instance_recv_bps_limit' | 'mtu' | 'networking_method' | 'mp' | 'tcp_hole_punch_mode'
-  | 'egress_wire_limit_bps'
+  | 'egress_wire_limit_bps' | 'foreign_relay_bps_limit'
 > & {
   instance_id: string
   mtu: number | null
@@ -55,6 +55,8 @@ export type NetworkConfig = Omit<
   tcp_hole_punch_mode?: TcpHolePunchMode | string | null
   /** Global MPQUIC egress wire limit in bits/s; null = unlimited. */
   egress_wire_limit_bps?: number | string | null
+  /** Bits/s allowed to relay for foreign networks; null = unlimited. */
+  foreign_relay_bps_limit?: number | string | null
 }
 
 const UINT64_MAX = (1n << 64n) - 1n
@@ -132,6 +134,12 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     mtu: null,
     instance_recv_bps_limit: null,
     egress_wire_limit_bps: null,
+    foreign_relay_bps_limit: null,
+    tcp_whitelist: [],
+    udp_whitelist: [],
+    stun_servers: [],
+    tcp_stun_servers: [],
+    stun_servers_v6: [],
     mapped_listeners: [],
     enable_magic_dns: false,
     enable_private_mode: false,
@@ -221,6 +229,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
     normalized.instance_recv_bps_limit as any,
   )
   normalized.egress_wire_limit_bps = normalizeUint64ForInput(rawEgressLimit)
+  normalized.foreign_relay_bps_limit = normalizeUint64ForInput((normalized as any).foreign_relay_bps_limit)
   normalized.mp = normalizeMpConfig(rawMp ?? (normalized as any).mp)
   normalized.tcp_hole_punch_mode = normalizeTcpHolePunchMode(rawHole ?? (normalized as any).tcp_hole_punch_mode)
 
@@ -236,6 +245,7 @@ export function toBackendNetworkConfig(config: NetworkConfig): NetworkConfig {
   applyNetworkingMethod(backend)
   backend.mtu = normalizeNumberForInput(config.mtu) ?? undefined
   backend.instance_recv_bps_limit = toBackendUint64(config.instance_recv_bps_limit)
+  ;(backend as any).foreign_relay_bps_limit = toBackendUint64(config.foreign_relay_bps_limit)
 
   const json = NetworkConfigPb.toJson(backend, {
     useProtoFieldName: true,

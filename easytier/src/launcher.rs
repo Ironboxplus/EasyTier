@@ -1749,6 +1749,7 @@ mod tests {
     fn test_network_config_without_the_new_fields_keeps_the_defaults() -> Result<(), anyhow::Error> {
         let generated = super::NetworkConfig {
             network_name: Some("demo".to_string()),
+            networking_method: Some(crate::proto::api::manage::NetworkingMethod::Standalone as i32),
             ..Default::default()
         }
         .gen_config()?;

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputText, Panel, Password, SelectButton, ToggleButton } from 'primevue'
+import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputText, Panel, Password, Select, SelectButton, ToggleButton } from 'primevue'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import {
@@ -14,6 +14,7 @@ import { useI18n } from 'vue-i18n'
 import AclManager from './acl/AclManager.vue'
 import UrlListInput from './UrlListInput.vue'
 import MpConfigPanel from './MpConfigPanel.vue'
+import MpEffectBadge from './MpEffectBadge.vue'
 import { DEFAULT_MP_CONFIG, normalizeMpConfig, normalizeTcpHolePunchMode } from '../types/mpConfig'
 
 const props = defineProps<{
@@ -109,6 +110,7 @@ const bool_flags: BoolFlag[] = [
 ]
 
 const portForwardProtocolOptions = ref(["tcp", "udp"]);
+const defaultProtocolOptions = ['tcp', 'udp', 'ws', 'wss', 'quic', 'wg'];
 
 const editingPortForward = ref(false);
 const editingPortForwardIndex = ref(-1);
@@ -452,6 +454,87 @@ const instanceRecvBpsLimitInput = computed<string>({
                 </div>
               </div>
 
+            </div>
+          </Panel>
+
+          <Divider />
+
+          <!-- Core switches that used to live only in the TOML file. Each says when an edit takes effect. -->
+          <Panel :header="t('core_switches.title')" toggleable collapsed>
+            <div class="flex flex-col gap-y-3" data-testid="core-switches">
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="default_protocol">{{ t('core_switches.default_protocol') }}<MpEffectBadge field="default_protocol" /></label>
+                  <Select id="default_protocol" v-model="curNetwork.default_protocol" :options="defaultProtocolOptions" show-clear
+                    :placeholder="t('core_switches.default_protocol_auto')" />
+                </div>
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="multi_thread_count">{{ t('core_switches.multi_thread_count') }}<MpEffectBadge field="multi_thread_count" /></label>
+                  <InputNumber id="multi_thread_count" v-model="curNetwork.multi_thread_count" :min="1" :max="256" :format="false"
+                    :placeholder="t('core_switches.multi_thread_count_placeholder')" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <label class="flex items-center gap-2"><Checkbox v-model="curNetwork.disable_relay_kcp" binary />{{ t('core_switches.disable_relay_kcp') }}<MpEffectBadge field="disable_relay_kcp" /></label>
+                <label class="flex items-center gap-2"><Checkbox v-model="curNetwork.disable_relay_quic" binary />{{ t('core_switches.disable_relay_quic') }}<MpEffectBadge field="disable_relay_quic" /></label>
+                <label class="flex items-center gap-2"><Checkbox v-model="curNetwork.enable_relay_foreign_network_kcp" binary />{{ t('core_switches.relay_foreign_kcp') }}<MpEffectBadge field="enable_relay_foreign_network_kcp" /></label>
+                <label class="flex items-center gap-2"><Checkbox v-model="curNetwork.enable_relay_foreign_network_quic" binary />{{ t('core_switches.relay_foreign_quic') }}<MpEffectBadge field="enable_relay_foreign_network_quic" /></label>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="foreign_relay_bps_limit">{{ t('core_switches.foreign_relay_limit') }}<MpEffectBadge field="foreign_relay_bps_limit" /></label>
+                  <InputNumber id="foreign_relay_bps_limit" v-model="curNetwork.foreign_relay_bps_limit as number | null" :min="0" :format="false"
+                    suffix=" bps" :placeholder="t('core_switches.unlimited')" fluid />
+                </div>
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="tld_dns_zone">{{ t('core_switches.tld_dns_zone') }}<MpEffectBadge field="tld_dns_zone" /></label>
+                  <InputText id="tld_dns_zone" v-model="curNetwork.tld_dns_zone" placeholder="et.net." />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="ipv6_addr">{{ t('core_switches.ipv6') }}<MpEffectBadge field="ipv6" /></label>
+                  <InputText id="ipv6_addr" v-model="curNetwork.ipv6" placeholder="fd00::2/64" />
+                </div>
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="netns">{{ t('core_switches.netns') }}<MpEffectBadge field="netns" /></label>
+                  <InputText id="netns" v-model="curNetwork.netns" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="tcp_whitelist">{{ t('core_switches.tcp_whitelist') }}<MpEffectBadge field="tcp_whitelist" /></label>
+                  <AutoComplete id="tcp_whitelist" v-model="curNetwork.tcp_whitelist" :placeholder="t('chips_placeholder', ['80,8000-8100'])" multiple fluid
+                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
+                </div>
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="udp_whitelist">{{ t('core_switches.udp_whitelist') }}<MpEffectBadge field="udp_whitelist" /></label>
+                  <AutoComplete id="udp_whitelist" v-model="curNetwork.udp_whitelist" :placeholder="t('chips_placeholder', ['53'])" multiple fluid
+                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-3/12 grow">
+                  <label class="flex items-center gap-2" for="stun_servers">{{ t('core_switches.stun_servers') }}<MpEffectBadge field="stun_servers" /></label>
+                  <AutoComplete id="stun_servers" v-model="curNetwork.stun_servers" :placeholder="t('chips_placeholder', ['stun.example.org:3478'])" multiple fluid
+                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
+                </div>
+                <div class="flex flex-col gap-2 basis-3/12 grow">
+                  <label class="flex items-center gap-2" for="tcp_stun_servers">{{ t('core_switches.tcp_stun_servers') }}<MpEffectBadge field="tcp_stun_servers" /></label>
+                  <AutoComplete id="tcp_stun_servers" v-model="curNetwork.tcp_stun_servers" :placeholder="t('chips_placeholder', ['stun.example.org:3478'])" multiple fluid
+                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
+                </div>
+                <div class="flex flex-col gap-2 basis-3/12 grow">
+                  <label class="flex items-center gap-2" for="stun_servers_v6">{{ t('core_switches.stun_servers_v6') }}<MpEffectBadge field="stun_servers_v6" /></label>
+                  <AutoComplete id="stun_servers_v6" v-model="curNetwork.stun_servers_v6" :placeholder="t('chips_placeholder', ['stun6.example.org:3478'])" multiple fluid
+                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
+                </div>
+              </div>
             </div>
           </Panel>
 

@@ -783,7 +783,7 @@ impl stack::Tun for LinuxBpfTun {
         message.msg_name = &mut addr as *mut _ as *mut libc::c_void;
         message.msg_namelen = mem::size_of_val(&addr) as u32;
         message.msg_iov = vectors.as_mut_ptr();
-        message.msg_iovlen = vectors.len();
+        message.msg_iovlen = vectors.len() as _;
         let ret = unsafe { libc::sendmsg(self.fd.as_ref().as_raw_fd(), &message, 0) };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());

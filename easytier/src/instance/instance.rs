@@ -2237,6 +2237,9 @@ mod tests {
         }
     }
 
+    // The provider role exists on Linux only; elsewhere it is refused before
+    // the prefix is looked at (see the test below this one).
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn validate_public_ipv6_patch_rejects_non_global_prefix() {
         let global_ctx = get_mock_global_ctx();
@@ -2253,6 +2256,22 @@ mod tests {
             err.to_string()
                 .contains("not a valid global unicast IPv6 prefix")
         );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[tokio::test]
+    async fn validate_public_ipv6_patch_refuses_the_provider_role_off_linux() {
+        let global_ctx = get_mock_global_ctx();
+        let patch = InstanceConfigPatch {
+            ipv6_public_addr_provider: Some(true),
+            ipv6_public_addr_prefix: Some("2001:db8:100::/64".to_string()),
+            ..Default::default()
+        };
+
+        let err =
+            InstanceConfigPatcher::validate_public_ipv6_patch(&global_ctx, &patch).unwrap_err();
+
+        assert!(err.to_string().contains("requires Linux"));
     }
 
     #[test]
@@ -2670,6 +2689,7 @@ mod tests {
         assert!(InstanceConfigPatcher::validate_public_ipv6_patch(&global_ctx, &patch).is_ok());
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn validate_public_ipv6_patch_ignores_runtime_auto_ipv6_cache() {
         let global_ctx = get_mock_global_ctx();

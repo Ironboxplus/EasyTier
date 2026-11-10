@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, Toast, useConfirm, useToast, type VirtualScrollerLazyEvent } from 'primevue';
+import { Button, ConfirmDialog, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, Toast, useConfirm, useToast, type VirtualScrollerLazyEvent } from 'primevue';
 import { computed, onMounted, onUnmounted, Ref, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import * as Api from '../modules/api';
 import * as Utils from '../modules/utils';
 import * as NetworkTypes from '../types/network';
 import { type MenuItem } from 'primevue/menuitem';
-import { buildHotPatch, mpPatch } from '../modules/mpPatch';
+import { buildHotPatch, mpPatch, planConfigChange } from '../modules/mpPatch';
+import type { LiveChange } from './MpLiveSettings.vue';
 import {
     applyCongestionModelToMpConfig,
     DEFAULT_MP_CONFIG,
@@ -289,30 +290,76 @@ const updateRunningMp = async (update: (mp: NetworkTypes.MpConfig) => NetworkTyp
     }
 }
 
-// Every edit made on the path runway applies at once; the toast offers to put the previous MpConfig back.
-const onMpEdit = async (label: string, update: (mp: MpConfig) => MpConfig) => {
-    let previous: MpConfig | null = null;
-    const applied = await updateRunningMp((mp) => {
-        previous = mp;
-        return update(mp);
-    });
-    if (applied && previous) {
+// Every live edit (the path runway, the MP settings card) applies at once as one hot patch; the toast
+// offers to put the previous values back.
+interface UndoState {
+    mp?: MpConfig;
+    flags?: { egress_wire_limit_bps?: string; tcp_hole_punch_mode?: string };
+}
+const undoable = new Map<string, UndoState>();
+let undoSeq = 0;
+
+const applyLive = async (label: string, change: LiveChange) => {
+    const instId = selectedInstanceId.value?.uuid;
+    if (!instId || mpPatchBusy.value || !props.api.patch_network_config) {
+        return;
+    }
+    mpPatchBusy.value = true;
+    try {
+        if (!runningConfig.value || runningConfigInstId.value !== instId) {
+            await loadRunningConfig(instId);
+        }
+        const base = runningConfig.value;
+        if (!base) {
+            return;
+        }
+        const previousMp = normalizeMpConfig(base.mp ?? DEFAULT_MP_CONFIG());
+        const patch: Api.InstanceConfigPatch = {};
+        const undo: UndoState = {};
+        if (change.mp) {
+            patch.mp = normalizeMpConfig(change.mp(previousMp));
+            undo.mp = previousMp;
+        }
+        if (change.flags?.egress_wire_limit_bps !== undefined) {
+            patch.egress_wire_limit_bps = String(change.flags.egress_wire_limit_bps);
+            undo.flags = { ...undo.flags, egress_wire_limit_bps: String(base.egress_wire_limit_bps ?? 0) };
+        }
+        if (change.flags?.tcp_hole_punch_mode !== undefined) {
+            patch.tcp_hole_punch_mode = change.flags.tcp_hole_punch_mode;
+            undo.flags = { ...undo.flags, tcp_hole_punch_mode: String(base.tcp_hole_punch_mode ?? 'auto') };
+        }
+        await applyHotPatch(instId, patch);
         const id = `mp-undo-${++undoSeq}`;
-        undoable.set(id, previous);
+        undoable.set(id, undo);
         toast.add({ severity: 'success', summary: label, detail: id, group: 'mp-undo', life: 6000 });
+    } catch (e: any) {
+        console.error(e);
+        toast.add({ severity: 'error', summary: 'Error', detail: t('mp_patch_failed') + ': ' + JSON.stringify(e.response?.data ?? e), life: 3000 });
+    } finally {
+        mpPatchBusy.value = false;
     }
 };
 
-const undoable = new Map<string, MpConfig>();
-let undoSeq = 0;
+const onMpEdit = (label: string, update: (mp: MpConfig) => MpConfig) => applyLive(label, { mp: update });
 
 const undoMpEdit = async (message: { detail?: unknown }) => {
     const id = String(message.detail ?? '');
-    const previous = undoable.get(id);
+    const undo = undoable.get(id);
     undoable.delete(id);
     toast.remove(message as any);
-    if (previous) {
-        await updateRunningMp(() => previous);
+    if (!undo) {
+        return;
+    }
+    const instId = selectedInstanceId.value?.uuid;
+    if (!instId || !props.api.patch_network_config) {
+        return;
+    }
+    const patch: Api.InstanceConfigPatch = { ...(undo.mp ? { mp: undo.mp } : {}), ...undo.flags };
+    try {
+        await applyHotPatch(instId, patch);
+    } catch (e: any) {
+        console.error(e);
+        toast.add({ severity: 'error', summary: 'Error', detail: t('mp_patch_failed') + ': ' + JSON.stringify(e.response?.data ?? e), life: 3000 });
     }
 };
 
@@ -360,7 +407,29 @@ const onMpApplyMtu = async (mtu: number) => {
     }
 }
 
-const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
+// Changes that only take effect when the instance starts again are asked for once, with their names.
+const askRestart = (cfg: NetworkTypes.NetworkConfig): boolean => {
+    const base = runningConfig.value;
+    if (networkIsDisabled.value || !isRunning(cfg.instance_id) || !base || runningConfigInstId.value !== cfg.instance_id) {
+        return false;
+    }
+    const fields = planConfigChange(base, cfg).restartFields;
+    if (fields.length === 0) {
+        return false;
+    }
+    confirm.require({
+        group: 'restart',
+        header: t('mp_restart.title'),
+        message: t('mp_restart.message', [fields.join(', ')]),
+        icon: 'pi pi-refresh',
+        acceptProps: { label: t('mp_restart.accept') },
+        rejectProps: { label: t('mp_restart.reject'), severity: 'secondary', text: true },
+        accept: () => saveAndRunNewNetwork(cfg, true),
+    });
+    return true;
+}
+
+const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig, restartConfirmed = false) => {
     const cfg = config ?? currentNetworkConfig.value;
     if (!cfg) {
         return;
@@ -375,6 +444,9 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
         if (await tryHotApply(cfg)) {
             isEditingNetwork.value = false;
             await loadCurrentNetworkInfo();
+            return;
+        }
+        if (!restartConfirmed && askRestart(cfg)) {
             return;
         }
         if (networkIsDisabled.value) {
@@ -738,8 +810,8 @@ onUnmounted(() => {
 
                 <Status v-if="(curNetworkInfo?.error_msg ?? '') === ''" v-bind:cur-network-inst="curNetworkInfo"
                     :mp-config="runningConfig?.mp" :egress-wire-limit-bps="runningConfig?.egress_wire_limit_bps"
-                    :mp-busy="mpPatchBusy" :mtu="runningConfig?.mtu" class="mb-4" @mp-set-policy="onMpSetPolicy"
-                    @mp-reconnect="onMpReconnect" @mp-edit="onMpEdit" @mp-set-congestion-control="onMpSetCongestionControl" @mp-apply-mtu="onMpApplyMtu">
+                    :mp-busy="mpPatchBusy" :mtu="runningConfig?.mtu" :tcp-hole-punch-mode="runningConfig?.tcp_hole_punch_mode" class="mb-4" @mp-set-policy="onMpSetPolicy"
+                    @mp-reconnect="onMpReconnect" @mp-edit="onMpEdit" @mp-live-apply="applyLive" @mp-set-congestion-control="onMpSetCongestionControl" @mp-apply-mtu="onMpApplyMtu">
                 </Status>
                 <Message v-else severity="error" class="mb-4">{{ curNetworkInfo?.error_msg }}</Message>
 
@@ -769,6 +841,8 @@ onUnmounted(() => {
 
         <ConfigEditDialog v-model:visible="showConfigEditDialog" :cur-network="currentNetworkConfig"
             :generate-config="generateConfig" :save-config="syncTomlConfig" />
+
+        <ConfirmDialog group="restart" />
 
         <Toast group="mp-undo" position="bottom-center" data-testid="mp-undo-toast">
             <template #message="{ message }">

@@ -58,6 +58,10 @@ const BOOLEAN_CONFIG_FIELDS = [
   'disable_relay_data',
   'enable_udp_broadcast_relay',
   'disable_tcp_hole_punching',
+  'disable_relay_kcp',
+  'disable_relay_quic',
+  'enable_relay_foreign_network_kcp',
+  'enable_relay_foreign_network_quic',
 ]
 
 function readGeneratedNetworkConfigFields() {
@@ -229,6 +233,21 @@ function allFieldFixture() {
     disable_relay_data: true,
     enable_udp_broadcast_relay: true,
     socket_mark: 1234,
+    tld_dns_zone: 'fixture.net.',
+    default_protocol: 'quic',
+    disable_relay_kcp: true,
+    disable_relay_quic: true,
+    foreign_relay_bps_limit: '9007199254740997',
+    multi_thread_count: 6,
+    enable_relay_foreign_network_kcp: true,
+    enable_relay_foreign_network_quic: true,
+    ipv6: 'fd00::2/64',
+    netns: 'fixture-ns',
+    tcp_whitelist: ['80', '8000-8100'],
+    udp_whitelist: ['53'],
+    stun_servers: ['stun.example.org:3478'],
+    tcp_stun_servers: ['stun.example.org:3478'],
+    stun_servers_v6: ['stun6.example.org:3478'],
   }
 }
 
@@ -272,6 +291,10 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.acl.acl_v1.chains[0].rules[0].action, 'Allow')
   assert.equal(backend.port_forwards[1].proto, 'udp')
   assert.equal(backend.socket_mark, 1234)
+  assert.equal(backend.foreign_relay_bps_limit, '9007199254740997')
+  assert.equal(backend.multi_thread_count, 6)
+  assert.equal(backend.ipv6, 'fd00::2/64')
+  assert.deepEqual(backend.stun_servers_v6, ['stun6.example.org:3478'])
 }
 
 function assertBooleanFieldValuesPreserved() {
