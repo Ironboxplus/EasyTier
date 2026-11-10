@@ -265,6 +265,23 @@ describe('PathRunway', () => {
     wrapper.unmount()
   })
 
+  // A dot dragged into the other lane is redrawn by another element: the one that took the pointer
+  // never sees the release, so the release is heard on the window.
+  it('a dot released away from its own element still ends the drag', async () => {
+    const { wrapper, mpConfig } = mountRunway()
+    const axis = runwayAxis(WIDTH)
+    const v6Dot = wrapper.find('[data-testid="runway-lane-primary"]').findAll('[data-testid="runway-dot"]')[1]
+    await v6Dot.trigger('pointerdown', { clientX: axis.x(10.1), clientY: 0, button: 0 })
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: axis.x(13.1), clientY: 0 }))
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: axis.x(13.1), clientY: 0 }))
+    await wrapper.vm.$nextTick()
+    const [, update] = lastEdit(wrapper)
+    expect(update(mpConfig).selection.kind_rules).toEqual([
+      { carrier_kind: 'udp-direct', ip_family: 'v6', tier: 'primary', rtt_bias_ms: 0 },
+    ])
+    wrapper.unmount()
+  })
+
   it('a click on a dot opens its detail instead of editing', async () => {
     const { wrapper } = mountRunway()
     const dot = wrapper.find('[data-testid="runway-dot"]')

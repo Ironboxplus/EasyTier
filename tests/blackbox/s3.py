@@ -1098,6 +1098,7 @@ def s32_multi_egress(run, args):
         st = run.wait_mp(a, lambda s: len({pa.get("egress_device") for pa in paths_of(s)
                                            if is_validated(pa)} - {"", None}) >= nics,
                          what=f"paths on {nics} NICs", secs=120)
+        first = path_bytes(a.stats())
         run.payload(f"{nics} nics", 32 << 20)
         # Unselected paths are on standby and get measured one at a time by a 3 s probe under
         # load before the optimizer can pick them: judge the bytes over a 15 s bulk run.
@@ -1110,7 +1111,10 @@ def s32_multi_egress(run, args):
         run.evidence[f"nics{nics}"] = {"before": {str(k): v for k, v in before.items()},
                                        "after": {str(k): v for k, v in after.items()}}
         for i in range(1, nics + 1):
-            grew = [k for k in after if k[0] == f"a{i}" and after[k] > before.get(k, 0)]
+            # Over the whole run (payload and bulk): the unacked check may take a path out of the set for
+            # a moment when a busy runner delays its acknowledgements (it is back on the next ack), so a
+            # window of 15 s alone can miss a path that carried the payload. Probes are kilobytes: 1 MiB.
+            grew = [k for k in after if k[0] == f"a{i}" and after[k] > first.get(k, 0) + (1 << 20)]
             run.check(f"{nics} nics: a{i} path carries bytes", grew)
         run.check(f"{nics} nics: relay-next-hop path present", any("relay" in k for k in kinds), kinds=kinds)
         run.check(f"{nics} nics: punched handoff path present", any("punch" in k for k in kinds), kinds=kinds)

@@ -152,6 +152,22 @@ function pathDown(e: PointerEvent, p: RunwayPath) {
   if (e.button !== 0 || props.busy) return
   capture(e)
   drag.value = { key: p.key, kind: p.kind, x0: x(p.biasedMs), cx0: e.clientX, rttMs: p.rttMs, moved: false }
+  // A dot dragged into the other lane is drawn by another element: the one holding the pointer
+  // capture is removed and never sees the release. The window does.
+  const end = (ev: PointerEvent) => {
+    window.removeEventListener('pointermove', pathMove)
+    window.removeEventListener('pointerup', end)
+    window.removeEventListener('pointercancel', end)
+    if (ev.type === 'pointercancel') cancelDrag()
+    else pathUp(p)
+  }
+  window.addEventListener('pointermove', pathMove)
+  window.addEventListener('pointerup', end)
+  window.addEventListener('pointercancel', end)
+}
+function cancelDrag() {
+  drag.value = null
+  draft.value = null
 }
 function pathMove(e: PointerEvent) {
   const d = drag.value
