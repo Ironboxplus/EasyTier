@@ -247,6 +247,9 @@ pub struct VirtualNic {
 
     ifname: Option<String>,
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
+    /// The MTU the interface was last given: the MTU updater compares against what the
+    /// device has, not against what the inventory says now.
+    applied_mtu: u32,
 }
 
 impl Drop for VirtualNic {
@@ -273,6 +276,7 @@ impl VirtualNic {
             global_ctx,
             ifname: None,
             ifcfg: Box::new(IfConfiger {}),
+            applied_mtu: 0,
         }
     }
 
@@ -677,6 +681,7 @@ impl VirtualNic {
             let _g = self.global_ctx.net_ns.guard();
             self.ifcfg.set_mtu(ifname.as_str(), mtu_in_config).await?;
         }
+        self.applied_mtu = mtu_in_config;
 
         let has_packet_info = cfg!(all(target_os = "macos", not(feature = "macos-ne")));
         let (a, b) = BiLock::new(dev);
@@ -1458,7 +1463,10 @@ impl NicCtx {
         let nic = self.nic.clone();
         let mut event_receiver = global_ctx.subscribe();
         self.tasks.spawn(async move {
-            let mut applied = effective_nic_mtu(&global_ctx);
+            let mut applied = match nic.lock().await.applied_mtu {
+                0 => effective_nic_mtu(&global_ctx),
+                built => built,
+            };
             let mut tick = tokio::time::interval(Duration::from_secs(15));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
