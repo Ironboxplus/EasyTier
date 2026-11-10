@@ -479,17 +479,19 @@ jobs:
           cargo nextest run             --archive-file tests-windows.tar.zst             --workspace-remap "$(cygpath -m "$PWD")/et"             --partition "hash:${{ matrix.shard }}/8"             -E '${{ needs.plan.outputs.filter }}'             --test-threads 1 --no-fail-fast --no-tests pass
 
   # Linux binaries: easytier-core and easytier-cli, static musl builds with
-  # the features of the Windows CLI, for x86_64 and (on an arm runner) aarch64.
+  # the features of the Windows CLI, for x86_64 and aarch64. Zig is the C and
+  # C++ cross compiler (TQUIC builds BoringSSL with CMake, which needs a musl
+  # C++ toolchain that no distribution package provides).
   linux:
     name: linux (${{ matrix.arch }})
     needs: plan
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, runner: ubuntu-latest, target: x86_64-unknown-linux-musl }
-          - { arch: aarch64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { arch: x86_64, target: x86_64-unknown-linux-musl }
+          - { arch: aarch64, target: aarch64-unknown-linux-musl }
     steps:
       - uses: actions/checkout@v5
         with:
@@ -507,8 +509,12 @@ jobs:
           path: vendor/netwatcher
       - run: |
           sudo apt-get update
-          sudo apt-get install -qqy build-essential musl-tools cmake clang pkg-config
+          sudo apt-get install -qqy build-essential cmake clang pkg-config
           mkdir -p et/easytier-gui/dist
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - uses: taiki-e/install-action@cargo-zigbuild
       - uses: arduino/setup-protoc@v3
         with:
           version: "35.1"
@@ -525,7 +531,7 @@ jobs:
           key: linux-${{ matrix.arch }}
       - name: Build
         working-directory: et
-        run: cargo build --locked --release --target ${{ matrix.target }} -p easytier --features mpquic,faketcp,mimalloc --bin easytier-core --bin easytier-cli
+        run: cargo zigbuild --locked --release --target ${{ matrix.target }} -p easytier --features mpquic,faketcp,mimalloc --bin easytier-core --bin easytier-cli
       - name: Collect
         run: |
           mkdir out
@@ -559,7 +565,7 @@ jobs:
           path: vendor/netwatcher
       - run: |
           sudo apt-get update
-          sudo apt-get install -qqy build-essential cmake clang libssl-dev pkg-config libwebkit2gtk-4.1-dev             libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev             patchelf libfuse2 xdg-utils
+          sudo apt-get install -qqy build-essential mold cmake clang libssl-dev pkg-config libwebkit2gtk-4.1-dev             libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev             patchelf libfuse2 xdg-utils
       - uses: arduino/setup-protoc@v3
         with:
           version: "35.1"
