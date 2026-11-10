@@ -1089,8 +1089,11 @@ def s32_multi_egress(run, args):
     """S3.2: 2 and 3 NICs via udp-direct/relay-next-hop each carry a path, plus a punched handoff path;
     one session, bidirectional payload, every NIC path has bytes."""
     for nics in [2, 3]:
-        # One active path per NIC: kmax must cover every NIC for each to carry the bulk run.
-        _, a, b = pair(run, "direct", nics=nics, mp_extra={"kmax": nics})
+        # The sending set is the kmax best paths, whatever their NIC: NIC 1 also has a second direct path
+        # and a punched one, whose RTTs differ from a2/a3 by tens of microseconds, so a kmax of `nics`
+        # may fill with NIC 1's paths and leave another NIC to the occasional probe (flaky on main
+        # too: 2 of 8 runs). kmax covers every path that can come up (nics + 2), so each NIC's path sends.
+        _, a, b = pair(run, "direct", nics=nics, mp_extra={"kmax": nics + 2})
         run.wait_ping("s3a", B_VIP)
         st = run.wait_mp(a, lambda s: len({pa.get("egress_device") for pa in paths_of(s)
                                            if is_validated(pa)} - {"", None}) >= nics,
