@@ -1818,7 +1818,9 @@ def s34_hot_selection(run, args):
 
     # Rules removed: the relay is the backup tier again, a direct path sends.
     a.mp_set(selection={"kind_rules": [], "switch_min_ms": 0})
-    run.wait_mp(a, lambda st: [k for k, _ in selected_paths(st)] == ["udp-direct"], secs=30,
+    # A native punch path that joined meanwhile is a direct path too: the relay must stop sending.
+    run.wait_mp(a, lambda st: (lambda kinds: kinds and set(kinds) <= {"udp-direct", "udp-punch"})(
+                    [k for k, _ in selected_paths(st)]), secs=30,
                 what="direct paths back after the rules are removed")
     grey("rules removed")
 
