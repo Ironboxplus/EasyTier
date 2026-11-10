@@ -4,6 +4,7 @@ import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import {
   addRow,
+  CompressionAlgoPb,
   DEFAULT_NETWORK_CONFIG,
   NetworkConfig,
   normalizeNetworkConfig,
@@ -111,6 +112,17 @@ const bool_flags: BoolFlag[] = [
 
 const portForwardProtocolOptions = ref(["tcp", "udp"]);
 const defaultProtocolOptions = ['tcp', 'udp', 'ws', 'wss', 'quic', 'wg'];
+const encryptionAlgorithmOptions = ['aes-gcm', 'aes-gcm-256', 'chacha20', 'xor', 'openssl-aes128-gcm', 'openssl-aes256-gcm', 'openssl-chacha20']
+const compressionOptions = [
+  { label: 'None', value: CompressionAlgoPb.None },
+  { label: 'Zstd', value: CompressionAlgoPb.Zstd },
+]
+const secureModeEnabled = computed({
+  get: () => curNetwork.value.secure_mode?.enabled === true,
+  set: (value: boolean) => {
+    curNetwork.value.secure_mode = value ? { enabled: true } : undefined
+  },
+})
 
 const editingPortForward = ref(false);
 const editingPortForwardIndex = ref(-1);
@@ -454,6 +466,47 @@ const instanceRecvBpsLimitInput = computed<string>({
                 </div>
               </div>
 
+            </div>
+          </Panel>
+
+          <Divider />
+
+          <!-- Encryption, compression, identity and the public IPv6 address. Each says when an edit takes effect. -->
+          <Panel :header="t('security_settings.title')" toggleable collapsed>
+            <div class="flex flex-col gap-y-3" data-testid="security-settings">
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <label class="flex items-center gap-2"><Checkbox v-model="secureModeEnabled" binary input-id="secure_mode" />{{ t('security_settings.secure_mode') }}<MpEffectBadge field="secure_mode" /></label>
+                <label class="flex items-center gap-2"><Checkbox v-model="curNetwork.ipv6_public_addr_provider" binary />{{ t('security_settings.ipv6_provider') }}<MpEffectBadge field="ipv6_public_addr_provider" /></label>
+                <label class="flex items-center gap-2"><Checkbox v-model="curNetwork.disable_relay_data" binary />{{ t('security_settings.disable_relay_data') }}<MpEffectBadge field="disable_relay_data" /></label>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="encryption_algorithm">{{ t('security_settings.encryption_algorithm') }}<MpEffectBadge field="encryption_algorithm" /></label>
+                  <Select id="encryption_algorithm" v-model="curNetwork.encryption_algorithm" :options="encryptionAlgorithmOptions" show-clear
+                    :placeholder="t('security_settings.default')" />
+                </div>
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="data_compress_algo">{{ t('security_settings.compression') }}<MpEffectBadge field="data_compress_algo" /></label>
+                  <Select id="data_compress_algo" v-model="curNetwork.data_compress_algo" :options="compressionOptions"
+                    option-label="label" option-value="value" show-clear :placeholder="t('security_settings.default')" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="credential_file">{{ t('security_settings.credential_file') }}<MpEffectBadge field="credential_file" /></label>
+                  <InputText id="credential_file" v-model="curNetwork.credential_file" />
+                </div>
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="ipv6_public_addr_prefix">{{ t('security_settings.ipv6_prefix') }}<MpEffectBadge field="ipv6_public_addr_prefix" /></label>
+                  <InputText id="ipv6_public_addr_prefix" v-model="curNetwork.ipv6_public_addr_prefix" placeholder="2001:db8::/64" />
+                </div>
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label class="flex items-center gap-2" for="socket_mark">{{ t('security_settings.socket_mark') }}<MpEffectBadge field="socket_mark" /></label>
+                  <InputNumber id="socket_mark" v-model="curNetwork.socket_mark" :min="0" :format="false" fluid />
+                </div>
+              </div>
             </div>
           </Panel>
 

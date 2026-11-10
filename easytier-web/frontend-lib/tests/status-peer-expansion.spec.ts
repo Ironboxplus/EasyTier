@@ -1,4 +1,4 @@
-// Status.vue rebuilds the peer list on top of the upstream DataTable: every row
+// Status.vue lists the peers with PeerList: every row
 // is clickable and expands (accordion-style) to that peer's MP info, reusing
 // MpRuntimePanel filtered by peer_id instead of a separate standalone MP card.
 import { mount } from '@vue/test-utils'

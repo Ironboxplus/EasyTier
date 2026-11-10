@@ -258,6 +258,17 @@ mp_restart:
   message: "Changes to {0} only take effect when the network restarts. Save and restart now?"
   accept: Save and restart
   reject: Cancel
+security_settings:
+  title: Encryption and security
+  secure_mode: Secure mode
+  ipv6_provider: Offer a public IPv6 prefix to peers
+  disable_relay_data: Do not relay data for other nodes
+  encryption_algorithm: Encryption algorithm
+  compression: Compression algorithm
+  default: Default
+  credential_file: Credential file
+  ipv6_prefix: Public IPv6 prefix
+  socket_mark: Socket mark
 core_switches:
   title: Core switches
   default_protocol: Default protocol

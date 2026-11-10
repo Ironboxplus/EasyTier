@@ -1699,8 +1699,10 @@ def selected_paths(stats):
 
 
 def path_identity(stats):
+    """The direct and relay paths: they are the ones a selection change must leave alone. A native
+    punch path may come and go by itself (a punch retires when a better path exists)."""
     return {(str((pa.get("path") or {}).get("carrier_id")), (pa.get("path") or {}).get("local_addr"),
-             (pa.get("path") or {}).get("remote_addr")) for pa in paths_of(stats)}
+             (pa.get("path") or {}).get("remote_addr")) for pa in paths_of(stats) if not kind_is(pa, "punch")}
 
 
 def s34_hot_selection(run, args):

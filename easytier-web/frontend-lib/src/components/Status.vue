@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { useElementSize, useTimeAgo } from '@vueuse/core'
+import { useTimeAgo } from '@vueuse/core'
 import { IPv4 } from 'ip-num/IPNumber'
 import { NetworkInstance, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { AnimatePresence, motion } from 'motion-v'
 import { ipv4InetToString, ipv4ToString, ipv6ToString, UuidToStr } from '../modules/utils';
-import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
+import { Badge, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
 import NetworkChart from './NetworkChart.vue'
+import PeerList, { type PeerRow } from './PeerList.vue'
 import MpEgressPanel from './MpEgressPanel.vue'
 import MpLiveSettings, { type LiveChange } from './MpLiveSettings.vue'
 import MpRuntimePanel from './MpRuntimePanel.vue'
@@ -37,10 +38,6 @@ const emit = defineEmits<{
 const mpRuntime = computed(() => props.curNetworkInst?.detail?.mp_runtime ?? null)
 /** NIC-level MP state (send limits, autorate, the CAKE send queue) is shown once, outside the peer table. */
 const showEgressPanel = computed(() => !!props.mpConfig?.enabled || !!mpRuntime.value?.egress?.length)
-
-const peerTableBox = ref<HTMLElement | null>(null)
-const { width: peerTableWidth } = useElementSize(peerTableBox)
-const expansionStyle = computed(() => peerTableWidth.value > 0 ? { width: `${peerTableWidth.value}px` } : {})
 
 const { t } = useI18n()
 
@@ -77,23 +74,46 @@ function peerRowKey(info: PeerRoutePair): string {
   return String(info.route?.peer_id ?? '')
 }
 
-function peerIdForRow(info: PeerRoutePair): number | string | undefined {
-  return info.route?.peer_id
+function peerIdForKey(key: string): number | string | undefined {
+  return peerRouteInfos.value.find(info => peerRowKey(info) === key)?.route?.peer_id
 }
 
-const expandedRows = computed<Record<string, boolean>>(() => {
-  return expandedPeerKey.value === null ? {} : { [expandedPeerKey.value]: true }
-})
-
-function isRowExpanded(info: PeerRoutePair): boolean {
-  return expandedPeerKey.value === peerRowKey(info)
-}
-
-function onPeerRowClick(event: { data: PeerRoutePair }) {
-  const key = peerRowKey(event.data)
+function onPeerToggle(key: string) {
   expandedPeerKey.value = expandedPeerKey.value === key ? null : key
 }
 
+const peerRows = computed<PeerRow[]>(() => peerRouteInfos.value.map((info: any) => {
+  const route = info.route
+  const cost = route.cost
+  const lat = latencyValue(info)
+  return {
+    key: peerRowKey(info),
+    name: route.hostname ?? '',
+    kind: cost ? (cost === 1 ? 'direct' : 'relay') : 'self',
+    server: !!cost && !!route.feature_flag?.is_public_server,
+    avoidRelay: !!cost && !!route.feature_flag?.avoid_relay_data,
+    latencyMs: lat,
+    latencyText: latencyMs(info),
+    tx: txBytes(info),
+    rx: rxBytes(info),
+    loss: lossRate(info),
+    lossPercent: lossPercentValue(info),
+  }
+}))
+
+/** What does not fit on a narrow row, shown once the row is opened. */
+function peerDetails(key: string): { label: string, value: string }[] {
+  const info = peerRouteInfos.value.find(i => peerRowKey(i) === key)
+  if (!info)
+    return []
+  return [
+    { label: t('virtual_ipv4'), value: ipFormat(info as PeerRoutePair) },
+    { label: t('route_cost'), value: String(routeCost(info)) },
+    { label: t('tunnel_proto'), value: tunnelProto(info as PeerRoutePair) },
+    { label: t('nat_type'), value: natType(info as PeerRoutePair) },
+    { label: t('status.version'), value: version(info as PeerRoutePair) },
+  ].filter(item => item.value !== '' && item.value !== undefined)
+}
 function routeCost(info: any) {
   if (info.route) {
     const cost = info.route.cost
@@ -136,6 +156,22 @@ function humanFileSize(bytes: number, si = false, dp = 1) {
   } while (Math.round(Math.abs(bytes) * r) / r >= thresh && u < units.length - 1)
 
   return `${bytes.toFixed(dp)} ${units[u]}`
+}
+
+/** Mean latency over the connections in milliseconds, null without a measurement. */
+function latencyValue(info: PeerRoutePair): number | null {
+  const sum = statsCommon(info, 'stats.latency_us')
+  if (sum === undefined || !info.peer!.conns.length)
+    return null
+  return sum / 1000 / info.peer!.conns.length
+}
+
+/** Mean loss over the connections in percent. */
+function lossPercentValue(info: PeerRoutePair): number {
+  const sum = statsCommon(info, 'loss_rate')
+  if (sum === undefined)
+    return 0
+  return sum / Math.max(info.peer!.conns.length, 1) * 100
 }
 
 function latencyMs(info: PeerRoutePair) {
@@ -517,62 +553,29 @@ function showEventLogs() {
           </div>
         </template>
         <template #content>
-          <div ref="peerTableBox">
-          <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-class="w-full" data-key="route.peer_id"
-            :expanded-rows="expandedRows" @row-click="onPeerRowClick">
-            <Column style="width: 2.5rem">
-              <template #body="slotProps">
-                <i class="pi cursor-pointer" data-testid="peer-row-toggle"
-                  :class="isRowExpanded(slotProps.data) ? 'pi-chevron-down' : 'pi-chevron-right'" />
-              </template>
-            </Column>
-            <Column :field="ipFormat" :header="t('virtual_ipv4')" />
-            <Column :header="t('hostname')">
-              <template #body="slotProps">
-                <div v-if="!slotProps.data.route.cost || !slotProps.data.route.feature_flag.is_public_server"
-                  v-tooltip="slotProps.data.route.hostname">
-                  {{
-                    slotProps.data.route.hostname }}
-                </div>
-                <div v-else v-tooltip="slotProps.data.route.hostname" class="space-x-1">
-                  <Tag v-if="slotProps.data.route.feature_flag.is_public_server" severity="info" value="Info">
-                    {{ t('status.server') }}
-                  </Tag>
-                  <Tag v-if="slotProps.data.route.feature_flag.avoid_relay_data" severity="warn" value="Warn">
-                    {{ t('status.relay') }}
-                  </Tag>
+          <div>
+            <PeerList :rows="peerRows" :expanded-key="expandedPeerKey" @toggle="onPeerToggle">
+              <template #expansion="{ row }">
+                <div class="box-border" :data-testid="`peer-mp-expansion-${row.key}`">
+                  <dl class="mb-2 flex flex-wrap gap-x-5 gap-y-1 text-sm" data-testid="peer-details">
+                    <div v-for="item in peerDetails(row.key)" :key="item.label" class="flex gap-1.5">
+                      <dt class="text-zinc-500">{{ item.label }}</dt>
+                      <dd class="m-0 break-all">{{ item.value }}</dd>
+                    </div>
+                  </dl>
+                  <AnimatePresence>
+                    <motion.div key="peer-mp" v-bind="reveal" class="overflow-hidden">
+                      <MpRuntimePanel :runtime="mpRuntime" :peer-id="peerIdForKey(row.key)" :mp-config="mpConfig"
+                        :busy="mpBusy" :current-mtu="mtu" :peer-names="peerNames"
+                        @set-policy="(m, a) => emit('mp-set-policy', m, a)" @reconnect="emit('mp-reconnect')"
+                        @apply-mtu="(v) => emit('mp-apply-mtu', v)"
+                        @edit-mp="(label, update) => emit('mp-edit', label, update)"
+                        @set-congestion-control="(m) => emit('mp-set-congestion-control', m)" />
+                    </motion.div>
+                  </AnimatePresence>
                 </div>
               </template>
-            </Column>
-            <Column :field="routeCost" :header="t('route_cost')" />
-            <Column :field="tunnelProto" :header="t('tunnel_proto')" />
-            <Column :field="latencyMs" :header="t('latency')" />
-            <Column :field="txBytes" :header="t('upload_bytes')" />
-            <Column :field="rxBytes" :header="t('download_bytes')" />
-            <Column :field="lossRate" :header="t('loss_rate')" />
-            <Column :field="natType" :header="t('nat_type')" />
-            <Column :header="t('status.version')">
-              <template #body="slotProps">
-                <span>{{ version(slotProps.data) }}</span>
-              </template>
-            </Column>
-            <template #expansion="slotProps">
-              <!-- pinned to the visible width of the table box, so it never scrolls sideways with a wide table -->
-              <div class="p-2 sticky left-0 box-border" :style="expansionStyle"
-                :data-testid="`peer-mp-expansion-${peerRowKey(slotProps.data)}`">
-                <AnimatePresence>
-                  <motion.div key="peer-mp" v-bind="reveal" class="overflow-hidden">
-                    <MpRuntimePanel :runtime="mpRuntime" :peer-id="peerIdForRow(slotProps.data)" :mp-config="mpConfig"
-                      :busy="mpBusy" :current-mtu="mtu" :peer-names="peerNames"
-                      @set-policy="(m, a) => emit('mp-set-policy', m, a)" @reconnect="emit('mp-reconnect')"
-                      @apply-mtu="(v) => emit('mp-apply-mtu', v)"
-                      @edit-mp="(label, update) => emit('mp-edit', label, update)"
-                      @set-congestion-control="(m) => emit('mp-set-congestion-control', m)" />
-                  </motion.div>
-                </AnimatePresence>
-              </div>
-            </template>
-          </DataTable>
+            </PeerList>
           </div>
         </template>
       </Card>
@@ -583,13 +586,5 @@ function showEventLogs() {
 <style lang="postcss" scoped>
 .p-timeline :deep(.p-timeline-event-opposite) {
   @apply flex-none;
-}
-
-:deep(.p-datatable .p-datatable-column-title) {
-  white-space: nowrap;
-}
-
-:deep(.p-datatable-tbody > tr:not(.p-datatable-row-expansion)) {
-  cursor: pointer;
 }
 </style>

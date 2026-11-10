@@ -199,6 +199,8 @@ jobs:
       # Unit tests: frontend-lib's whole `test` (config-ui, then network-config,
       # which builds the library) and the GUI's mobile VPN tests.
       - run: pnpm -C easytier-web/frontend-lib test
+      # The GUI imports the Android VPN plugin's JS API from its build output.
+      - run: pnpm -C tauri-plugin-vpnservice build
       - run: pnpm -C easytier-gui test:mobile-vpn
       # Type check, then production build, of every front end.
       - name: Type check
@@ -494,9 +496,9 @@ jobs:
           #   kernel_entry_connections_keep_a_fixed_buffer: asserts Linux
           #     socket buffer auto-tuning.
           #   bind_same_port: two sockets on one port (SO_REUSEPORT), not on Windows.
-          #   hole_punching_symmetric_only_random: the NAT mock in
+          #   hole_punching_symmetric_only_random, cone_hole_punch_registers_a_udp_carrier_in_one_mpquic_session: the NAT mock in
           #     connector/udp_hole_punch, which this branch does not touch.
-          skip='test(~faketcp_pingpong) | test(~ipv6_domain_pingpong) | test(~test_v6_hole_punch_packet) | test(~test_socket_addrs) | test(~test_windows_set_primary_server) | test(~test_magic_dns_update_replaces_records_for_same_client) | test(~kernel_entry_connections_keep_a_fixed_buffer) | test(~bind_same_port) | test(~hole_punching_symmetric_only_random)'
+          skip='test(~faketcp_pingpong) | test(~ipv6_domain_pingpong) | test(~test_v6_hole_punch_packet) | test(~test_socket_addrs) | test(~test_windows_set_primary_server) | test(~test_magic_dns_update_replaces_records_for_same_client) | test(~kernel_entry_connections_keep_a_fixed_buffer) | test(~bind_same_port) | test(~hole_punching_symmetric_only_random) | test(~cone_hole_punch_registers_a_udp_carrier_in_one_mpquic_session)'
           cargo nextest run \
             --archive-file tests-windows.tar.zst \
             --workspace-remap "$(cygpath -m "$PWD")/et" \
@@ -666,7 +668,7 @@ jobs:
           chmod +x bin/*
           bin/easytier-core --version
       - name: Reference core
-        if: startsWith(matrix.scenario, 's31_') || startsWith(matrix.scenario, 's3x_')
+        if: contains(fromJSON('["s31_legacy","s31_native_punch","s3x_harsh","s3x_vs_official"]'), matrix.scenario)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -697,8 +699,98 @@ jobs:
           path: out
           retention-days: 1
 
+  # Interface black-box and grey-box test (tests/ui-e2e): the real easytier-web
+  # with the built front end manages the `linux` job's easytier-core in the
+  # blackbox topology; a browser (Playwright) drags the path runway, edits the
+  # config page and takes screenshots at 360, 390 and 1040 px, and every step is
+  # checked against the core (same process, same paths, the field's effect).
+  ui-e2e:
+    needs: [plan, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -qqy build-essential mold cmake clang libssl-dev pkg-config iproute2 iptables
+          mkdir -p et/easytier-gui/dist
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+          package_json_file: et/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: et/pnpm-lock.yaml
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+          key: ui-e2e
+      - name: Build the front end and the web server that embeds it
+        working-directory: et
+        run: |
+          pnpm -r install
+          pnpm -C easytier-web/frontend-lib build
+          pnpm -C easytier-web/frontend build
+          cargo build --locked -p easytier-web --features embed
+      - uses: actions/download-artifact@v5
+        with:
+          name: linux-x86_64
+          path: bin
+      - name: Prepare the browser and the system
+        run: |
+          cp et/target/debug/easytier-web bin/
+          chmod +x bin/*
+          sudo apt-get install -qqy python3-pip
+          sudo python3 -m pip install --break-system-packages playwright argon2-cffi
+          sudo python3 -m playwright install --with-deps chromium
+          for m in sch_netem sch_htb sch_cake ifb nf_conntrack nf_nat; do sudo modprobe "$m" || echo "no $m"; done
+          bin/easytier-core --version
+          bin/easytier-web --version
+      - name: Run s35_ui_e2e
+        run: |
+          sudo unshare --pid --fork --mount-proc --mount --net --propagation private -- bash -c "
+            set -e
+            mkdir -p /run/netns
+            mount -t tmpfs netns /run/netns
+            ip link set lo up
+            exec python3 '$PWD/et/tests/ui-e2e/ui_e2e.py' --bin '$PWD/bin' --out '$PWD/out' s35_ui_e2e"
+      - name: Verdict
+        if: always()
+        run: cat out/results.txt || true
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: ui-e2e
+          path: out
+          retention-days: 1
+
   result:
-    needs: [build, test, tquic, frontend, android, windows, windows-test-build, windows-test, linux, linux-gui, blackbox]
+    needs: [build, test, tquic, frontend, android, windows, windows-test-build, windows-test, linux, linux-gui, blackbox, ui-e2e]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:

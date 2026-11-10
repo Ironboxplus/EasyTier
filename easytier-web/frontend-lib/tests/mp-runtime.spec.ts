@@ -346,6 +346,15 @@ describe('MpRuntimePanel', () => {
     expect(chart.props('pathName')(standby)).toContain('standby')
   })
 
+  it('gives every pipeline step its name as a title, so a phone can hide the label and keep the name', () => {
+    const wrapper = mountPanel(sample(10_000, 0, 0, 0))
+    for (const [id, key] of [['classify', 'classify'], ['cc', 'cc'], ['paths', 'paths'], ['egress', 'egress']]) {
+      const step = wrapper.find(`[data-testid="mp-step-${id}"]`)
+      expect(step.attributes('title')).toBe(`mp_rt.pipe.${key}`)
+      expect(step.find('.mp-step-label').exists()).toBe(true)
+    }
+  })
+
   it('shows FakeTCP upgrade failures and the plain TCP fallback only when there are failures', () => {
     expect(mountPanel(sample(10_000, 0, 0, 0)).find('[data-testid="mp-runtime-faketcp-upgrade"]').exists()).toBe(false)
     const rt = sample(10_000, 0, 0, 0)

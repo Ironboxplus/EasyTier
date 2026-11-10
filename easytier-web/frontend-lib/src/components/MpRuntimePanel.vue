@@ -379,28 +379,28 @@ function mtuOverhead(dp: MpDataPlaneStatus): number | undefined {
 
       <!-- the send pipeline; each step opens its detail below -->
       <nav class="mp-steps" data-testid="mp-runtime-pipeline">
-        <button type="button" class="mp-step" :class="{ 'mp-step-on': step(peer) === 'classify' }" data-testid="mp-step-classify"
+        <button type="button" class="mp-step" :class="{ 'mp-step-on': step(peer) === 'classify' }" data-testid="mp-step-classify" :title="t('mp_rt.pipe.classify')"
           @click="setStep(peer, 'classify')">
-          <span class="mp-step-name"><i class="mp-step-no">1</i>{{ t('mp_rt.pipe.classify') }}</span>
+          <span class="mp-step-name"><i class="mp-step-no">1</i><span class="mp-step-label">{{ t('mp_rt.pipe.classify') }}</span></span>
           <b class="truncate"><Tag :value="t(`mp_dp.rt.negotiated.${peer.data_plane?.negotiated || 'disabled'}`)"
             :severity="peer.data_plane ? dpSeverity(peer.data_plane) : 'secondary'" data-testid="mp-dp-negotiated" /></b>
           <motion.span v-if="step(peer) === 'classify'" :layout-id="`mp-step-${peerKey(peer)}`" class="mp-step-bar" />
         </button>
-        <button type="button" class="mp-step" :class="{ 'mp-step-on': step(peer) === 'cc' }" data-testid="mp-step-cc"
+        <button type="button" class="mp-step" :class="{ 'mp-step-on': step(peer) === 'cc' }" data-testid="mp-step-cc" :title="t('mp_rt.pipe.cc')"
           @click="setStep(peer, 'cc')">
-          <span class="mp-step-name"><i class="mp-step-no">2</i>{{ t('mp_rt.pipe.cc') }}</span>
+          <span class="mp-step-name"><i class="mp-step-no">2</i><span class="mp-step-label">{{ t('mp_rt.pipe.cc') }}</span></span>
           <b class="truncate">{{ ccName(peer.effective_congestion_control) }}</b>
           <motion.span v-if="step(peer) === 'cc'" :layout-id="`mp-step-${peerKey(peer)}`" class="mp-step-bar" />
         </button>
-        <button type="button" class="mp-step" :class="{ 'mp-step-on': step(peer) === 'paths' }" data-testid="mp-step-paths"
+        <button type="button" class="mp-step" :class="{ 'mp-step-on': step(peer) === 'paths' }" data-testid="mp-step-paths" :title="t('mp_rt.pipe.paths')"
           @click="setStep(peer, 'paths')">
-          <span class="mp-step-name"><i class="mp-step-no">3</i>{{ t('mp_rt.pipe.paths') }}</span>
+          <span class="mp-step-name"><i class="mp-step-no">3</i><span class="mp-step-label">{{ t('mp_rt.pipe.paths') }}</span></span>
           <b class="truncate"><span data-testid="mp-runtime-path-count">{{ activePathsOf(peer).length }} / {{ peer.paths?.length ?? 0 }}</span>
             <small v-if="bestRtt(peer) !== undefined" class="font-normal text-color-secondary"> · RTT {{ formatUs(bestRtt(peer)) }}</small></b>
           <motion.span v-if="step(peer) === 'paths'" :layout-id="`mp-step-${peerKey(peer)}`" class="mp-step-bar" />
         </button>
-        <button type="button" class="mp-step" data-testid="mp-step-egress" @click="showEgress">
-          <span class="mp-step-name"><i class="mp-step-no">4</i>{{ t('mp_rt.pipe.egress') }}<i class="pi pi-arrow-up-right text-xs" /></span>
+        <button type="button" class="mp-step" data-testid="mp-step-egress" :title="t('mp_rt.pipe.egress')" @click="showEgress">
+          <span class="mp-step-name"><i class="mp-step-no">4</i><span class="mp-step-label">{{ t('mp_rt.pipe.egress') }}</span><i class="pi pi-arrow-up-right text-xs" /></span>
           <b class="truncate">{{ egressDevices(peer) }}</b>
         </button>
       </nav>
@@ -724,6 +724,18 @@ function mtuOverhead(dp: MpDataPlaneStatus): number | undefined {
   font-weight: 700;
   color: var(--p-primary-contrast-color, #fff);
   background: var(--p-primary-color, #10b981);
+}
+
+/* On a phone the four steps would cut their names; the number stays and the
+   name is the button's title. */
+@media (max-width: 480px) {
+  .mp-step {
+    padding: 0.5rem 0.5rem 0.6rem;
+  }
+
+  .mp-step-label {
+    display: none;
+  }
 }
 
 .mp-step-bar {

@@ -259,6 +259,17 @@ mp_restart:
   message: "对 {0} 的修改要在网络重启后才生效。现在保存并重启？"
   accept: 保存并重启
   reject: 取消
+security_settings:
+  title: 加密与安全
+  secure_mode: 安全模式
+  ipv6_provider: 向对端提供公网 IPv6 前缀
+  disable_relay_data: 不为其他节点中转数据
+  encryption_algorithm: 加密算法
+  compression: 压缩算法
+  default: 默认
+  credential_file: 凭据文件
+  ipv6_prefix: 公网 IPv6 前缀
+  socket_mark: 套接字标记
 core_switches:
   title: 核心开关
   default_protocol: 默认协议

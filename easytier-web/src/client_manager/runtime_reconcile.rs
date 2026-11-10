@@ -431,7 +431,8 @@ mod tests {
         current.bind_device = Some(true);
         current.dev_name = Some(String::new());
         current.disable_ipv6 = Some(false);
-        current.mtu = Some(1380);
+        // The MTU default is automatic now: a running instance reports it unset.
+        current.mtu = None;
         current.multi_thread = Some(true);
 
         let desired =
@@ -450,6 +451,20 @@ mod tests {
                 3389,
                 SocketType::Tcp as i32
             )
+        );
+    }
+
+    #[test]
+    fn runtime_patch_treats_a_manual_mtu_as_a_change_from_automatic() {
+        let current = config_with_port_forwards(vec![]);
+        let mut desired = config_with_port_forwards(vec![]);
+        desired.mtu = Some(1380);
+
+        // 1380 typed in is a manual value, not the automatic one: not a hot patch.
+        assert!(
+            web_source_runtime_patch(&current, &desired)
+                .expect("build patch")
+                .is_none()
         );
     }
 
