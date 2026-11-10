@@ -25,6 +25,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'mp-set-policy': [match: MpPolicyMatch, action: MpPolicyAction | null]
   'mp-reconnect': []
+  'mp-edit': [label: string, update: (mp: MpConfig) => MpConfig]
   'mp-apply-mtu': [mtu: number]
   'mp-set-congestion-control': [model: CongestionModel]
 }>()
@@ -558,6 +559,7 @@ function showEventLogs() {
                       :busy="mpBusy" :current-mtu="mtu" :peer-names="peerNames"
                       @set-policy="(m, a) => emit('mp-set-policy', m, a)" @reconnect="emit('mp-reconnect')"
                       @apply-mtu="(v) => emit('mp-apply-mtu', v)"
+                      @edit-mp="(label, update) => emit('mp-edit', label, update)"
                       @set-congestion-control="(m) => emit('mp-set-congestion-control', m)" />
                   </motion.div>
                 </AnimatePresence>

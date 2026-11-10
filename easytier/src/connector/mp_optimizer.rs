@@ -882,12 +882,12 @@ mod tests {
                 .map(|rules| {
                     rules
                         .iter()
-                        .map(|rule| {
+                        .map(|raw| {
                             rule(
-                                rule["carrier_kind"].as_str().unwrap(),
-                                rule["ip_family"].as_str().unwrap(),
-                                rule["tier"].as_str().unwrap(),
-                                rule["rtt_bias_ms"].as_i64().unwrap() as i32,
+                                raw["carrier_kind"].as_str().unwrap(),
+                                raw["ip_family"].as_str().unwrap(),
+                                raw["tier"].as_str().unwrap(),
+                                raw["rtt_bias_ms"].as_i64().unwrap() as i32,
                             )
                         })
                         .collect()

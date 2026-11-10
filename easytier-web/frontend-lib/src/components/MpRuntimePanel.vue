@@ -38,6 +38,7 @@ import {
 import MpFlowSankey from './MpFlowSankey.vue'
 import MpSchedulerPanel from './MpSchedulerPanel.vue'
 import MpStat from './MpStat.vue'
+import PathRunway from './runway/PathRunway.vue'
 
 type Step = 'classify' | 'cc' | 'paths'
 
@@ -59,6 +60,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'set-policy': [match: MpPolicyMatch, action: MpPolicyAction | null]
+  /** A selection handle was released: `update` turns the saved MpConfig into the edited one. */
+  'edit-mp': [label: string, update: (mp: MpConfig) => MpConfig]
   'reconnect': []
   /** Save `mtu`; takes effect after the instance restarts. */
   'apply-mtu': [mtu: number]
@@ -547,7 +550,13 @@ function mtuOverhead(dp: MpDataPlaneStatus): number | undefined {
               </span>
             </Message>
 
-            <div class="overflow-x-auto rounded-lg border border-surface-200 dark:border-surface-700">
+            <PathRunway :peer="peer" :mp-config="mpConfig" :peer-name="peerName(peer.peer_id)" :peer-names="peerNames"
+              :busy="busy || !mpConfig" @edit="(label, update) => emit('edit-mp', label, update)"
+              @set-policy="(m, a) => emit('set-policy', m, a)" />
+
+            <details class="mp-details" data-testid="mp-runtime-path-details">
+            <summary>{{ t('mp_runway.details') }}</summary>
+            <div class="mt-3 overflow-x-auto rounded-lg border border-surface-200 dark:border-surface-700">
               <table class="w-full text-sm mp-table" data-testid="mp-runtime-paths">
                 <thead>
                   <tr>
@@ -620,6 +629,7 @@ function mtuOverhead(dp: MpDataPlaneStatus): number | undefined {
                 </tbody>
               </table>
             </div>
+            </details>
 
             <!-- actual send rate by network card and path, with each card's Autorate budget -->
             <details v-if="flows(peer).paths.length" class="mp-details">

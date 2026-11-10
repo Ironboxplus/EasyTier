@@ -240,6 +240,40 @@ mp_policy:
   pause_help: Pause - stop data on this path, keep it validated
   exclude_help: Exclude - never use this path
   clear_help: Remove the policy for this path
+mp_runway:
+  details: Path details
+  undo: Undo
+  rtt: Round-trip time
+  loss: Packet loss
+  bias: Added to the round-trip time before ranking
+  all_of_kind: "All {0}"
+  drop_here: Drop a path here
+  kind_v6: "{0} (IPv6)"
+  lane:
+    primary: Primary
+    backup: Backup
+  state:
+    sending: Sending
+    held: Held back
+    standby: Standby
+    lossy: Too much loss
+    silent: Peer not answering
+    paused: Paused
+    excluded: Excluded
+  policy:
+    pin: Only this
+    pause: Pause
+    exclude: Exclude
+  tip:
+    kmax: Number of paths sending at once; drag up or down
+    switch: "A path replaces a sending one only if it is faster by at least {0} ms and {1} %"
+    unmeasured: "Paths without a measurement are ranked as {0} ms"
+  edit:
+    kind: "All {0}: {1}, bias {2} ms"
+    kmax: "Sending on {0} paths at once"
+    switch: "Switch only if faster by {0} ms and {1} %"
+    unmeasured: "Paths without a measurement rank as {0} ms"
+    lossy: "Paths losing more than {0} % stay out"
 mp_rt:
   cc_name:
     engine_default: Default (BBR)

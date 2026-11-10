@@ -22,6 +22,8 @@ function edited(edit: (config: NetworkConfig) => void): NetworkConfig {
 }
 
 const hotFields = new Set<string>()
+// Hot in the table, but the form only shows them: `peer_urls` carries what they mean.
+const NO_PATCH_PART = new Set(['networking_method', 'public_server_url'])
 
 /** One hot field: the patch is exactly `expected`, and nothing needs a restart. */
 function hot(field: string, edit: (config: NetworkConfig) => void, expected: Record<string, unknown>, from?: (config: NetworkConfig) => void) {
@@ -111,10 +113,16 @@ describe('buildHotPatch: every hot field', () => {
 
   it('has a patch builder for every hot field of the table', () => {
     const hotInTable = Object.entries(fieldEffects as Record<string, string>)
-      .filter(([field, effect]) => effect === 'hot' && !field.startsWith('mp.'))
+      .filter(([field, effect]) => effect === 'hot' && !field.startsWith('mp.') && !NO_PATCH_PART.has(field))
       .map(([field]) => field)
     for (const field of hotInTable) expect(hotFields, field).toContain(field)
   })
+})
+
+it('networking_method and public_server_url add nothing to the patch', () => {
+  const plan = planConfigChange(base(), edited((c) => { c.public_server_url = 'tcp://203.0.113.9:11010' }))
+  expect(plan.restartFields).toEqual([])
+  expect(plan.patch).toEqual({})
 })
 
 describe('buildHotPatch: lists and values', () => {

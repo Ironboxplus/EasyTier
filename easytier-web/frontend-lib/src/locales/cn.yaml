@@ -241,6 +241,40 @@ mp_policy:
   pause_help: 暂停：停止在此路径发数据，保持验证
   exclude_help: 排除：永不使用此路径
   clear_help: 清除此路径的策略
+mp_runway:
+  details: 路径明细
+  undo: 撤销
+  rtt: 往返时延
+  loss: 丢包率
+  bias: 排序前加在往返时延上的值
+  all_of_kind: "所有{0}"
+  drop_here: 把路径拖到这里
+  kind_v6: "{0}（IPv6）"
+  lane:
+    primary: 主用
+    backup: 后备
+  state:
+    sending: 发送中
+    held: 未达换路门槛
+    standby: 备用
+    lossy: 丢包过多
+    silent: 对端无回应
+    paused: 已暂停
+    excluded: 已排除
+  policy:
+    pin: 只走它
+    pause: 暂停
+    exclude: 排除
+  tip:
+    kmax: 同时发送的路径数，上下拖动
+    switch: "新路径至少快 {0} 毫秒且快 {1}% 才会换下正在发送的路径"
+    unmeasured: "没有测到时延的路径按 {0} 毫秒排序"
+  edit:
+    kind: "所有{0}：{1}，偏置 {2} 毫秒"
+    kmax: "同时发送 {0} 条路径"
+    switch: "快 {0} 毫秒且快 {1}% 才换路"
+    unmeasured: "没有测到时延的路径按 {0} 毫秒排序"
+    lossy: "丢包超过 {0}% 的路径不参与"
 mp_rt:
   cc_name:
     engine_default: 默认（BBR）

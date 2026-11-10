@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, useConfirm, useToast, type VirtualScrollerLazyEvent } from 'primevue';
+import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, Toast, useConfirm, useToast, type VirtualScrollerLazyEvent } from 'primevue';
 import { computed, onMounted, onUnmounted, Ref, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import * as Api from '../modules/api';
@@ -14,6 +14,7 @@ import {
     removePathPolicy,
     upsertPathPolicy,
     type CongestionModel,
+    type MpConfig,
     type MpPolicyAction,
     type MpPolicyMatch,
 } from '../types/mpConfig';
@@ -257,10 +258,10 @@ const tryHotApply = async (cfg: NetworkTypes.NetworkConfig): Promise<boolean> =>
     return true;
 }
 
-const updateRunningMp = async (update: (mp: NetworkTypes.MpConfig) => NetworkTypes.MpConfig) => {
+const updateRunningMp = async (update: (mp: NetworkTypes.MpConfig) => NetworkTypes.MpConfig): Promise<boolean> => {
     const instId = selectedInstanceId.value?.uuid;
     if (!instId || mpPatchBusy.value) {
-        return;
+        return false;
     }
     mpPatchBusy.value = true;
     try {
@@ -269,7 +270,7 @@ const updateRunningMp = async (update: (mp: NetworkTypes.MpConfig) => NetworkTyp
         }
         const base = runningConfig.value;
         if (!base) {
-            return;
+            return false;
         }
         const mp = update(normalizeMpConfig(base.mp ?? DEFAULT_MP_CONFIG()));
         if (props.api.patch_network_config) {
@@ -278,13 +279,35 @@ const updateRunningMp = async (update: (mp: NetworkTypes.MpConfig) => NetworkTyp
             await props.api.run_network({ ...base, mp }, currentNetworkControl.remoteSave.value);
             await loadRunningConfig(instId);
         }
+        return true;
     } catch (e: any) {
         console.error(e);
         toast.add({ severity: 'error', summary: 'Error', detail: t('mp_patch_failed') + ': ' + JSON.stringify(e.response?.data ?? e), life: 3000 });
+        return false;
     } finally {
         mpPatchBusy.value = false;
     }
 }
+
+// Every edit made on the path runway applies at once; the toast offers to put the previous MpConfig back.
+const onMpEdit = async (label: string, update: (mp: MpConfig) => MpConfig) => {
+    let previous: MpConfig | null = null;
+    const applied = await updateRunningMp((mp) => {
+        previous = mp;
+        return update(mp);
+    });
+    if (applied && previous) {
+        toast.add({ severity: 'success', summary: label, group: 'mp-undo', life: 6000, data: { previous } });
+    }
+};
+
+const undoMpEdit = async (message: { data?: { previous?: MpConfig } }, close: () => void) => {
+    const previous = message.data?.previous;
+    close();
+    if (previous) {
+        await updateRunningMp(() => previous);
+    }
+};
 
 const onMpSetPolicy = (match: MpPolicyMatch, action: MpPolicyAction | null) => updateRunningMp((mp) => action === null
     ? removePathPolicy(mp, match)
@@ -709,7 +732,7 @@ onUnmounted(() => {
                 <Status v-if="(curNetworkInfo?.error_msg ?? '') === ''" v-bind:cur-network-inst="curNetworkInfo"
                     :mp-config="runningConfig?.mp" :egress-wire-limit-bps="runningConfig?.egress_wire_limit_bps"
                     :mp-busy="mpPatchBusy" :mtu="runningConfig?.mtu" class="mb-4" @mp-set-policy="onMpSetPolicy"
-                    @mp-reconnect="onMpReconnect" @mp-set-congestion-control="onMpSetCongestionControl" @mp-apply-mtu="onMpApplyMtu">
+                    @mp-reconnect="onMpReconnect" @mp-edit="onMpEdit" @mp-set-congestion-control="onMpSetCongestionControl" @mp-apply-mtu="onMpApplyMtu">
                 </Status>
                 <Message v-else severity="error" class="mb-4">{{ curNetworkInfo?.error_msg }}</Message>
 
@@ -739,6 +762,16 @@ onUnmounted(() => {
 
         <ConfigEditDialog v-model:visible="showConfigEditDialog" :cur-network="currentNetworkConfig"
             :generate-config="generateConfig" :save-config="syncTomlConfig" />
+
+        <Toast group="mp-undo" position="bottom-center" data-testid="mp-undo-toast">
+            <template #message="{ message, closeCallback }">
+                <div class="flex flex-1 items-center gap-3">
+                    <span class="flex-1">{{ message.summary }}</span>
+                    <Button size="small" text icon="pi pi-undo" :label="t('mp_runway.undo')" data-testid="mp-undo"
+                        @click="undoMpEdit(message, closeCallback)" />
+                </div>
+            </template>
+        </Toast>
     </div>
 </template>
 
