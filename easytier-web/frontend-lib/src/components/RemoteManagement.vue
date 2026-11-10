@@ -297,13 +297,20 @@ const onMpEdit = async (label: string, update: (mp: MpConfig) => MpConfig) => {
         return update(mp);
     });
     if (applied && previous) {
-        toast.add({ severity: 'success', summary: label, group: 'mp-undo', life: 6000, data: { previous } });
+        const id = `mp-undo-${++undoSeq}`;
+        undoable.set(id, previous);
+        toast.add({ severity: 'success', summary: label, detail: id, group: 'mp-undo', life: 6000 });
     }
 };
 
-const undoMpEdit = async (message: { data?: { previous?: MpConfig } }, close: () => void) => {
-    const previous = message.data?.previous;
-    close();
+const undoable = new Map<string, MpConfig>();
+let undoSeq = 0;
+
+const undoMpEdit = async (message: { detail?: unknown }) => {
+    const id = String(message.detail ?? '');
+    const previous = undoable.get(id);
+    undoable.delete(id);
+    toast.remove(message as any);
     if (previous) {
         await updateRunningMp(() => previous);
     }
@@ -764,11 +771,11 @@ onUnmounted(() => {
             :generate-config="generateConfig" :save-config="syncTomlConfig" />
 
         <Toast group="mp-undo" position="bottom-center" data-testid="mp-undo-toast">
-            <template #message="{ message, closeCallback }">
+            <template #message="{ message }">
                 <div class="flex flex-1 items-center gap-3">
                     <span class="flex-1">{{ message.summary }}</span>
                     <Button size="small" text icon="pi pi-undo" :label="t('mp_runway.undo')" data-testid="mp-undo"
-                        @click="undoMpEdit(message, closeCallback)" />
+                        @click="undoMpEdit(message)" />
                 </div>
             </template>
         </Toast>

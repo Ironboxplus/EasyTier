@@ -90,7 +90,7 @@ onBeforeUnmount(() => clearTimeout(settle))
 function begin() {
   clearTimeout(settle)
   settling.value = false
-  draft.value ??= { selection: structuredClone(savedSelection.value), kmax: savedKmax.value }
+  draft.value ??= { selection: JSON.parse(JSON.stringify(savedSelection.value)), kmax: savedKmax.value }
 }
 function cancel() {
   draft.value = null
@@ -108,9 +108,9 @@ const ticks = computed(() => (narrow.value ? [0, 1, 10, 100] : [0, 1, 2, 5, 10, 
 const fmt = (ms: number) => (ms < 10 ? ms.toFixed(1) : Math.round(ms).toString())
 
 const tiers: Tier[] = ['primary', 'backup']
-const lane = (tier: Tier) => view.value.lanes[tier]
-const laneRows = (tier: Tier) => Math.max(1, lane(tier).length)
-const sendingIn = (tier: Tier) => lane(tier).filter(p => p.state === 'sending').length
+const lanePaths = (tier: Tier) => view.value.lanes[tier]
+const laneRows = (tier: Tier) => Math.max(1, lanePaths(tier).length)
+const sendingIn = (tier: Tier) => lanePaths(tier).filter(p => p.state === 'sending').length
 const dimLane = (tier: Tier) => view.value.activeTier !== null && view.value.activeTier !== tier
 
 // ---- names ---------------------------------------------------------------------
@@ -186,7 +186,7 @@ function cutDown(e: PointerEvent) {
 }
 function cutMove(e: PointerEvent) {
   if (!cut.value || !view.value.activeTier || !draft.value) return
-  const n = lane(view.value.activeTier).length
+  const n = lanePaths(view.value.activeTier).length
   draft.value.kmax = kmaxAfterDrag(cut.value.k0, Math.round((e.clientY - cut.value.cy0) / ROW), n)
 }
 function cutUp() {
@@ -363,12 +363,12 @@ const kindTier = (p: RunwayPath) => kindRuleValues(savedSelection.value, p.kind)
             </motion.div>
 
             <!-- the cut under the sending paths -->
-            <motion.div v-if="view.activeTier === tier && sendingIn(tier) > 0 && sendingIn(tier) < lane(tier).length"
+            <motion.div v-if="view.activeTier === tier && sendingIn(tier) > 0 && sendingIn(tier) < lanePaths(tier).length"
               class="runway-cut pointer-events-none absolute left-0 right-2 h-px"
               :animate="{ top: sendingIn(tier) * ROW + 6 }" :transition="spring" />
 
             <!-- paths -->
-            <motion.div v-for="(p, i) in lane(tier)" :key="p.key" class="absolute inset-x-0 h-10" data-testid="runway-path"
+            <motion.div v-for="(p, i) in lanePaths(tier)" :key="p.key" class="absolute inset-x-0 h-10" data-testid="runway-path"
               :data-state="p.state" :initial="false" :animate="{ top: i * ROW + 6 }" :transition="spring">
               <!-- data flowing to the peer -->
               <motion.div v-if="p.state === 'sending'" class="pointer-events-none absolute top-1/2 h-[2px] -translate-y-1/2 rounded-full bg-emerald-500 opacity-80"
@@ -412,7 +412,7 @@ const kindTier = (p: RunwayPath) => kindRuleValues(savedSelection.value, p.kind)
               </motion.div>
             </motion.div>
 
-            <div v-if="!lane(tier).length" class="absolute inset-1.5 grid place-items-center rounded-lg border border-dashed border-zinc-300 text-xs text-zinc-400">
+            <div v-if="!lanePaths(tier).length" class="absolute inset-1.5 grid place-items-center rounded-lg border border-dashed border-zinc-300 text-xs text-zinc-400">
               {{ t('mp_runway.drop_here') }}
             </div>
           </div>

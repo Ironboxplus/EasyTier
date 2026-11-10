@@ -117,8 +117,9 @@ vi.mock('primevue', async () => {
     Message: PassThrough,
     Select: SelectStub,
     Tag: PassThrough,
+    Toast: PassThrough,
     useConfirm: () => ({ require: vi.fn() }),
-    useToast: () => ({ add: vi.fn() }),
+    useToast: () => ({ add: vi.fn(), remove: vi.fn() }),
   }
 })
 
