@@ -127,6 +127,7 @@ def wait_for(pred, secs=30, what="state"):
 # ---------------------------------------------------------------- the page
 
 def drag(page, locator, dx, dy):
+    locator.scroll_into_view_if_needed()
     box = locator.bounding_box()
     cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
     page.mouse.move(cx, cy)

@@ -1726,9 +1726,11 @@ def sending_nics(stats):
 
 def path_identity(stats):
     """The direct and relay paths: they are the ones a selection change must leave alone. A native
-    punch path may come and go by itself (a punch retires when a better path exists)."""
+    punch path may come and go by itself (a punch retires when a better path exists), and so may a
+    path that never validated (the session retires it on its own timeout)."""
     return {(str((pa.get("path") or {}).get("carrier_id")), (pa.get("path") or {}).get("local_addr"),
-             (pa.get("path") or {}).get("remote_addr")) for pa in paths_of(stats) if not kind_is(pa, "punch")}
+             (pa.get("path") or {}).get("remote_addr")) for pa in paths_of(stats)
+            if not kind_is(pa, "punch") and is_validated(pa)}
 
 
 def s34_hot_selection(run, args):
