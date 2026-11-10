@@ -126,8 +126,8 @@ core_clap:
     en: "optional tun interface name"
     zh-CN: "可选的TUN接口名称"
   mtu:
-    en: "mtu of the TUN device, default is 1380 for non-encryption, 1360 for encryption"
-    zh-CN: "TUN设备的MTU，默认为非加密时为1380，加密时为1360"
+    en: "mtu of the TUN device, default is 1380 for non-encryption, 1360 for encryption; with the MP datagram data plane it is lowered to what one datagram carries"
+    zh-CN: "TUN设备的MTU，默认为非加密时为1380，加密时为1360；开启多路径数据报数据面时自动降到一个数据报能装下的大小"
   latency_first:
     en: "latency first mode, will try to relay traffic with lowest latency path, default is using shortest path"
     zh-CN: "延迟优先模式，将尝试使用最低延迟路径转发流量，默认使用最短路径"

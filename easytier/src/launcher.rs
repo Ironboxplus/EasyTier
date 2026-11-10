@@ -1036,6 +1036,68 @@ impl NetworkConfig {
             }
         }
 
+        if let Some(tld_dns_zone) = self.tld_dns_zone.clone() {
+            flags.tld_dns_zone = tld_dns_zone;
+        }
+
+        if let Some(default_protocol) = self.default_protocol.clone() {
+            flags.default_protocol = default_protocol;
+        }
+
+        if let Some(disable_relay_kcp) = self.disable_relay_kcp {
+            flags.disable_relay_kcp = disable_relay_kcp;
+        }
+
+        if let Some(disable_relay_quic) = self.disable_relay_quic {
+            flags.disable_relay_quic = disable_relay_quic;
+        }
+
+        if let Some(foreign_relay_bps_limit) = self.foreign_relay_bps_limit {
+            flags.foreign_relay_bps_limit = foreign_relay_bps_limit;
+        }
+
+        if let Some(multi_thread_count) = self.multi_thread_count {
+            flags.multi_thread_count = multi_thread_count;
+        }
+
+        if let Some(enable_relay_foreign_network_kcp) = self.enable_relay_foreign_network_kcp {
+            flags.enable_relay_foreign_network_kcp = enable_relay_foreign_network_kcp;
+        }
+
+        if let Some(enable_relay_foreign_network_quic) = self.enable_relay_foreign_network_quic {
+            flags.enable_relay_foreign_network_quic = enable_relay_foreign_network_quic;
+        }
+
+        if let Some(ipv6) = self.ipv6.as_ref().filter(|ipv6| !ipv6.is_empty()) {
+            cfg.set_ipv6(Some(ipv6.parse().with_context(|| {
+                format!("failed to parse ipv6 inet address: {ipv6}")
+            })?));
+        }
+
+        if let Some(netns) = self.netns.as_ref().filter(|netns| !netns.is_empty()) {
+            cfg.set_netns(Some(netns.clone()));
+        }
+
+        if !self.tcp_whitelist.is_empty() {
+            cfg.set_tcp_whitelist(self.tcp_whitelist.clone());
+        }
+
+        if !self.udp_whitelist.is_empty() {
+            cfg.set_udp_whitelist(self.udp_whitelist.clone());
+        }
+
+        if !self.stun_servers.is_empty() {
+            cfg.set_stun_servers(Some(self.stun_servers.clone()));
+        }
+
+        if !self.tcp_stun_servers.is_empty() {
+            cfg.set_tcp_stun_servers(Some(self.tcp_stun_servers.clone()));
+        }
+
+        if !self.stun_servers_v6.is_empty() {
+            cfg.set_stun_servers_v6(Some(self.stun_servers_v6.clone()));
+        }
+
         cfg.set_flags(flags);
         Ok(cfg)
     }
@@ -1180,7 +1242,8 @@ impl NetworkConfig {
         result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
-        result.mtu = Some(flags.mtu as i32);
+        // 0 is automatic: leave it unset.
+        result.mtu = (flags.mtu != 0).then_some(flags.mtu as i32);
         result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)
             .then_some(flags.data_compress_algo);
         result.encryption_algorithm = (flags.encryption_algorithm
@@ -1190,6 +1253,24 @@ impl NetworkConfig {
             (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
         result.egress_wire_limit_bps = flags.egress_wire_limit_bps;
         result.enable_private_mode = Some(flags.private_mode);
+        result.tld_dns_zone = (flags.tld_dns_zone != default_flags.tld_dns_zone)
+            .then_some(flags.tld_dns_zone.clone());
+        result.default_protocol = (flags.default_protocol != default_flags.default_protocol)
+            .then_some(flags.default_protocol.clone());
+        result.disable_relay_kcp = Some(flags.disable_relay_kcp);
+        result.disable_relay_quic = Some(flags.disable_relay_quic);
+        result.foreign_relay_bps_limit =
+            (flags.foreign_relay_bps_limit != u64::MAX).then_some(flags.foreign_relay_bps_limit);
+        result.multi_thread_count = Some(flags.multi_thread_count);
+        result.enable_relay_foreign_network_kcp = Some(flags.enable_relay_foreign_network_kcp);
+        result.enable_relay_foreign_network_quic = Some(flags.enable_relay_foreign_network_quic);
+        result.ipv6 = config.get_ipv6().map(|ipv6| ipv6.to_string());
+        result.netns = config.get_netns();
+        result.tcp_whitelist = config.get_tcp_whitelist();
+        result.udp_whitelist = config.get_udp_whitelist();
+        result.stun_servers = config.get_stun_servers().unwrap_or_default();
+        result.tcp_stun_servers = config.get_tcp_stun_servers().unwrap_or_default();
+        result.stun_servers_v6 = config.get_stun_servers_v6().unwrap_or_default();
 
         result.acl = config.get_acl();
 
@@ -1610,6 +1691,78 @@ mod tests {
             flags.encryption_algorithm
         );
 
+        Ok(())
+    }
+
+    /// The core switches and top-level items that only the TOML had: a
+    /// config that sets them reads back into `NetworkConfig` and generates
+    /// the same config again.
+    #[test]
+    fn test_network_config_conversion_core_switches_and_top_level_items()
+    -> Result<(), anyhow::Error> {
+        let config = gen_default_config();
+        let mut flags = config.get_flags();
+        flags.tld_dns_zone = "corp.example.".to_string();
+        flags.default_protocol = "udp".to_string();
+        flags.disable_relay_kcp = true;
+        flags.disable_relay_quic = true;
+        flags.foreign_relay_bps_limit = 8_000_000;
+        flags.multi_thread_count = 6;
+        flags.enable_relay_foreign_network_kcp = true;
+        flags.enable_relay_foreign_network_quic = true;
+        config.set_flags(flags.clone());
+        config.set_ipv6("fd00::2/64".parse().unwrap());
+        config.set_netns(Some("et-ns".to_string()));
+        config.set_tcp_whitelist(vec!["80".to_string(), "8000-8100".to_string()]);
+        config.set_udp_whitelist(vec!["53".to_string()]);
+        config.set_stun_servers(Some(vec!["stun.example.org:3478".to_string()]));
+        config.set_tcp_stun_servers(Some(vec!["stun.example.net:3478".to_string()]));
+        config.set_stun_servers_v6(Some(vec!["stun6.example.org:3478".to_string()]));
+
+        let network_config = super::NetworkConfig::new_from_config(&config)?;
+        assert_eq!(network_config.tld_dns_zone.as_deref(), Some("corp.example."));
+        assert_eq!(network_config.default_protocol.as_deref(), Some("udp"));
+        assert_eq!(network_config.disable_relay_kcp, Some(true));
+        assert_eq!(network_config.disable_relay_quic, Some(true));
+        assert_eq!(network_config.foreign_relay_bps_limit, Some(8_000_000));
+        assert_eq!(network_config.multi_thread_count, Some(6));
+        assert_eq!(network_config.enable_relay_foreign_network_kcp, Some(true));
+        assert_eq!(network_config.enable_relay_foreign_network_quic, Some(true));
+        assert_eq!(network_config.ipv6.as_deref(), Some("fd00::2/64"));
+        assert_eq!(network_config.netns.as_deref(), Some("et-ns"));
+        assert_eq!(network_config.tcp_whitelist, ["80", "8000-8100"]);
+        assert_eq!(network_config.udp_whitelist, ["53"]);
+        assert_eq!(network_config.stun_servers, ["stun.example.org:3478"]);
+        assert_eq!(network_config.tcp_stun_servers, ["stun.example.net:3478"]);
+        assert_eq!(network_config.stun_servers_v6, ["stun6.example.org:3478"]);
+
+        let generated = network_config.gen_config()?;
+        assert_eq!(generated.dump(), config.dump());
+        let back = super::NetworkConfig::new_from_config(&generated)?;
+        assert_eq!(back, network_config);
+        Ok(())
+    }
+
+    /// A `NetworkConfig` without the new fields (saved by an older build)
+    /// generates the default for each of them.
+    #[test]
+    fn test_network_config_without_the_new_fields_keeps_the_defaults() -> Result<(), anyhow::Error> {
+        let generated = super::NetworkConfig {
+            network_name: Some("demo".to_string()),
+            ..Default::default()
+        }
+        .gen_config()?;
+        let defaults = crate::common::config::gen_default_flags();
+        let flags = generated.get_flags();
+        assert_eq!(flags.tld_dns_zone, defaults.tld_dns_zone);
+        assert_eq!(flags.default_protocol, defaults.default_protocol);
+        assert_eq!(flags.foreign_relay_bps_limit, u64::MAX);
+        assert_eq!(flags.multi_thread_count, defaults.multi_thread_count);
+        assert!(!flags.disable_relay_kcp && !flags.disable_relay_quic);
+        assert!(generated.get_ipv6().is_none());
+        assert!(generated.get_netns().is_none());
+        assert!(generated.get_tcp_whitelist().is_empty());
+        assert!(generated.get_stun_servers().is_none());
         Ok(())
     }
 }

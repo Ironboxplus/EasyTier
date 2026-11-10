@@ -115,6 +115,30 @@ message NetworkConfig {
   // decimal-string-over-JSON shape as instance_recv_bps_limit; unset means no
   // limit.
   optional uint64 egress_wire_limit_bps = 70;
+
+  // Core switches that only the TOML flags had. `tld_dns_zone` keeps the
+  // upstream field number; the other fields of this message that this branch
+  // adds are numbered from 1001 so they cannot collide with upstream's.
+  optional string tld_dns_zone = 73;
+  optional string default_protocol = 1001;
+  optional bool disable_relay_kcp = 1002;
+  optional bool disable_relay_quic = 1003;
+  optional uint64 foreign_relay_bps_limit = 1005;
+  optional uint32 multi_thread_count = 1006;
+  optional bool enable_relay_foreign_network_kcp = 1007;
+  optional bool enable_relay_foreign_network_quic = 1008;
+
+  // Top-level TOML items that had no field here.
+  // Static IPv6 address with prefix length, e.g. fd00::2/64.
+  optional string ipv6 = 1009;
+  // Linux network namespace to create the TUN device in.
+  optional string netns = 1010;
+  repeated string tcp_whitelist = 1011;
+  repeated string udp_whitelist = 1012;
+  // Empty = the built-in server lists.
+  repeated string stun_servers = 1013;
+  repeated string tcp_stun_servers = 1014;
+  repeated string stun_servers_v6 = 1015;
 }
 
 message PortForwardConfig {

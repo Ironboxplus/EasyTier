@@ -5,10 +5,12 @@ use std::{
     pin::Pin,
     sync::{Arc, Weak},
     task::{Context, Poll},
+    time::Duration,
 };
 
 use crate::{
     common::{
+        config::Flags,
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         ifcfg::{IfConfiger, IfConfiguerTrait},
@@ -19,6 +21,7 @@ use crate::{
     tunnel::{
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
         common::{FramedWriter, TunnelWrapper, ZCPacketToBytes, reserve_buf},
+        mp_dataplane::auto_nic_mtu,
         packet_def::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     },
 };
@@ -668,11 +671,7 @@ impl VirtualNic {
 
         let dev = AsyncDevice::new(dev)?;
 
-        let flags = self.global_ctx.config.get_flags();
-        let mut mtu_in_config = flags.mtu;
-        if flags.enable_encryption {
-            mtu_in_config -= 20;
-        }
+        let mtu_in_config = effective_nic_mtu(&self.global_ctx);
         {
             // set mtu by ourselves, rust-tun does not handle it correctly on windows
             let _g = self.global_ctx.net_ns.guard();
@@ -792,6 +791,53 @@ impl VirtualNic {
     pub fn get_ifcfg(&self) -> impl IfConfiguerTrait + use<> {
         IfConfiger {}
     }
+}
+
+/// The smallest MTU among the usable physical egresses, `None` while the
+/// egress inventory has not started or reports none.
+fn egress_pmtu(global_ctx: &ArcGlobalCtx) -> Option<u32> {
+    let inventory = global_ctx.get_egress_inventory()?;
+    inventory
+        .snapshot()
+        .interfaces
+        .values()
+        .filter(|interface| interface.is_eligible)
+        .filter_map(|interface| interface.mtu)
+        .filter(|mtu| *mtu > 0)
+        .min()
+}
+
+/// Whether the MP datagram data plane is configured on.
+fn datagram_data_plane_enabled(flags: &Flags) -> bool {
+    flags
+        .mp
+        .as_ref()
+        .is_some_and(|mp| mp.enabled && mp.data_plane.as_ref().is_some_and(|plane| plane.enabled))
+}
+
+/// The MTU the virtual NIC gets. A configured value (`flags.mtu != 0`) is
+/// used as given, less the 20 bytes encryption costs. No value is automatic:
+/// upstream's 1380 (1360 encrypted) while the datagram data plane is off,
+/// and what one datagram carries over the egress while it is on
+/// (`mp_dataplane::auto_nic_mtu`, which already counts the encryption).
+pub(crate) fn effective_nic_mtu_for(flags: &Flags, egress_pmtu: Option<u32>) -> u32 {
+    let encryption_cost = if flags.enable_encryption { 20 } else { 0 };
+    if flags.mtu != 0 {
+        return flags.mtu.saturating_sub(encryption_cost);
+    }
+    if datagram_data_plane_enabled(flags) {
+        auto_nic_mtu(true, egress_pmtu, false)
+    } else {
+        auto_nic_mtu(false, egress_pmtu, false).saturating_sub(encryption_cost)
+    }
+}
+
+fn effective_nic_mtu(global_ctx: &ArcGlobalCtx) -> u32 {
+    let flags = global_ctx.get_flags();
+    let pmtu = datagram_data_plane_enabled(&flags)
+        .then(|| egress_pmtu(global_ctx))
+        .flatten();
+    effective_nic_mtu_for(&flags, pmtu)
 }
 
 pub struct NicCtx {
@@ -1399,8 +1445,54 @@ impl NicCtx {
         // Keep the updater running so runtime config patches can enable auto mode
         // without recreating the NIC.
         self.run_public_ipv6_addr_updater().await?;
+        self.run_mtu_updater();
 
         Ok(())
+    }
+
+    /// An automatic MTU follows the data plane: switching it on or off, or the
+    /// egress inventory arriving after the NIC was built, sets the interface
+    /// again in place. A configured MTU is left alone.
+    fn run_mtu_updater(&mut self) {
+        let global_ctx = self.global_ctx.clone();
+        let nic = self.nic.clone();
+        let mut event_receiver = global_ctx.subscribe();
+        self.tasks.spawn(async move {
+            let mut applied = effective_nic_mtu(&global_ctx);
+            let mut tick = tokio::time::interval(Duration::from_secs(15));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    event = event_receiver.recv() => match event {
+                        Ok(GlobalCtxEvent::ConfigPatched(patch)) if patch.mp.is_some() => {}
+                        Ok(_) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            event_receiver = event_receiver.resubscribe();
+                        }
+                    },
+                    _ = tick.tick() => {}
+                }
+                if global_ctx.get_flags().mtu != 0 {
+                    continue;
+                }
+                let mtu = effective_nic_mtu(&global_ctx);
+                if mtu == applied || mtu == 0 {
+                    continue;
+                }
+                let nic = nic.lock().await;
+                let _g = global_ctx.net_ns.guard();
+                match nic.ifcfg.set_mtu(nic.ifname(), mtu).await {
+                    Ok(()) => {
+                        tracing::info!(from = applied, to = mtu, "virtual NIC MTU changed");
+                        applied = mtu;
+                    }
+                    Err(error) => {
+                        tracing::warn!(?error, mtu, "failed to change the virtual NIC MTU")
+                    }
+                }
+            }
+        });
     }
 
     #[cfg(mobile)]
@@ -1463,5 +1555,55 @@ mod tests {
         //     let tmp = EthernetPacket::new(tmp.get_bytes());
         //     println!("ret: {:?}", tmp.unwrap());
         // }
+    }
+}
+
+#[cfg(test)]
+mod mtu_tests {
+    use super::*;
+    use crate::common::config::gen_default_flags;
+    use crate::proto::common::MpDataPlaneConfig;
+
+    fn with_data_plane(enabled: bool, mp_enabled: bool) -> Flags {
+        let mut flags = gen_default_flags();
+        let mp = flags.mp.get_or_insert_with(Default::default);
+        mp.enabled = mp_enabled;
+        mp.data_plane = Some(MpDataPlaneConfig {
+            enabled,
+            ..Default::default()
+        });
+        flags
+    }
+
+    /// Worklist 105: no configured MTU is upstream's 1380 (less the 20 bytes
+    /// encryption costs) while the data plane is off, and fits one datagram
+    /// while it is on.
+    #[test]
+    fn an_unset_mtu_is_automatic() {
+        let mut off = gen_default_flags();
+        assert_eq!(off.mtu, 0);
+        assert_eq!(effective_nic_mtu_for(&off, Some(1500)), 1360);
+        off.enable_encryption = false;
+        assert_eq!(effective_nic_mtu_for(&off, Some(1500)), 1380);
+
+        let on = with_data_plane(true, true);
+        assert_eq!(effective_nic_mtu_for(&on, Some(1500)), 1365);
+        assert_eq!(effective_nic_mtu_for(&on, None), 1380);
+        // The data plane needs MP on as well.
+        assert_eq!(effective_nic_mtu_for(&with_data_plane(true, false), Some(1500)), 1360);
+        assert_eq!(effective_nic_mtu_for(&with_data_plane(false, true), Some(1500)), 1360);
+    }
+
+    /// A configured MTU is used as given (less the encryption cost, as
+    /// before), with the data plane on or off.
+    #[test]
+    fn a_configured_mtu_is_used_as_given() {
+        let mut manual = with_data_plane(true, true);
+        manual.mtu = 1300;
+        assert_eq!(effective_nic_mtu_for(&manual, Some(1500)), 1280);
+        manual.enable_encryption = false;
+        assert_eq!(effective_nic_mtu_for(&manual, Some(1500)), 1300);
+        manual.mp = None;
+        assert_eq!(effective_nic_mtu_for(&manual, Some(1500)), 1300);
     }
 }

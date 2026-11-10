@@ -440,7 +440,10 @@ pub fn gen_default_flags() -> Flags {
         dev_name: "".to_string(),
         enable_encryption: true,
         enable_ipv6: true,
-        mtu: 1380,
+        // 0 = automatic: 1380 (upstream's default), lowered to what one MP
+        // datagram carries while the datagram data plane is on
+        // (`mp_dataplane::auto_nic_mtu`). Any other value is used as given.
+        mtu: 0,
         latency_first: false,
         enable_exit_node: false,
         proxy_forward_by_system: false,
@@ -571,6 +574,81 @@ pub const FIELD_EFFECTS: &[(&str, FieldEffect)] = &[
     ("disable_quic_input", FieldEffect::Restart),
     ("disable_kcp_input", FieldEffect::Restart),
     ("mtu", FieldEffect::Restart),
+    // The other `NetworkConfig` fields, by their `NetworkConfig` names
+    // (`field_effects_cover_every_network_config_field`). `hot` is what
+    // `InstanceConfigPatch` carries; the rest are read when the instance starts.
+    ("dhcp", FieldEffect::Restart),
+    ("network_name", FieldEffect::Restart),
+    ("network_secret", FieldEffect::Restart),
+    ("enable_vpn_portal", FieldEffect::Restart),
+    ("vpn_portal_listen_port", FieldEffect::Restart),
+    ("vpn_portal_client_network_addr", FieldEffect::Restart),
+    ("vpn_portal_client_network_len", FieldEffect::Restart),
+    ("listener_urls", FieldEffect::Restart),
+    ("latency_first", FieldEffect::Restart),
+    ("dev_name", FieldEffect::Restart),
+    ("use_smoltcp", FieldEffect::Restart),
+    ("disable_ipv6", FieldEffect::Restart),
+    ("disable_p2p", FieldEffect::Restart),
+    ("bind_device", FieldEffect::Restart),
+    ("no_tun", FieldEffect::Restart),
+    ("enable_exit_node", FieldEffect::Restart),
+    ("relay_all_peer_rpc", FieldEffect::Restart),
+    ("multi_thread", FieldEffect::Restart),
+    ("enable_relay_network_whitelist", FieldEffect::Restart),
+    ("relay_network_whitelist", FieldEffect::Restart),
+    ("proxy_forward_by_system", FieldEffect::Restart),
+    ("disable_encryption", FieldEffect::Restart),
+    ("enable_socks5", FieldEffect::Restart),
+    ("socks5_port", FieldEffect::Restart),
+    ("disable_udp_hole_punching", FieldEffect::Restart),
+    ("enable_magic_dns", FieldEffect::Restart),
+    ("enable_private_mode", FieldEffect::Restart),
+    ("disable_sym_hole_punching", FieldEffect::Restart),
+    ("p2p_only", FieldEffect::Restart),
+    ("data_compress_algo", FieldEffect::Restart),
+    ("encryption_algorithm", FieldEffect::Restart),
+    ("disable_tcp_hole_punching", FieldEffect::Restart),
+    ("secure_mode", FieldEffect::Restart),
+    ("credential_file", FieldEffect::Restart),
+    ("lazy_p2p", FieldEffect::Restart),
+    ("need_p2p", FieldEffect::Restart),
+    ("instance_recv_bps_limit", FieldEffect::Restart),
+    ("disable_upnp", FieldEffect::Restart),
+    ("enable_udp_broadcast_relay", FieldEffect::Restart),
+    ("socket_mark", FieldEffect::Restart),
+    ("tld_dns_zone", FieldEffect::Restart),
+    ("default_protocol", FieldEffect::Restart),
+    ("disable_relay_kcp", FieldEffect::Restart),
+    ("disable_relay_quic", FieldEffect::Restart),
+    ("foreign_relay_bps_limit", FieldEffect::Restart),
+    ("multi_thread_count", FieldEffect::Restart),
+    ("enable_relay_foreign_network_kcp", FieldEffect::Restart),
+    ("enable_relay_foreign_network_quic", FieldEffect::Restart),
+    ("netns", FieldEffect::Restart),
+    ("stun_servers", FieldEffect::Restart),
+    ("tcp_stun_servers", FieldEffect::Restart),
+    ("stun_servers_v6", FieldEffect::Restart),
+    ("hostname", FieldEffect::Hot),
+    ("virtual_ipv4", FieldEffect::Hot),
+    ("network_length", FieldEffect::Hot),
+    ("networking_method", FieldEffect::Hot),
+    ("public_server_url", FieldEffect::Hot),
+    ("peer_urls", FieldEffect::Hot),
+    ("proxy_cidrs", FieldEffect::Hot),
+    ("enable_manual_routes", FieldEffect::Hot),
+    ("routes", FieldEffect::Hot),
+    ("exit_nodes", FieldEffect::Hot),
+    ("mapped_listeners", FieldEffect::Hot),
+    ("port_forwards", FieldEffect::Hot),
+    ("acl", FieldEffect::Hot),
+    ("ipv6", FieldEffect::Hot),
+    ("tcp_whitelist", FieldEffect::Hot),
+    ("udp_whitelist", FieldEffect::Hot),
+    ("ipv6_public_addr_provider", FieldEffect::Hot),
+    ("ipv6_public_addr_auto", FieldEffect::Hot),
+    ("ipv6_public_addr_prefix", FieldEffect::Hot),
+    ("disable_relay_data", FieldEffect::Hot),
 ];
 
 pub fn field_effect(path: &str) -> Option<FieldEffect> {
@@ -1967,6 +2045,43 @@ pub mod tests {
         assert_eq!(field_effect("mp.nope"), None);
     }
 
+    /// Every `NetworkConfig` field says how an edit reaches a running
+    /// instance, under its own name (`mp` is expanded into the `mp.*` rows).
+    /// `instance_id` is the identity, `advanced_settings` only shows or hides
+    /// part of the form, and `quic_listen_port` is deprecated.
+    #[test]
+    fn field_effects_cover_every_network_config_field() {
+        use prost_reflect::ReflectMessage;
+        let exempt = ["instance_id", "advanced_settings", "quic_listen_port", "mp"];
+        let fields = crate::proto::api::manage::NetworkConfig::default()
+            .descriptor()
+            .fields()
+            .map(|field| field.name().to_string())
+            .filter(|name| !exempt.contains(&name.as_str()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let table = FIELD_EFFECTS
+            .iter()
+            .map(|(path, _)| path.to_string())
+            .filter(|path| !path.starts_with("mp."))
+            .collect::<std::collections::BTreeSet<_>>();
+        let missing = fields.difference(&table).collect::<Vec<_>>();
+        let unknown = table.difference(&fields).collect::<Vec<_>>();
+        assert!(missing.is_empty(), "NetworkConfig fields without a FIELD_EFFECTS row: {missing:?}");
+        assert!(unknown.is_empty(), "FIELD_EFFECTS rows that are no NetworkConfig field: {unknown:?}");
+        // What `InstanceConfigPatch` carries is hot, whatever the form does.
+        for hot in [
+            "hostname", "virtual_ipv4", "ipv6", "port_forwards", "acl", "tcp_whitelist",
+            "udp_whitelist", "proxy_cidrs", "routes", "exit_nodes", "mapped_listeners",
+            "peer_urls", "ipv6_public_addr_provider", "ipv6_public_addr_auto",
+            "ipv6_public_addr_prefix", "disable_relay_data", "egress_wire_limit_bps",
+        ] {
+            assert_eq!(field_effect(hot), Some(FieldEffect::Hot), "{hot}");
+        }
+        assert_eq!(field_effect("network_name"), Some(FieldEffect::Restart));
+        assert_eq!(field_effect("listener_urls"), Some(FieldEffect::Restart));
+        assert_eq!(field_effect("tcp_hole_punch_mode"), Some(FieldEffect::NewPath));
+    }
+
     /// Set `ET_UPDATE_SNAPSHOTS=1` to rewrite the GUI copy from the table.
     #[test]
     fn field_effects_snapshot_matches_the_gui_copy() {
@@ -2232,7 +2347,7 @@ socket_mark = 66
         flags.bind_device = false;
         flags.enable_ipv6 = false;
         flags.relay_network_whitelist = "".to_string();
-        flags.mtu = 0;
+        flags.mtu = 1200;
         flags.socket_mark = Some(0);
         flags.tcp_hole_punch_mode = "faketcp".to_string();
         let mp = flags.mp.as_mut().unwrap();
@@ -2251,7 +2366,7 @@ socket_mark = 66
         assert!(dumped.contains("bind_device = false"));
         assert!(dumped.contains("enable_ipv6 = false"));
         assert!(dumped.contains("relay_network_whitelist = \"\""));
-        assert!(dumped.contains("mtu = 0"));
+        assert!(dumped.contains("mtu = 1200"));
         assert!(dumped.contains("socket_mark = 0"));
         assert!(dumped.contains("tcp_hole_punch_mode = \"faketcp\""));
         assert!(dumped.contains("enabled = true"));
@@ -2269,7 +2384,7 @@ socket_mark = 66
         assert!(!reloaded_flags.bind_device);
         assert!(!reloaded_flags.enable_ipv6);
         assert_eq!(reloaded_flags.relay_network_whitelist, "");
-        assert_eq!(reloaded_flags.mtu, 0);
+        assert_eq!(reloaded_flags.mtu, 1200);
         assert_eq!(reloaded_flags.socket_mark, Some(0));
         assert_eq!(reloaded_flags.tcp_hole_punch_mode, "faketcp");
         let reloaded_mp = reloaded_flags.mp.unwrap();

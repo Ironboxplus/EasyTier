@@ -1103,6 +1103,33 @@ pub fn recommended_mtu(max_datagram: usize) -> u32 {
         .saturating_sub(ET_AEAD_OVERHEAD) as u32
 }
 
+/// The virtual NIC's MTU when none is configured and the datagram data plane
+/// is off: upstream's default.
+pub const DEFAULT_NIC_MTU: u32 = 1380;
+
+/// QUIC's own cost around a datagram on the wire: the 1472-byte UDP payload
+/// of a 1500-byte Ethernet MTU carries a datagram frame of at most 1414
+/// bytes (measured, `MpDataPlaneStatus.max_datagram_bytes`).
+const QUIC_DATAGRAM_WIRE_OVERHEAD: u32 = 1472 - 1414;
+
+/// The virtual NIC's MTU when none is configured. The data plane off, or no
+/// egress MTU known: [`DEFAULT_NIC_MTU`]. The datagram data plane on: the
+/// smaller of that and what one datagram can carry over an egress with path
+/// MTU `egress_pmtu` (IPv4 + UDP headers are 28 bytes, IPv6 + UDP 48), so an
+/// inner packet never needs fragmenting. Worked once when the NIC is built
+/// and again when the data plane is switched, the way wg-quick sizes its
+/// interface from the route MTU, not a fixed 1280 that would waste throughput.
+pub fn auto_nic_mtu(datagram_data_plane: bool, egress_pmtu: Option<u32>, egress_ipv6: bool) -> u32 {
+    let Some(pmtu) = egress_pmtu.filter(|&pmtu| datagram_data_plane && pmtu > 0) else {
+        return DEFAULT_NIC_MTU;
+    };
+    let ip_udp_headers = if egress_ipv6 { 48 } else { 28 };
+    let max_datagram = pmtu
+        .saturating_sub(ip_udp_headers)
+        .saturating_sub(QUIC_DATAGRAM_WIRE_OVERHEAD);
+    recommended_mtu(max_datagram as usize).min(DEFAULT_NIC_MTU)
+}
+
 /// Largest inner IP packet that still fits in one datagram, for the
 /// `icmp_ptb` oversize policy.
 pub fn inner_packet_limit(max_datagram: usize) -> usize {
@@ -1903,6 +1930,24 @@ mod tests {
             1400 - 1 - TCP_TUNNEL_HEADER_SIZE - PEER_MANAGER_HEADER_SIZE - ET_AEAD_OVERHEAD
         );
         assert_eq!(recommended_mtu(0), 0);
+    }
+
+    /// Worklist 105: no configured MTU is automatic. The data plane off is
+    /// upstream's 1380; on, the NIC fits one datagram over the egress (1365
+    /// for IPv4 Ethernet, the figure the live status reports).
+    #[test]
+    fn auto_nic_mtu_follows_the_data_plane_and_the_egress() {
+        assert_eq!(auto_nic_mtu(false, Some(1500), false), 1380);
+        assert_eq!(auto_nic_mtu(false, None, false), 1380);
+        assert_eq!(auto_nic_mtu(true, None, false), 1380);
+        assert_eq!(auto_nic_mtu(true, Some(1500), false), 1365);
+        assert_eq!(auto_nic_mtu(true, Some(1500), true), 1345);
+        // A smaller path MTU lowers it, a larger one never raises it.
+        assert_eq!(auto_nic_mtu(true, Some(1280), false), 1145);
+        assert_eq!(auto_nic_mtu(true, Some(9000), false), 1380);
+        // The figure agrees with what a session of that path reports.
+        assert_eq!(auto_nic_mtu(true, Some(1500), false), recommended_mtu(1414));
+        assert_eq!(auto_nic_mtu(true, Some(0), false), 1380, "an unknown path MTU is no limit");
     }
 
     #[test]
