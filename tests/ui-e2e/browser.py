@@ -101,8 +101,7 @@ def selected(st):
 
 
 def identity(st):
-    return {(str((pa.get("path") or {}).get("carrier_id")), (pa.get("path") or {}).get("local_addr"),
-             (pa.get("path") or {}).get("remote_addr")) for pa in s3.paths_of(st) if not s3.kind_is(pa, "punch")}
+    return s3.path_identity(st)
 
 
 def peer(st):
@@ -160,6 +159,7 @@ def toast_and_undo(page, what, undo=True):
             "shield_handles": page.locator('[data-testid="runway-shield"]').count(),
             "busy": page.locator('[data-testid="path-runway"]').get_attribute("aria-busy"),
             "api": API_LOG[-12:],
+            "paths": [(pa.get("carrier_kind"), pa.get("egress_device"), pa.get("tier"), pa.get("selected")) for pa in s3.paths_of(stats())],
         }
         raise
     check(f"{what}: the page says it applied the change", True)
@@ -196,7 +196,7 @@ def run() -> None:
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
         page.on("response", lambda r: API_LOG.append(f"{r.request.method} {r.url.split('/api/v1')[-1]} {r.status}"
-                                                    + (f" {(r.request.post_data or '')[:300]}" if r.request.method == "PATCH" else ""))
+                                                    + (f" {(r.request.post_data or '')[:1800]}" if r.request.method == "PATCH" else ""))
                 if "/api/v1" in r.url else None)
 
         # ---- login through the page
