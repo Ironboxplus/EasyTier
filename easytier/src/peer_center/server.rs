@@ -64,12 +64,19 @@ impl PeerCenterServer {
         }
     }
 
+    /// How long a peer's report counts after its last update.
+    const PEER_REPORT_TTL: std::time::Duration = std::time::Duration::from_secs(180);
+
     async fn clean_outdated_peer_data(data: &PeerCenterServerData) {
+        Self::clean_peer_data_older_than(data, Self::PEER_REPORT_TTL).await
+    }
+
+    async fn clean_peer_data_older_than(data: &PeerCenterServerData, ttl: std::time::Duration) {
         let mut state = data.state.write();
         let previous_len = state.peer_infos.len();
         state
             .peer_infos
-            .retain(|_, entry| entry.update_time.elapsed() < std::time::Duration::from_secs(180));
+            .retain(|_, entry| entry.update_time.elapsed() < ttl);
         if state.peer_infos.len() != previous_len {
             state.digest = Self::calc_global_digest_data(&state.peer_infos);
         }
@@ -370,13 +377,11 @@ mod tests {
             )
             .await
             .unwrap();
-        {
-            let mut state = server.data.state.write();
-            state.peer_infos.get_mut(&99).unwrap().update_time =
-                std::time::Instant::now() - std::time::Duration::from_secs(181);
-        }
-
-        PeerCenterServer::clean_outdated_peer_data(&server.data).await;
+        // Let the report age past a short TTL; subtracting the real TTL from
+        // `Instant::now()` overflows on Windows right after the machine boots.
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        PeerCenterServer::clean_peer_data_older_than(&server.data, std::time::Duration::from_millis(10))
+            .await;
         let updated = server
             .get_global_peer_map(
                 BaseController::default(),

@@ -70,7 +70,7 @@ const peerNames = computed<Record<string, string>>(() => Object.fromEntries(
 const reveal = { initial: { opacity: 0, height: 0 }, animate: { opacity: 1, height: 'auto' }, exit: { opacity: 0, height: 0 } }
 const expandedPeerKey = ref<string | null>(null)
 
-function peerRowKey(info: PeerRoutePair): string {
+function peerRowKey(info: { route?: { peer_id?: number | string } }): string {
   return String(info.route?.peer_id ?? '')
 }
 

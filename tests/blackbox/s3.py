@@ -1319,19 +1319,24 @@ def s32_reliable_class(run, args):
     limit = 30_000_000
     secs = int(args.tcp_secs)
     res = {}
+    # The 2% loss is random: one 20 s run of each mode carries a few % of noise, as much as the margin
+    # this check holds the modes to. Three runs each, the median of them compared.
+    trials = 3
     for label, dp in [("stream", {"enabled": False}),
                       ("reliable", {"enabled": True, "class_policies": [{"class": "tcp", "mode": "reliable_stream"}]})]:
-        net, a, b = pair(run, "udp", mp_extra={"data_plane": dp}, flags_extra={"egress_wire_limit_bps": limit})
-        established(run, a, "udp")
-        net.netem("delay 10ms loss 2%")
-        bulk = background(run, label, "s3a", "tcp", B_VIP, f"s{secs}")
-        time.sleep(5)
-        wire = wire_series(a, 11)
-        bulk.join()
-        r = run.evidence[label]
-        res[label] = {"bps": r["bps"], "wire": wire}
-        run.check(f"{label} wire within limit", statistics.mean(wire) <= limit * 1.02, wire=wire)
-        run.reset()
+        runs, wire = [], []
+        for trial in range(trials):
+            net, a, b = pair(run, "udp", mp_extra={"data_plane": dp}, flags_extra={"egress_wire_limit_bps": limit})
+            established(run, a, "udp")
+            net.netem("delay 10ms loss 2%")
+            bulk = background(run, label, "s3a", "tcp", B_VIP, f"s{secs}")
+            time.sleep(5)
+            wire = wire_series(a, 11)
+            bulk.join()
+            runs.append(run.evidence[label]["bps"])
+            run.check(f"{label} wire within limit (run {trial + 1})", statistics.mean(wire) <= limit * 1.02, wire=wire)
+            run.reset()
+        res[label] = {"bps": statistics.median(runs), "bps_runs": runs, "wire": wire}
     run.evidence["reliable"] = res
     et_ratio = res["reliable"]["bps"] / res["stream"]["bps"]
     # The link the inner TCP sees: what the single-stream mode delivered.
@@ -1545,10 +1550,15 @@ def s32_mwan3(run, args):
     st = run.wait_mp(a, lambda s: len({pa.get("observed_public_addr", "").rsplit(":", 1)[0] for pa in paths_of(s)
                                        if pa.get("observed_public_addr")}) >= 2, what="2 observed WANs", secs=150)
     before = path_bytes(st)
-    run.payload("mwan3", 32 << 20)
-    st = a.stats()
-    after = path_bytes(st)
-    grew = [k for k in after if after[k] > before.get(k, 0) + (1 << 20)]
+    # A path that answers faster takes most of a payload; the claim is that each path is a sending path
+    # that carries data, so keep sending (up to four payloads) until two of them have each moved 1 MiB.
+    for round_ in range(4):
+        run.payload("mwan3", 32 << 20)
+        st = a.stats()
+        after = path_bytes(st)
+        grew = [k for k in after if after[k] > before.get(k, 0) + (1 << 20)]
+        if len(grew) >= 2:
+            break
     wans = {pa.get("observed_public_addr", "").rsplit(":", 1)[0] for pa in paths_of(st)}
     run.evidence["mwan3"] = {"paths": paths_of(st), "egress": st.get("mp_egress_resources")}
     run.check("mwan3: >= 2 paths carry bytes", len(grew) >= 2, grew=list(map(str, grew)))
@@ -1736,7 +1746,10 @@ def s34_hot_selection(run, args):
         run.evidence["grey"].append({"step": step, "start": proc_start_ticks(a), "paths": len(now),
                                      "active_tier": peer.get("active_tier"),
                                      "switch_threshold_micros": peer.get("switch_threshold_micros"),
-                                     "selected": selected_paths(s)})
+                                     "selected": selected_paths(s),
+                                     "path_list": sorted((str(pa.get("carrier_kind")), (pa.get("path") or {}).get("local_addr"),
+                                                          (pa.get("path") or {}).get("remote_addr"), str(pa.get("lifecycle_state")),
+                                                          str(pa.get("validation_state"))) for pa in paths_of(s))})
         run.check(f"{step}: same process", proc_start_ticks(a) == base_start and a.proc.poll() is None)
         run.check(f"{step}: no path replaced", base_paths <= now, missing=sorted(base_paths - now))
         run.check(f"{step}: no reconnect asked", not peer.get("reconnect_required"))

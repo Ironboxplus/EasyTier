@@ -134,7 +134,8 @@ jobs:
       - name: Prepare system for tests
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qqy bridge-utils miniupnpd miniupnpd-iptables iptables
+          # The GUI crate's test binary is linked against the webkit runtime.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qqy bridge-utils miniupnpd miniupnpd-iptables iptables libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1 librsvg2-2 libsoup-3.0-0 libjavascriptcoregtk-4.1-0
           sudo modprobe br_netfilter
           sudo sysctl net.bridge.bridge-nf-call-iptables=0
           sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
