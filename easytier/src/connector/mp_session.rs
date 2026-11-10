@@ -8077,10 +8077,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(server_offers.len(), 1);
-        assert!(matches!(
-            server_offers.into_iter().next().unwrap().outcome,
-            OfferPathResult::NewTunnel(_)
-        ));
+        // Keep the server's tunnel alive to the end of the test: dropping it sends FIN, and the
+        // client driver's exit then races the assertions below (it wins sooner on Windows).
+        let server_offer = server_offers.into_iter().next().unwrap();
+        assert!(matches!(server_offer.outcome, OfferPathResult::NewTunnel(_)));
         assert!(manager_a.has_live_carrier(2, CarrierKind::Manual).await);
 
         assert!(

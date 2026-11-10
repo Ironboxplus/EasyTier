@@ -267,12 +267,19 @@ mod tests {
         assert!(bucket.try_consume(1000));
         assert!(!bucket.try_consume(1));
 
-        // Wait for refill (1 refill interval + buffer)
-        sleep(Duration::from_millis(25)).await;
-
-        // Should have approximately 20 tokens (1000 tokens/s * 0.02s)
-        assert!(bucket.try_consume(15));
-        assert!(!bucket.try_consume(10)); // But not full capacity
+        // Wait for the background refill. Its tick is one timer interval, which on Windows is
+        // about 15 ms however short the interval asked for, so poll instead of sleeping once.
+        let mut refilled = false;
+        for _ in 0..200 {
+            sleep(Duration::from_millis(10)).await;
+            if bucket.try_consume(15) {
+                refilled = true;
+                break;
+            }
+        }
+        assert!(refilled, "the bucket was not refilled within two seconds");
+        // A refill adds a few tokens at a time, never the whole capacity at once.
+        assert!(!bucket.try_consume(1000));
     }
 
     /// Test capacity enforcement

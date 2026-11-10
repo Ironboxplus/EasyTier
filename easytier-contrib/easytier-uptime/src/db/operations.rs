@@ -383,7 +383,9 @@ mod tests {
         assert_eq!(node.name, "Test Node");
         assert_eq!(node.host, "test.example.com");
         assert_eq!(node.port, 11010);
-        assert!(node.is_active);
+        // A new node waits for its first health check and for approval.
+        assert!(!node.is_active);
+        assert!(!node.is_approved);
 
         // 测试获取节点
         let found_node = NodeOperations::get_node_by_id(&db, node.id).await.unwrap();

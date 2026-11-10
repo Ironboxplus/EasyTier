@@ -602,17 +602,25 @@ class Run:
 
         def path_sent():
             return sum(int(pa.get("sent_bytes") or 0) for pa in paths_of(core.stats()))
-        _, tx0 = row()
-        p0 = path_sent()
-        res = self.payload(label, nbytes)
-        r, tx1 = row()
-        tunnels = [t.strip() for t in str(r.get("tunnel_proto")).split(",") if t.strip()]
-        only_mp = bool(tunnels) and all(t.startswith("mpquic") for t in tunnels)
-        path_growth = path_sent() - p0
-        # With a native conn alongside, only the MP path counters can attribute the bytes.
-        self.check(f"{label} carried by MP", (only_mp and tx1 - tx0 >= nbytes * 0.95)
-                   or path_growth >= nbytes * 0.95, tunnels=tunnels, tx_growth=tx1 - tx0,
-                   path_sent_growth=path_growth)
+        # Right after the path validates, the peer may still send part of the data over its native conn
+        # (the default conn changes a moment later); each attempt measures what MP carried, and only
+        # the last one is held to the claim.
+        attempts = 4
+        for attempt in range(1, attempts + 1):
+            _, tx0 = row()
+            p0 = path_sent()
+            res = self.payload(label, nbytes)
+            r, tx1 = row()
+            tunnels = [t.strip() for t in str(r.get("tunnel_proto")).split(",") if t.strip()]
+            only_mp = bool(tunnels) and all(t.startswith("mpquic") for t in tunnels)
+            path_growth = path_sent() - p0
+            # With a native conn alongside, only the MP path counters can attribute the bytes.
+            carried = (only_mp and tx1 - tx0 >= nbytes * 0.95) or path_growth >= nbytes * 0.95
+            if carried or attempt == attempts:
+                break
+            time.sleep(15)
+        self.check(f"{label} carried by MP", carried, tunnels=tunnels, tx_growth=tx1 - tx0,
+                   path_sent_growth=path_growth, attempt=attempt)
         return res
 
     def wait_ping(self, ns, dst, secs=60):
@@ -1194,9 +1202,12 @@ def s32_path_policy(run, args):
 
     def no_data(d, d_rx, dev):
         # The policy is local: the peer may keep sending on the path, and a path held idle still
-        # acknowledges that (pure ACKs, a few % of what it receives) -- but carries none of our data.
+        # acknowledges that (pure ACKs) -- but carries none of our data. Measured on the CI runners,
+        # with main's code too, ET's ACKs (per-path ACK ranges, QUIC and ET headers, the AEAD tag) come
+        # to 11-12% of the bytes received on the path, so the bound is 15%; carrying data would be
+        # the size of the payload (16 MiB per direction), orders above it.
         sent, received = by_dev(d, dev), by_dev(d_rx, dev)
-        return sent < 64 << 10 or sent <= received * 0.05
+        return sent < 64 << 10 or sent <= received * 0.15
 
     def pol(action, dev):
         return {"path_policies": [{"match_egress_device": dev, "action": action, "enabled": True}]}
@@ -1812,10 +1823,12 @@ def s34_hot_selection(run, args):
     run.wait_mp(a, lambda st: len(selected_paths(st)) == 1, secs=30, what="one path sends with kmax 1")
     grey("kmax 1")
 
-    # Loss threshold: 20 % loss toward A on a1 keeps it out at the default 10 %, and back at 40 %.
+    # Loss threshold: 20 % loss on a1 (both ways) keeps it out at the default 10 %, and back at 40 %.
     a.mp_set(kmax=2)
     run.wait_mp(a, lambda st: len(selected_paths(st)) == 2, secs=30, what="two paths send again")
     sh("tc", "qdisc", "replace", "dev", "ra1", "root", "netem", "delay", "10ms", "loss", "20%", ns="s3ra")
+    # A path's loss is what A sent on it and never saw acknowledged: drop on A's own egress as well.
+    sh("tc", "qdisc", "replace", "dev", "a1", "root", "netem", "loss", "20%", ns="s3a")
     stop = time.time() + 120
     while time.time() < stop:
         run.payload("loss on a1", 2 << 20)
@@ -1834,6 +1847,7 @@ def s34_hot_selection(run, args):
     run.check("loss threshold 40: the path is back", ("udp-direct", "a1") in selected_paths(s),
               selected=selected_paths(s))
     sh("tc", "qdisc", "replace", "dev", "ra1", "root", "netem", "delay", "10ms", ns="s3ra")
+    sh("tc", "qdisc", "del", "dev", "a1", "root", ns="s3a", check=False)
 
     # Automatic MTU: `mtu` unset, the datagram data plane lowers the NIC to what one datagram carries.
     run.wait_mp(a, lambda st: ((a.mp_peer() or {}).get("data_plane") or {}).get("negotiated") == "datagram",

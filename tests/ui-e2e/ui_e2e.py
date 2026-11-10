@@ -109,7 +109,17 @@ def s35_ui_e2e(run, args):
             "network_name": "s3net", "network_secret": "s3secret", "hostname": "a", "dhcp": False,
             "virtual_ipv4": s3.A_VIP, "network_length": 24, "networking_method": "Manual",
             "peer_urls": [f"tcp://{s3.RELAY}:11010"], "listener_urls": [], "no_tun": True, "disable_upnp": True,
-            "mp": {**mp, "egress_devices": ["a1", "a2"]},
+            # Spelled out the way the page's own default is: a field left out of JSON arrives as 0 or
+            # "", and the core rejects an empty `congestion_control_params_json`.
+            "mp": {
+                "enabled": True, "packet_scheduler": "sqm-weighted", "scheduler_params_json": "{}", "kmax": 1,
+                "control_interval_ms": 500, "establishment_timeout_ms": 10000, "providers": mp["providers"],
+                "egress_devices": ["a1", "a2"], "resource_groups": [], "manual_paths": [],
+                "disable_overlay_weighted_routing": True, "congestion_control": "",
+                "congestion_control_params_json": "{}", "path_policies": [], "egress_limits": [],
+                "session_generation": 0, "punch_attempts": 1, "data_plane": {"enabled": True}, "punch_pps": 0,
+                "punch_rate_limits": [],
+            },
         }
         out = run.out / "ui"
         out.mkdir(exist_ok=True)

@@ -684,6 +684,9 @@ jobs:
           extra=""
           [ -n "$UPSTREAM" ] && extra="--b-bin $UPSTREAM"
           [ "${{ matrix.scenario }}" = s33_soak ] && extra="--hours 0.08"
+          # A 20 s run still has the inner TCP's slow start in it, which costs the reliable class a few % on
+          # the hosted runners; a minute shows the steady state the check is about.
+          [ "${{ matrix.scenario }}" = s32_reliable_class ] && extra="--tcp-secs 60"
           sudo unshare --pid --fork --mount-proc --mount --net --propagation private -- bash -c "
             set -e
             mkdir -p /run/netns
