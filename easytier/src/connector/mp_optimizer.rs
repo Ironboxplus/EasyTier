@@ -871,6 +871,150 @@ mod tests {
         assert_eq!(pick_with(&tuned, &[direct], &[], 1), vec![key(1)]);
     }
 
+    fn config_from(value: Option<&serde_json::Value>) -> MpSelectionConfig {
+        let Some(value) = value else {
+            return MpSelectionConfig::default();
+        };
+        let number = |name: &str| value[name].as_u64().unwrap_or(0) as u32;
+        MpSelectionConfig {
+            kind_rules: value["kind_rules"]
+                .as_array()
+                .map(|rules| {
+                    rules
+                        .iter()
+                        .map(|rule| {
+                            rule(
+                                rule["carrier_kind"].as_str().unwrap(),
+                                rule["ip_family"].as_str().unwrap(),
+                                rule["tier"].as_str().unwrap(),
+                                rule["rtt_bias_ms"].as_i64().unwrap() as i32,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            switch_min_ms: number("switch_min_ms"),
+            switch_percent: number("switch_percent"),
+            lossy_percent: number("lossy_percent"),
+            unmeasured_rtt_ms: number("unmeasured_rtt_ms"),
+        }
+    }
+
+    fn tier_of(name: &str) -> PathTier {
+        match name {
+            "primary" => PathTier::Primary,
+            "backup" => PathTier::Backup,
+            other => panic!("unknown tier {other}"),
+        }
+    }
+
+    fn kind_of(name: &str) -> CarrierKind {
+        [
+            CarrierKind::UdpDirect,
+            CarrierKind::UdpPunch,
+            CarrierKind::FakeTcpPunch,
+            CarrierKind::RelayNextHop,
+            CarrierKind::Manual,
+        ]
+        .into_iter()
+        .find(|kind| carrier_kind_name(*kind) == name)
+        .unwrap_or_else(|| panic!("unknown carrier kind {name}"))
+    }
+
+    /// The vectors `mpSelection.spec.ts` reads too: the selector and its
+    /// TypeScript port give the same answer for every case.
+    #[test]
+    fn shared_vectors_agree_with_the_selector() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../easytier-web/frontend-lib/tests/vectors/select_paths.json");
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        for case in doc["transport_bias"].as_array().unwrap() {
+            let params = params_of(MpSelectionConfig {
+                kind_rules: config_from(Some(&serde_json::json!({ "kind_rules": case["rules"] })))
+                    .kind_rules,
+                ..Default::default()
+            });
+            let (tier, bias) = transport_bias(
+                kind_of(case["kind"].as_str().unwrap()),
+                case["remote"].as_str().unwrap().parse().unwrap(),
+                &params,
+            );
+            assert_eq!(
+                (tier.as_str(), bias),
+                (case["expect"][0].as_str().unwrap(), case["expect"][1].as_i64().unwrap()),
+                "transport_bias {case}"
+            );
+        }
+
+        for case in doc["prefer_bias"].as_array().unwrap() {
+            assert_eq!(
+                prefer_bias_micros(
+                    case["rtt_micros"].as_u64().unwrap(),
+                    case["weight"].as_f64().unwrap()
+                ),
+                case["expect"].as_i64().unwrap(),
+                "prefer_bias {case}"
+            );
+        }
+
+        for case in doc["switching_threshold"].as_array().unwrap() {
+            let params = params_of(config_from(case.get("params")));
+            let incumbent = SelectorPath::new(
+                key(1),
+                PathTier::Primary,
+                case["rtt_micros"].as_u64().unwrap(),
+                0,
+            );
+            assert_eq!(
+                switching_threshold_micros(&incumbent, &params),
+                case["expect"].as_i64().unwrap(),
+                "switching_threshold {case}"
+            );
+        }
+
+        let ids = |value: &serde_json::Value| -> Vec<u64> {
+            value.as_array().unwrap().iter().map(|id| id.as_u64().unwrap()).collect()
+        };
+        for case in doc["select"].as_array().unwrap() {
+            let params = params_of(config_from(case.get("params")));
+            let paths = case["paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|path| {
+                    SelectorPath::with_unmeasured(
+                        key(path["id"].as_u64().unwrap() as usize),
+                        tier_of(path["tier"].as_str().unwrap()),
+                        path["rtt_micros"].as_u64().unwrap(),
+                        path["bias_micros"].as_i64().unwrap(),
+                        params.unmeasured_rtt_micros,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let current = ids(&case["current"])
+                .into_iter()
+                .map(|id| key(id as usize))
+                .collect::<Vec<_>>();
+            let pinned = ids(&case["pinned"])
+                .into_iter()
+                .map(|id| key(id as usize))
+                .collect::<HashSet<_>>();
+            let chosen = select_paths(
+                &paths,
+                &current,
+                case["kmax"].as_u64().unwrap() as usize,
+                &pinned,
+                &params,
+            )
+            .into_iter()
+            .map(|key| key.carrier_id.0 as u64)
+            .collect::<Vec<_>>();
+            assert_eq!(chosen, ids(&case["expect"]), "select {}", case["name"]);
+        }
+    }
+
     fn budgeted(id: usize, resources: &[&ResourceGroupId]) -> BudgetedPath {
         BudgetedPath {
             key: key(id),

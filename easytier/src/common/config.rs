@@ -2051,12 +2051,22 @@ pub mod tests {
     /// part of the form, and `quic_listen_port` is deprecated.
     #[test]
     fn field_effects_cover_every_network_config_field() {
-        use prost_reflect::ReflectMessage;
+        // The generated type carries no descriptor; read the field names from the proto source.
         let exempt = ["instance_id", "advanced_settings", "quic_listen_port", "mp"];
-        let fields = crate::proto::api::manage::NetworkConfig::default()
-            .descriptor()
-            .fields()
-            .map(|field| field.name().to_string())
+        let source = include_str!("../proto/api_manage.proto");
+        let body = source
+            .split("message NetworkConfig {")
+            .nth(1)
+            .and_then(|rest| rest.split("
+}").next())
+            .expect("NetworkConfig message in api_manage.proto");
+        let fields = body
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or("").trim())
+            .filter_map(|line| {
+                let (declaration, _) = line.split_once('=')?;
+                declaration.split_whitespace().last().map(str::to_string)
+            })
             .filter(|name| !exempt.contains(&name.as_str()))
             .collect::<std::collections::BTreeSet<_>>();
         let table = FIELD_EFFECTS

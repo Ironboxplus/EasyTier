@@ -383,11 +383,24 @@ describe('RemoteManagement MP hot patch', () => {
     }
   })
 
+  it('applies a hostname change without restarting', async () => {
+    const api = runningApi(mpConfig())
+    const wrapper = await editAndRun(api, (c) => {
+      c.hostname = 'host-b'
+    })
+    try {
+      expect(api.run_network).not.toHaveBeenCalled()
+      expect(api.patch_network_config.mock.calls[0][1]).toEqual({ hostname: 'host-b' })
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('restarts through run_network when a non-patchable field changed', async () => {
     const api = runningApi(mpConfig())
     const wrapper = await editAndRun(api, (c) => {
       c.mp = { ...c.mp!, kmax: 6 }
-      c.hostname = 'host-b'
+      c.dev_name = 'et1'
     })
     try {
       expect(api.patch_network_config).not.toHaveBeenCalled()

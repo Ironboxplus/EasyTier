@@ -59,7 +59,30 @@ export interface GetNetworkMetasResponse {
  * `WebClientService.PatchNetworkInstanceConfig`; applied without restarting the
  * instance and persisted by the core.
  */
+export type PatchAction = 'ADD' | 'REMOVE' | 'CLEAR';
+type PatchEntries = Record<string, unknown>[];
+
 export interface InstanceConfigPatch {
+    hostname?: string;
+    ipv4?: Record<string, unknown>;
+    ipv6?: Record<string, unknown>;
+    port_forwards?: PatchEntries;
+    acl?: {
+        /** Replaces the whole ACL. */
+        acl?: Record<string, unknown>;
+        tcp_whitelist?: PatchEntries;
+        udp_whitelist?: PatchEntries;
+    };
+    proxy_networks?: PatchEntries;
+    routes?: PatchEntries;
+    exit_nodes?: PatchEntries;
+    mapped_listeners?: PatchEntries;
+    /** The peers this instance connects to. */
+    connectors?: PatchEntries;
+    ipv6_public_addr_provider?: boolean;
+    ipv6_public_addr_auto?: boolean;
+    ipv6_public_addr_prefix?: string;
+    disable_relay_data?: boolean;
     /** Replaces the whole MpConfig. */
     mp?: MpConfig;
     tcp_hole_punch_mode?: string;

@@ -243,8 +243,8 @@ describe('MpConfig normalization and backend contract', () => {
     const table = fieldEffects as Record<string, string>
     for (const v of Object.values(table)) expect(['hot', 'new_path', 'reconnect', 'restart']).toContain(v)
     for (const field of MP_GUI_BACKEND_FIELDS) {
-      if (field === 'mp.sqm' || field === 'mp.data_plane') {
-        const nested = DEFAULT_MP_CONFIG()[field.slice(3) as 'sqm' | 'data_plane']
+      if (field === 'mp.sqm' || field === 'mp.data_plane' || field === 'mp.selection') {
+        const nested = DEFAULT_MP_CONFIG()[field.slice(3) as 'sqm' | 'data_plane' | 'selection']
         for (const k of Object.keys(nested)) expect(table[`${field}.${k}`], `${field}.${k}`).toBeDefined()
         continue
       }
@@ -333,7 +333,7 @@ describe('hot patch builder', () => {
     expect(buildHotPatch(base(), base())).toEqual({})
   })
 
-  it('patches only MP / hole mode / egress limit changes', () => {
+  it('patches MP / hole mode / egress limit changes', () => {
     const before = base()
     const after = base()
     after.mp = { ...after.mp!, kmax: 5 }
@@ -356,7 +356,7 @@ describe('hot patch builder', () => {
     const before = base()
     const after = base()
     after.mp = { ...after.mp!, kmax: 5 }
-    after.hostname = 'host-b'
+    after.network_name = 'other-net'
     expect(buildHotPatch(before, after)).toBeNull()
   })
 })

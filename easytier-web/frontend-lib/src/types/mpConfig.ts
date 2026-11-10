@@ -117,6 +117,43 @@ export function DEFAULT_MP_CLASS_POLICY(cls: string, mode: MpDataPlaneMode = 'da
   return { class: cls, mode }
 }
 
+// ---- Path selection (worklist 103, common.proto MpSelectionConfig) ----
+
+export const MP_SELECTION_TIERS = ['primary', 'backup'] as const
+export type MpSelectionTier = (typeof MP_SELECTION_TIERS)[number]
+
+/** common.proto MpSelectionKindRule: the tier and RTT bias of one kind of path. */
+export interface MpSelectionKindRule {
+  /** udp-direct | udp-punch | faketcp-punch | relay-next-hop | manual */
+  carrier_kind: string
+  /** '' = either family | v4 | v6 */
+  ip_family: '' | 'v4' | 'v6'
+  tier: MpSelectionTier
+  /** Negative = preferred. */
+  rtt_bias_ms: number
+}
+
+/** common.proto MpSelectionConfig; 0 and an empty rule list are the built-in values. */
+export interface MpSelectionConfig {
+  kind_rules: MpSelectionKindRule[]
+  switch_min_ms: number
+  switch_percent: number
+  lossy_percent: number
+  unmeasured_rtt_ms: number
+}
+
+export function DEFAULT_MP_SELECTION_CONFIG(): MpSelectionConfig {
+  return { kind_rules: [], switch_min_ms: 0, switch_percent: 0, lossy_percent: 0, unmeasured_rtt_ms: 0 }
+}
+
+/** The built-in values behind the zeros, as the core resolves them. */
+export const MP_SELECTION_DEFAULTS = {
+  switch_min_ms: 5,
+  switch_percent: 10,
+  lossy_percent: 10,
+  unmeasured_rtt_ms: 333,
+} as const
+
 /** Engine-default CC; stored as the historical empty string in MpConfig. */
 export const ENGINE_DEFAULT_CC = 'engine-default'
 
@@ -148,6 +185,8 @@ export interface MpConfig {
   /** Hole-punch packets each NIC may send per second; 0 = unlimited. */
   punch_pps: number
   punch_rate_limits: MpPunchRateLimit[]
+  /** Path selection tunables; every 0 / empty list is the built-in value. */
+  selection: MpSelectionConfig
 }
 
 export function DEFAULT_MP_SQM_CONFIG(): MpSqmConfig {
@@ -185,6 +224,7 @@ export function DEFAULT_MP_CONFIG(): MpConfig {
     data_plane: DEFAULT_MP_DATAPLANE_CONFIG(),
     punch_pps: 0,
     punch_rate_limits: [],
+    selection: DEFAULT_MP_SELECTION_CONFIG(),
   }
 }
 
@@ -372,6 +412,37 @@ function asDataPlaneConfig(value: unknown): MpDataPlaneConfig {
   }
 }
 
+const MP_FAMILIES = new Set(['', 'v4', 'v6'])
+
+function asSelectionConfig(value: unknown): MpSelectionConfig {
+  const base = DEFAULT_MP_SELECTION_CONFIG()
+  if (!value || typeof value !== 'object') return base
+  const input = value as Record<string, unknown>
+  const providers = new Set<string>(MP_PROVIDERS)
+  const rules = Array.isArray(input.kind_rules) ? input.kind_rules : []
+  return {
+    kind_rules: rules.flatMap((raw): MpSelectionKindRule[] => {
+      if (!raw || typeof raw !== 'object') return []
+      const rule = raw as Record<string, unknown>
+      const carrier_kind = String(rule.carrier_kind ?? '')
+      const ip_family = String(rule.ip_family ?? '')
+      const tier = String(rule.tier ?? '')
+      if (!providers.has(carrier_kind) || !MP_FAMILIES.has(ip_family)) return []
+      if (tier !== 'primary' && tier !== 'backup') return []
+      return [{
+        carrier_kind,
+        ip_family: ip_family as MpSelectionKindRule['ip_family'],
+        tier,
+        rtt_bias_ms: clamp(Math.round(asFiniteNumber(rule.rtt_bias_ms, 0)), -1000, 1000),
+      }]
+    }),
+    switch_min_ms: asUint(input.switch_min_ms),
+    switch_percent: Math.min(100, asUint(input.switch_percent)),
+    lossy_percent: Math.min(100, asUint(input.lossy_percent)),
+    unmeasured_rtt_ms: Math.min(5000, asUint(input.unmeasured_rtt_ms)),
+  }
+}
+
 /** Normalize partial/legacy mp blobs into a complete MpConfig. */
 export function normalizeMpConfig(raw: unknown): MpConfig {
   const base = DEFAULT_MP_CONFIG()
@@ -422,6 +493,7 @@ export function normalizeMpConfig(raw: unknown): MpConfig {
     data_plane: asDataPlaneConfig(input.data_plane),
     punch_pps: asUint(input.punch_pps),
     punch_rate_limits: asPunchRateLimits(input.punch_rate_limits),
+    selection: asSelectionConfig(input.selection),
   }
 }
 
@@ -610,7 +682,7 @@ export function fieldEffect(field: string): MpFieldEffect | undefined {
 export function changedMpFields(before: MpConfig, after: MpConfig): string[] {
   const out: string[] = []
   for (const key of Object.keys(after) as (keyof MpConfig)[]) {
-    if (key === 'sqm' || key === 'data_plane') {
+    if (key === 'sqm' || key === 'data_plane' || key === 'selection') {
       const b = (before[key] ?? {}) as unknown as Record<string, unknown>
       const a = after[key] as unknown as Record<string, unknown>
       for (const k of Object.keys(a)) {
@@ -673,6 +745,14 @@ export interface MpPathStatus {
   backed_off?: boolean
   /** not-established | policy | lossy-path | lossy-first-hop | unacked, or empty. */
   not_selected_reason?: string
+  /** primary | backup; empty for a path that is no selection candidate. */
+  tier?: string
+  /** Added to the RTT before ranking (tier table + prefer policy); negative = preferred. */
+  rtt_bias_micros?: number | string
+  /** The RTT the path is ranked by, the stand-in for "no sample" included. */
+  ranked_rtt_micros?: number | string
+  /** In the set the last selection chose to send on. */
+  selected?: boolean
 }
 
 export interface MpFakeTcpUpgradeStatus {
@@ -701,6 +781,10 @@ export interface MpPeerStatus {
   peer_advertised_rx_bps?: number | string | null
   data_plane?: MpDataPlaneStatus
   faketcp_upgrade?: MpFakeTcpUpgradeStatus
+  /** How much better than the worst sending path a challenger must be to replace it. */
+  switch_threshold_micros?: number | string
+  /** primary | backup | empty: the tier of the sending set. */
+  active_tier?: string
 }
 
 /** api_instance MpClassStatus: counters are monotonic; the GUI differences them. */
@@ -817,6 +901,7 @@ export const MP_GUI_BACKEND_FIELDS = [
   'mp.data_plane',
   'mp.punch_pps',
   'mp.punch_rate_limits',
+  'mp.selection',
   'tcp_hole_punch_mode',
   'egress_wire_limit_bps',
   'enable_quic_proxy',

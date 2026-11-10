@@ -1711,7 +1711,7 @@ mod tests {
         flags.enable_relay_foreign_network_kcp = true;
         flags.enable_relay_foreign_network_quic = true;
         config.set_flags(flags.clone());
-        config.set_ipv6("fd00::2/64".parse().unwrap());
+        config.set_ipv6(Some("fd00::2/64".parse().unwrap()));
         config.set_netns(Some("et-ns".to_string()));
         config.set_tcp_whitelist(vec!["80".to_string(), "8000-8100".to_string()]);
         config.set_udp_whitelist(vec!["53".to_string()]);
