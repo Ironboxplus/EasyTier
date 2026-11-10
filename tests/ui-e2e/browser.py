@@ -276,8 +276,21 @@ def run() -> None:
             page.goto(device_url(INSTANCE))
             page.locator('button:has(.pi-ellipsis-v)').first.click()
             page.get_by_text("Edit Network").first.click()
-            page.get_by_text("Advanced Settings").first.click()
-            page.locator("#hostname").wait_for(state="visible", timeout=30000)
+            header = page.locator(".p-panel-header", has_text="Advanced Settings").first
+            header.wait_for(state="visible", timeout=30000)
+            page.wait_for_timeout(1000)
+            # The panel starts collapsed; a click toggles it, so click only while the field is hidden.
+            for _ in range(3):
+                if page.locator("#hostname").is_visible():
+                    break
+                toggle = header.locator("button")
+                (toggle.first if toggle.count() else header).click()
+                page.wait_for_timeout(1000)
+            try:
+                page.locator("#hostname").wait_for(state="visible", timeout=10000)
+            except Exception:
+                page.screenshot(path=str(SHOTS / "no-hostname.png"), full_page=True)
+                raise
 
         open_config()
         no_sideways_scroll(page, "config page, 1040 px")
