@@ -344,7 +344,7 @@ impl NetlinkIfConfiger {
             ifr.ifr_ifru.ifru_mtu = value;
 
             // 使用ioctl获取MTU
-            if ioctl(dummy_socket.as_raw_fd(), op.try_into().unwrap(), &ifr) != 0 {
+            if ioctl(dummy_socket.as_raw_fd(), op.try_into().unwrap(), &mut ifr) != 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
         }
@@ -762,6 +762,18 @@ mod tests {
     use std::process::Command;
 
     const DUMMY_IFACE_NAME: &str = "dummy";
+
+    /// The ioctl fills `ifr` in place: read through a shared reference, an optimized build takes
+    /// the value written before the call and reports 0 (the egress inventory then had no MTU).
+    /// Needs no privilege: the loopback interface always exists.
+    #[test]
+    fn mtu_reads_what_the_kernel_reports() {
+        assert_ne!(NetlinkIfConfiger::mtu("lo").unwrap(), 0);
+        assert_eq!(
+            super::super::interface_mtu("lo"),
+            NetlinkIfConfiger::mtu("lo").ok()
+        );
+    }
 
     fn run_cmd(cmd: &str) -> String {
         let output = Command::new("sh")
