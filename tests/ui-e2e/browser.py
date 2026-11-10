@@ -140,6 +140,24 @@ def drag(page, locator, dx, dy):
     page.mouse.up()
 
 
+def open_panel(page, title, probe):
+    """Expand a collapsed panel of the config page: its toggle is clicked only while `probe` is hidden."""
+    header = page.locator(".p-panel-header", has_text=title).first
+    header.wait_for(state="visible", timeout=30000)
+    page.wait_for_timeout(1000)
+    for _ in range(3):
+        if page.locator(probe).first.is_visible():
+            break
+        toggle = header.locator("button")
+        (toggle.first if toggle.count() else header).click()
+        page.wait_for_timeout(1000)
+    try:
+        page.locator(probe).first.wait_for(state="visible", timeout=10000)
+    except Exception:
+        page.screenshot(path=str(SHOTS / f"no-{title.replace(' ', '_')}.png"), full_page=True)
+        raise
+
+
 def device_url(instance=None):
     host = base64.b64encode(args.api.encode()).decode()
     tail = f"/{instance}" if instance else ""
@@ -276,21 +294,7 @@ def run() -> None:
             page.goto(device_url(INSTANCE))
             page.locator('button:has(.pi-ellipsis-v)').first.click()
             page.get_by_text("Edit Network").first.click()
-            header = page.locator(".p-panel-header", has_text="Advanced Settings").first
-            header.wait_for(state="visible", timeout=30000)
-            page.wait_for_timeout(1000)
-            # The panel starts collapsed; a click toggles it, so click only while the field is hidden.
-            for _ in range(3):
-                if page.locator("#hostname").is_visible():
-                    break
-                toggle = header.locator("button")
-                (toggle.first if toggle.count() else header).click()
-                page.wait_for_timeout(1000)
-            try:
-                page.locator("#hostname").wait_for(state="visible", timeout=10000)
-            except Exception:
-                page.screenshot(path=str(SHOTS / "no-hostname.png"), full_page=True)
-                raise
+            open_panel(page, "Advanced Settings", "#hostname")
 
         open_config()
         no_sideways_scroll(page, "config page, 1040 px")
@@ -305,7 +309,7 @@ def run() -> None:
         check("hot field: the core has the new hostname", node.get("hostname") == "a-renamed", hostname=node.get("hostname"))
 
         open_config()
-        page.get_by_text("Core switches").first.click()
+        open_panel(page, "Core switches", "input#multi_thread_count, #multi_thread_count input")
         threads = page.locator("#multi_thread_count input, input#multi_thread_count").first
         threads.fill("2")
         page.get_by_role("button", name="Run Network").click()
