@@ -243,6 +243,43 @@ impl Debug for PeerManager {
     }
 }
 
+// for tun/tap ip/eth packet.
+struct NicPacketProcessor {
+    nic_channel: PacketRecvChan,
+}
+
+#[async_trait::async_trait]
+impl PeerPacketFilter for NicPacketProcessor {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+        let hdr = packet.peer_manager_header().unwrap();
+        if hdr.packet_type == PacketType::Data as u8 && !hdr.is_not_send_to_tun() {
+            if hdr.is_encrypted() || hdr.is_compressed() {
+                tracing::warn!(
+                    from_peer_id = hdr.from_peer_id.get(),
+                    to_peer_id = hdr.to_peer_id.get(),
+                    encrypted = hdr.is_encrypted(),
+                    compressed = hdr.is_compressed(),
+                    "dropping packet before nic because it is not fully decoded"
+                );
+                return None;
+            }
+            tracing::trace!(?packet, "send packet to nic channel");
+            // TODO: use a function to get the body ref directly for zero copy
+            // A full host queue drops the packet rather than block the
+            // shared peer packet router (upstream 8622277).
+            if let Err(error) = self.nic_channel.try_send(packet) {
+                tracing::trace!(
+                    ?error,
+                    "dropping packet because nic channel cannot accept it"
+                );
+            }
+            None
+        } else {
+            Some(packet)
+        }
+    }
+}
+
 impl PeerManager {
     // Keep lazy-p2p demand alive across the 5s task rescan interval and a full on-demand
     // connect attempt, without retaining extra per-task state in the hot path.
@@ -1320,40 +1357,6 @@ impl PeerManager {
 
     async fn init_packet_process_pipeline(&self) {
         // for tun/tap ip/eth packet.
-        struct NicPacketProcessor {
-            nic_channel: PacketRecvChan,
-        }
-        #[async_trait::async_trait]
-        impl PeerPacketFilter for NicPacketProcessor {
-            async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-                let hdr = packet.peer_manager_header().unwrap();
-                if hdr.packet_type == PacketType::Data as u8 && !hdr.is_not_send_to_tun() {
-                    if hdr.is_encrypted() || hdr.is_compressed() {
-                        tracing::warn!(
-                            from_peer_id = hdr.from_peer_id.get(),
-                            to_peer_id = hdr.to_peer_id.get(),
-                            encrypted = hdr.is_encrypted(),
-                            compressed = hdr.is_compressed(),
-                            "dropping packet before nic because it is not fully decoded"
-                        );
-                        return None;
-                    }
-                    tracing::trace!(?packet, "send packet to nic channel");
-                    // TODO: use a function to get the body ref directly for zero copy
-                    // A full host queue drops the packet rather than block the
-                    // shared peer packet router (upstream 8622277).
-                    if let Err(error) = self.nic_channel.try_send(packet) {
-                        tracing::trace!(
-                            ?error,
-                            "dropping packet because nic channel cannot accept it"
-                        );
-                    }
-                    None
-                } else {
-                    Some(packet)
-                }
-            }
-        }
         self.add_packet_process_pipeline(Box::new(NicPacketProcessor {
             nic_channel: self.nic_channel.clone(),
         }))
@@ -6055,5 +6058,29 @@ mod tests {
             Duration::from_secs(10),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn full_host_packet_queue_does_not_block_peer_packet_processing() {
+        use super::NicPacketProcessor;
+        use crate::peers::PeerPacketFilter;
+
+        let (nic_channel, mut nic_receiver) = tokio::sync::mpsc::channel(1);
+        let mut queued = ZCPacket::new_with_payload(b"queued");
+        queued.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+        nic_channel.send(queued).await.unwrap();
+        let processor = NicPacketProcessor { nic_channel };
+        let mut packet = ZCPacket::new_with_payload(b"next");
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            processor.try_process_packet_from_peer(packet),
+        )
+        .await;
+
+        assert!(result.is_ok(), "a full host queue blocked the peer router");
+        assert!(result.unwrap().is_none());
+        assert_eq!(nic_receiver.try_recv().unwrap().payload(), b"queued");
     }
 }

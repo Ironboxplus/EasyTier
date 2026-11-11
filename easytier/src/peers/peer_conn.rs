@@ -2447,6 +2447,159 @@ pub mod tests {
         .await;
     }
 
+    /// Pings the connection sent in `window` of idle time. `hole_punched` is the flag admission
+    /// sets; the carrier is a real TCP connection so the connection reports the "tcp" tunnel type.
+    async fn idle_pings_sent(hole_punched: bool, window: Duration) -> u64 {
+        use crate::tunnel::{TunnelConnector, TunnelListener};
+        use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
+
+        let mut listener = TcpTunnelListener::new("tcp://127.0.0.1:0".parse().unwrap());
+        listener.listen().await.unwrap();
+        let mut connector = TcpTunnelConnector::new(listener.local_url());
+        let (c, s) = tokio::join!(connector.connect(), listener.accept());
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(new_peer_id(), get_mock_global_ctx(), c.unwrap(), ps.clone());
+        let mut s_peer = PeerConn::new(new_peer_id(), get_mock_global_ctx(), s.unwrap(), ps);
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+        c_ret.unwrap();
+        s_ret.unwrap();
+        c_peer.set_is_hole_punched(hole_punched);
+
+        s_peer.start_recv_loop(create_packet_recv_chan().0).await;
+        c_peer.start_recv_loop(create_packet_recv_chan().0).await;
+        let tx_before = c_peer.get_stats().tx_packets;
+        c_peer.start_pingpong();
+        tokio::time::sleep(window).await;
+        c_peer.get_stats().tx_packets - tx_before
+    }
+
+    #[tokio::test]
+    async fn tcp_hole_punched_conn_pings_every_second_and_others_back_off() {
+        // The idle ping schedule backs off 1, 2, 4 ... seconds, which lets a NAT forget the
+        // mapping of a punched TCP connection. A punched TCP connection never backs off.
+        let window = Duration::from_millis(6500);
+        let (punched, direct) =
+            tokio::join!(idle_pings_sent(true, window), idle_pings_sent(false, window));
+        assert!(
+            punched >= 6,
+            "a TCP hole-punched connection pings once a second, sent {punched} in {window:?}"
+        );
+        assert!(
+            direct <= 4,
+            "other connections keep the backoff, sent {direct} in {window:?}"
+        );
+    }
+
+    /// The bucket the limiter builds for this limit holds `RECV_LIMIT` bytes and refills at
+    /// `RECV_LIMIT` bytes per second (the floor of `BucketConfig`).
+    const RECV_LIMIT: u64 = 8196;
+
+    /// A handshaken pair whose server side limits received bytes to `RECV_LIMIT`, with both recv
+    /// loops running. Returns the client, the server and what the server delivers upwards.
+    async fn recv_limited_pair() -> (
+        PeerConn,
+        PeerConn,
+        crate::peers::PacketRecvChanReceiver,
+        u32,
+        u32,
+    ) {
+        let (c, s) = create_ring_tunnel_pair();
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let s_ctx = get_mock_global_ctx();
+        let mut flags = s_ctx.get_flags();
+        flags.instance_recv_bps_limit = RECV_LIMIT;
+        s_ctx.set_flags(flags);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s), ps);
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        let (s_tx, s_rx) = create_packet_recv_chan();
+        s_peer.start_recv_loop(s_tx).await;
+        c_peer.start_recv_loop(create_packet_recv_chan().0).await;
+        (c_peer, s_peer, s_rx, c_peer_id, s_peer_id)
+    }
+
+    async fn send_data(c_peer: &PeerConn, from: u32, to: u32, payload_len: usize) {
+        let mut data = ZCPacket::new_with_payload(&vec![7u8; payload_len]);
+        data.fill_peer_manager_hdr(from, to, PacketType::Data as u8);
+        c_peer.send_msg(data).await.unwrap();
+    }
+
+    /// Sends a ping and waits for something to come back, i.e. the pong.
+    async fn ping_is_answered_within(
+        c_peer: &PeerConn,
+        from: u32,
+        to: u32,
+        within: Duration,
+    ) -> bool {
+        let rx_before = c_peer.get_stats().rx_packets;
+        let mut ping = ZCPacket::new_with_payload(&[]);
+        ping.fill_peer_manager_hdr(from, to, PacketType::Ping as u8);
+        c_peer.send_msg(ping).await.unwrap();
+        timeout(within, async {
+            while c_peer.get_stats().rx_packets == rx_before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    #[tokio::test]
+    async fn peer_recv_limit_oversized_packet_does_not_block_ping() {
+        // A packet larger than the whole bucket used to wait for tokens that can never exist,
+        // stalling the recv loop and with it every pong behind it.
+        let (c_peer, _s_peer, mut s_rx, c_id, s_id) = recv_limited_pair().await;
+
+        send_data(&c_peer, c_id, s_id, 3 * RECV_LIMIT as usize).await;
+        assert!(
+            ping_is_answered_within(&c_peer, c_id, s_id, Duration::from_secs(1)).await,
+            "a packet over the bucket capacity must not block the pong behind it"
+        );
+        // A full bucket admits the oversized packet at the price of one full bucket.
+        timeout(Duration::from_secs(1), recv_packet_from_chan(&mut s_rx))
+            .await
+            .expect("the oversized packet is charged one full bucket and let through")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn peer_recv_limit_drops_excess_data_without_blocking_ping() {
+        let (c_peer, _s_peer, mut s_rx, c_id, s_id) = recv_limited_pair().await;
+
+        // The first packet nearly empties the bucket; the second does not fit.
+        send_data(&c_peer, c_id, s_id, RECV_LIMIT as usize - 500).await;
+        send_data(&c_peer, c_id, s_id, RECV_LIMIT as usize - 500).await;
+        assert!(
+            ping_is_answered_within(&c_peer, c_id, s_id, Duration::from_millis(500)).await,
+            "receive limiting must not hold the pong back"
+        );
+
+        timeout(Duration::from_secs(1), recv_packet_from_chan(&mut s_rx))
+            .await
+            .expect("the first data packet fits the bucket")
+            .unwrap();
+        assert!(
+            timeout(Duration::from_millis(100), recv_packet_from_chan(&mut s_rx))
+                .await
+                .is_err(),
+            "the over-limit data packet is dropped, not delayed"
+        );
+    }
+
     #[tokio::test]
     async fn peer_conn_pingpong_timeout_not_close() {
         peer_conn_pingpong_test_common(3, 5, false, false, Duration::from_secs(15)).await;

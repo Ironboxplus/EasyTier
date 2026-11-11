@@ -1701,6 +1701,84 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn foreign_network_event_lag_closes_peers_and_allows_reconnect() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        let foreign_mgr = pm_center.get_foreign_network_manager();
+
+        connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
+        wait_for_condition(
+            || {
+                let foreign_mgr = foreign_mgr.clone();
+                let peer_id = pma_net1.my_peer_id();
+                async move {
+                    foreign_mgr
+                        .data
+                        .get_network_entry("net1")
+                        .is_some_and(|entry| entry.peer_map.has_peer(peer_id))
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+        let entry = foreign_mgr.data.get_network_entry("net1").unwrap();
+
+        // The event bus holds 16 events and this runtime has one thread, so the entry's event
+        // handler cannot run during this burst and finds itself lagged afterwards.
+        for _ in 0..64 {
+            entry
+                .global_ctx
+                .issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(None));
+        }
+
+        // The lagged entry is detached and, with it, every connection it held: a peer left
+        // connected to an entry nobody tracks could never get the network back.
+        wait_for_condition(
+            || {
+                let foreign_mgr = foreign_mgr.clone();
+                async move { foreign_mgr.data.get_network_entry("net1").is_none() }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(
+            entry.peer_map.list_peers().is_empty(),
+            "the detached entry must not keep its peers connected"
+        );
+        assert!(
+            foreign_mgr
+                .data
+                .get_peer_network(pma_net1.my_peer_id())
+                .is_none()
+        );
+        wait_for_condition(
+            || {
+                let pma_net1 = pma_net1.clone();
+                async move { pma_net1.get_peer_map().list_peers().is_empty() }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        // A secret-verified peer reconnecting builds a fresh entry.
+        connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
+        wait_for_condition(
+            || {
+                let foreign_mgr = foreign_mgr.clone();
+                let peer_id = pma_net1.my_peer_id();
+                async move {
+                    foreign_mgr
+                        .data
+                        .get_network_entry("net1")
+                        .is_some_and(|entry| entry.peer_map.has_peer(peer_id))
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn failed_new_foreign_peer_conn_rolls_back_entry_maps() {
         let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;

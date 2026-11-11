@@ -1170,3 +1170,236 @@ mod kernel_entry_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod flow_tests {
+    use super::*;
+    use crate::peers::tests::create_mock_peer_manager;
+    use std::sync::atomic::Ordering;
+    use tokio::io::AsyncReadExt;
+
+    /// Admits every packet and never reaches a destination; the tests only look at the NAT
+    /// table and at the packets it rewrites.
+    #[derive(Clone)]
+    struct AllowAll;
+
+    #[async_trait::async_trait]
+    impl NatDstConnector for AllowAll {
+        type DstStream = tokio::io::DuplexStream;
+
+        async fn connect(&self, _: SocketAddr, _: SocketAddr) -> anyhow::Result<Self::DstStream> {
+            anyhow::bail!("not used")
+        }
+
+        fn check_packet_from_peer_fast(&self, _: &CidrSet, _: &GlobalCtx) -> bool {
+            true
+        }
+
+        fn check_packet_from_peer(
+            &self,
+            _: &CidrSet,
+            _: &GlobalCtx,
+            _: &PeerManagerHeader,
+            _: &Ipv4Addr,
+            _: &mut Ipv4Addr,
+        ) -> bool {
+            true
+        }
+
+        fn transport_type(&self) -> TcpProxyEntryTransportType {
+            TcpProxyEntryTransportType::Tcp
+        }
+    }
+
+    const LOCAL_IP: Ipv4Addr = Ipv4Addr::new(10, 144, 144, 2);
+    const LOCAL_PORT: u16 = 8899;
+
+    async fn kernel_proxy() -> (Arc<PeerManager>, Arc<TcpProxy<AllowAll>>) {
+        let peer_manager = create_mock_peer_manager().await;
+        peer_manager
+            .get_global_ctx()
+            .set_ipv4(Some(Ipv4Inet::new(LOCAL_IP, 24).unwrap()));
+        let proxy = TcpProxy::new(peer_manager.clone(), AllowAll);
+        proxy.local_port.store(LOCAL_PORT, Ordering::Relaxed);
+        proxy.enable_smoltcp.store(false, Ordering::Relaxed);
+        (peer_manager, proxy)
+    }
+
+    fn tcp_packet(src: SocketAddrV4, dst: SocketAddrV4, flags: u16) -> ZCPacket {
+        let mut buf = vec![0u8; 40];
+        {
+            let mut ip = MutableIpv4Packet::new(&mut buf).unwrap();
+            ip.set_version(4);
+            ip.set_header_length(5);
+            ip.set_total_length(40);
+            ip.set_ttl(64);
+            ip.set_next_level_protocol(IpNextHeaderProtocols::Tcp);
+            ip.set_source(*src.ip());
+            ip.set_destination(*dst.ip());
+            let mut tcp = MutableTcpPacket::new(ip.payload_mut()).unwrap();
+            tcp.set_source(src.port());
+            tcp.set_destination(dst.port());
+            tcp.set_data_offset(5);
+            tcp.set_window(1000);
+            tcp.set_flags(flags as _);
+        }
+        let mut packet = ZCPacket::new_with_payload(&buf);
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+        packet
+    }
+
+    fn addrs(packet: &ZCPacket) -> (SocketAddrV4, SocketAddrV4) {
+        let ip = Ipv4Packet::new(packet.payload()).unwrap();
+        let tcp = TcpPacket::new(ip.payload()).unwrap();
+        (
+            SocketAddrV4::new(ip.get_source(), tcp.get_source()),
+            SocketAddrV4::new(ip.get_destination(), tcp.get_destination()),
+        )
+    }
+
+    const SYN: u16 = pnet::packet::tcp::TcpFlags::SYN as u16;
+    const ACK: u16 = pnet::packet::tcp::TcpFlags::ACK as u16;
+    const SYN_ACK: u16 = SYN | ACK;
+
+    /// Sends a SYN of the flow through the proxy as a peer's packet and returns what the local
+    /// listener would see: the source address of the rewritten packet.
+    async fn syn_from_peer(
+        proxy: &TcpProxy<AllowAll>,
+        src: SocketAddrV4,
+        dst: SocketAddrV4,
+    ) -> SocketAddrV4 {
+        let mut syn = tcp_packet(src, dst, SYN);
+        assert!(proxy.try_handle_peer_packet(&mut syn).await.is_some());
+        let (seen_src, seen_dst) = addrs(&syn);
+        assert_eq!(seen_dst, SocketAddrV4::new(LOCAL_IP, LOCAL_PORT));
+        seen_src
+    }
+
+    /// The local listener answers `to`; returns the packet as the proxy sends it back.
+    async fn reply_from_listener(
+        proxy: &TcpProxy<AllowAll>,
+        to: SocketAddrV4,
+    ) -> (SocketAddrV4, SocketAddrV4) {
+        let mut reply = tcp_packet(SocketAddrV4::new(LOCAL_IP, LOCAL_PORT), to, SYN_ACK);
+        let handled = proxy.try_process_packet_from_nic(&mut reply).await;
+        assert!(handled, "the reply of a tracked flow must be rewritten");
+        addrs(&reply)
+    }
+
+    #[tokio::test]
+    async fn flows_sharing_a_source_port_are_tracked_apart() {
+        let (_pm, proxy) = kernel_proxy().await;
+        let src = SocketAddrV4::new(Ipv4Addr::new(10, 144, 144, 9), 5000);
+        let dst_a = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 80);
+        let dst_b = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 2), 8080);
+
+        let seen_a = syn_from_peer(&proxy, src, dst_a).await;
+        let seen_b = syn_from_peer(&proxy, src, dst_b).await;
+
+        assert_ne!(
+            seen_a, seen_b,
+            "the listener cannot tell two flows apart by a shared source address"
+        );
+        assert_eq!(proxy.list_proxy_entries().len(), 2);
+
+        // Each reply goes back to its own flow: the source's original port, the server's own
+        // address and port.
+        assert_eq!(reply_from_listener(&proxy, seen_a).await, (dst_a, src));
+        assert_eq!(reply_from_listener(&proxy, seen_b).await, (dst_b, src));
+    }
+
+    #[tokio::test]
+    async fn a_retransmitted_syn_keeps_its_flow() {
+        let (_pm, proxy) = kernel_proxy().await;
+        let src = SocketAddrV4::new(Ipv4Addr::new(10, 144, 144, 9), 5000);
+        let dst = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 80);
+
+        let first = syn_from_peer(&proxy, src, dst).await;
+        let second = syn_from_peer(&proxy, src, dst).await;
+
+        assert_eq!(first, second);
+        assert_eq!(proxy.list_proxy_entries().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn packets_of_an_unknown_flow_are_not_proxied() {
+        let (_pm, proxy) = kernel_proxy().await;
+        let src = SocketAddrV4::new(Ipv4Addr::new(10, 144, 144, 9), 5000);
+        let dst_a = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 80);
+        let dst_b = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 2), 80);
+        syn_from_peer(&proxy, src, dst_a).await;
+
+        // Same source, other destination, and no SYN: nothing tracks this flow.
+        let mut ack = tcp_packet(src, dst_b, ACK);
+        assert!(proxy.try_handle_peer_packet(&mut ack).await.is_none());
+    }
+
+    /// A relay between a real TCP stream, as the kernel proxy entry accepts, and an in-memory
+    /// destination. `server_closes_first` picks which side reaches EOF before the other has
+    /// sent anything at all.
+    async fn kernel_relay_after_half_close(server_closes_first: bool, request_size: usize) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        let mut client = client.unwrap();
+        let mut src = ProxyTcpStream::KernelTcpStream(accepted.unwrap().0);
+        // Small buffers force the relay to make progress in both directions; the response is
+        // deliberately larger than either buffer.
+        let (mut dst, mut server) = tokio::io::duplex(64);
+        let request = vec![0x35; request_size];
+        let response = vec![0xa7; 64 * 1024];
+
+        let relay = async {
+            src.copy_bidirectional(&mut dst).await.unwrap();
+        };
+        let requester = async {
+            if server_closes_first {
+                let mut received = Vec::new();
+                client.read_to_end(&mut received).await.unwrap();
+                assert_eq!(received, response);
+                client.write_all(&request).await.unwrap();
+                client.shutdown().await.unwrap();
+            } else {
+                client.write_all(&request).await.unwrap();
+                client.shutdown().await.unwrap();
+                let mut received = Vec::new();
+                client.read_to_end(&mut received).await.unwrap();
+                assert_eq!(received, response);
+            }
+        };
+        let responder = async {
+            if server_closes_first {
+                server.write_all(&response).await.unwrap();
+                server.shutdown().await.unwrap();
+                let mut received = Vec::new();
+                server.read_to_end(&mut received).await.unwrap();
+                assert_eq!(received, request);
+            } else {
+                let mut received = Vec::new();
+                server.read_to_end(&mut received).await.unwrap();
+                assert_eq!(received, request);
+                server.write_all(&response).await.unwrap();
+                server.shutdown().await.unwrap();
+            }
+        };
+        timeout(Duration::from_secs(10), async {
+            tokio::join!(relay, requester, responder);
+        })
+        .await
+        .expect("half-closed relay did not finish");
+    }
+
+    #[tokio::test]
+    async fn source_half_close_preserves_response() {
+        for request_size in [0, 32 * 1024] {
+            kernel_relay_after_half_close(false, request_size).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn destination_half_close_preserves_request() {
+        for request_size in [0, 32 * 1024] {
+            kernel_relay_after_half_close(true, request_size).await;
+        }
+    }
+}
