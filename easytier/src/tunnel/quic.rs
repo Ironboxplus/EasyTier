@@ -1133,6 +1133,58 @@ mod tests {
         });
     }
 
+    /// A loopback QUIC server speaking only `versions`, standing in for a peer of another
+    /// generation. It completes the handshake of every incoming connection and holds it open.
+    fn server_endpoint_with_versions(versions: Vec<u32>) -> Endpoint {
+        let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let runtime = default_runtime().unwrap();
+        let endpoint = Endpoint::new_with_abstract_socket(
+            endpoint_config_with_versions(versions),
+            Some(server_config()),
+            runtime.wrap_udp_socket(socket).unwrap(),
+            runtime,
+        )
+        .unwrap();
+        let accepting = endpoint.clone();
+        tokio::spawn(async move {
+            while let Some(incoming) = accepting.accept().await {
+                tokio::spawn(async move {
+                    if let Ok(connection) = incoming.await {
+                        connection.closed().await;
+                    }
+                });
+            }
+        });
+        endpoint
+    }
+
+    #[test]
+    fn tunnel_dials_etq1_first() {
+        // A server that only knows ETQ1 can be reached only if the dialer offers ETQ1.
+        RUNTIME.block_on(async {
+            let server = server_endpoint_with_versions(vec![QUIC_VERSION_ETQ1]);
+            let addr = server.local_addr().unwrap();
+            let (_endpoint, connection) = QuicEndpointManager::connect(&global_ctx(), addr)
+                .await
+                .expect("the tunnel must offer ETQ1");
+            connection.close(0u32.into(), b"done");
+        });
+    }
+
+    #[test]
+    fn tunnel_falls_back_to_version_1_for_legacy_server() {
+        // An older peer rejects ETQ1 through version negotiation; the dialer retries with 1.
+        RUNTIME.block_on(async {
+            let server = server_endpoint_with_versions(vec![1]);
+            let addr = server.local_addr().unwrap();
+            let (_endpoint, connection) = QuicEndpointManager::connect(&global_ctx(), addr)
+                .await
+                .expect("the tunnel must fall back to version 1");
+            connection.close(0u32.into(), b"done");
+        });
+    }
+
     #[test]
     fn invalid_peer_addr() {
         RUNTIME.block_on(invalid_peer_addr_impl())

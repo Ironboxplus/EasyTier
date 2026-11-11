@@ -1,1 +1,1 @@
-test(field_numbers)
+test(field_numbers) | test(tunnel_dials_etq1_first) | test(tunnel_falls_back_to_version_1)
