@@ -9,7 +9,7 @@ use anyhow::Context;
 use network_interface::NetworkInterfaceConfig;
 use windows::{
     Win32::{
-        Foundation::{FALSE, NO_ERROR},
+        Foundation::{ERROR_FILE_NOT_FOUND, FALSE, NO_ERROR},
         NetworkManagement::IpHelper::{
             ConvertInterfaceAliasToLuid, ConvertInterfaceLuidToAlias, ConvertInterfaceLuidToIndex,
             FreeMibTable, GetUnicastIpAddressTable, MIB_UNICASTIPADDRESS_TABLE,
@@ -35,6 +35,9 @@ use windows::{
 };
 
 use crate::common::ifcfg::IfConfiger;
+
+mod tun_name;
+pub(crate) use tun_name::reserve_tun_name;
 
 pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
     let handle = SOCKET(socket.as_raw_socket() as usize);
@@ -72,16 +75,6 @@ pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
     }
 
     Ok(())
-}
-
-pub fn interface_count() -> io::Result<usize> {
-    let ifaces = network_interface::NetworkInterface::show().map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("Failed to get interfaces. error: {}", e),
-        )
-    })?;
-    Ok(ifaces.len())
 }
 
 /// The index of the interface named `iface_name` (its alias, the name
@@ -473,6 +466,7 @@ pub fn remove_interface_firewall_rules(interface_name: &str) -> anyhow::Result<(
     }?;
 
     let rules = unsafe { policy.Rules()? };
+    let mut failures = Vec::new();
 
     for protocol_name in ["TCP", "UDP", "ICMP", "ALL"] {
         for direction in ["Inbound", "Outbound"] {
@@ -481,12 +475,19 @@ pub fn remove_interface_firewall_rules(interface_name: &str) -> anyhow::Result<(
                 interface_name, protocol_name, direction
             );
             let name_bstr = BSTR::from(&rule_name);
-            unsafe {
-                let _ = rules.Remove(&name_bstr); // Ignore errors, rule might not exist
+            // Removing a missing rule succeeds. Keep trying the remaining
+            // rules on failure, but report failures to the caller.
+            if let Err(error) = unsafe { rules.Remove(&name_bstr) } {
+                failures.push(format!("{rule_name}: {error}"));
             }
         }
     }
 
+    anyhow::ensure!(
+        failures.is_empty(),
+        "failed to remove firewall rules: {}",
+        failures.join("; ")
+    );
     Ok(())
 }
 
@@ -506,8 +507,8 @@ pub fn list_interface_firewall_rules(interface_name: &str) -> anyhow::Result<Vec
     let rules = unsafe { policy.Rules()? };
     let mut found_rules = Vec::new();
 
-    // Check protocol-specific rules
-    for protocol_name in ["TCP", "UDP", "ICMP"] {
+    // Check protocol-specific and all-protocol rules
+    for protocol_name in ["TCP", "UDP", "ICMP", "ALL"] {
         for direction in ["Inbound", "Outbound"] {
             let rule_name = format!(
                 "EasyTier {} - {} Protocol ({})",
@@ -516,17 +517,6 @@ pub fn list_interface_firewall_rules(interface_name: &str) -> anyhow::Result<Vec
             if check_rule_exists(&rules, &rule_name)? {
                 found_rules.push(rule_name);
             }
-        }
-    }
-
-    // Check fallback protocol rules
-    for direction in ["Inbound", "Outbound"] {
-        let rule_name = format!(
-            "EasyTier {} - All Protocols ({})",
-            interface_name, direction
-        );
-        if check_rule_exists(&rules, &rule_name)? {
-            found_rules.push(rule_name);
         }
     }
 
@@ -542,7 +532,10 @@ fn check_rule_exists(
     unsafe {
         match rules.Item(&name_bstr) {
             Ok(_) => Ok(true),
-            Err(_) => Ok(false),
+            Err(error) if error.code() == ERROR_FILE_NOT_FOUND.to_hresult() => Ok(false),
+            Err(error) => {
+                Err(error).with_context(|| format!("failed to inspect firewall rule {rule_name}"))
+            }
         }
     }
 }

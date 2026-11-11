@@ -37,6 +37,16 @@ const UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM: usize = 25;
 const DST_PORT_OFFSET: u16 = 20;
 const REMOTE_WAIT_TIME_MS: u64 = 5000;
 
+/// The port the peer's next mapping is predicted at, `DST_PORT_OFFSET` away from `base_port`
+/// and kept within 1..=65535 (it used to wrap past 65535 and reach 0).
+pub(crate) fn apply_peer_easy_sym_port_offset(base_port: u16, peer_is_incremental: bool) -> u16 {
+    if peer_is_incremental {
+        base_port.saturating_add(DST_PORT_OFFSET)
+    } else {
+        base_port.saturating_sub(DST_PORT_OFFSET).max(1)
+    }
+}
+
 fn transport_remote_addr(
     use_mp: bool,
     observed_remote_addr: SocketAddr,
@@ -167,7 +177,6 @@ impl PunchBothEasySymHoleServer {
                         }
                         break;
                     }
-                    assert!(Arc::strong_count(&s.socket) == 1);
                     let Some(port) = s.socket.local_addr().ok().map(|addr| addr.port()) else {
                         tracing::warn!("failed to get local addr from punched socket");
                         continue;
@@ -309,11 +318,10 @@ impl PunchBothEasySymHoleClient {
                 SendPunchPacketBothEasySymRequest {
                     transaction_id: tid,
                     public_ip: Some(my_public_ip.into()),
-                    dst_port_num: if me_is_incremental {
-                        cur_mapped_addr.port().saturating_add(DST_PORT_OFFSET)
-                    } else {
-                        cur_mapped_addr.port().saturating_sub(DST_PORT_OFFSET)
-                    } as u32,
+                    dst_port_num: apply_peer_easy_sym_port_offset(
+                        cur_mapped_addr.port(),
+                        me_is_incremental,
+                    ) as u32,
                     udp_socket_count: UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM as u32,
                     wait_time_ms: REMOTE_WAIT_TIME_MS as u32,
                     use_mp: request_mp,
@@ -335,15 +343,10 @@ impl PunchBothEasySymHoleClient {
             .ok_or(anyhow::anyhow!("remote_mapped_addr is required"))?;
 
         let now = Instant::now();
-        remote_mapped_addr.port = if peer_is_incremental {
-            remote_mapped_addr
-                .port
-                .saturating_add(DST_PORT_OFFSET as u32)
-        } else {
-            remote_mapped_addr
-                .port
-                .saturating_sub(DST_PORT_OFFSET as u32)
-        };
+        remote_mapped_addr.port = apply_peer_easy_sym_port_offset(
+            remote_mapped_addr.port as u16,
+            peer_is_incremental,
+        ) as u32;
         tracing::debug!(
             ?remote_mapped_addr,
             ?remote_ret,
@@ -539,6 +542,27 @@ pub mod tests {
             Duration::from_secs(30),
         )
         .await;
+    }
+
+    /// A predicted port is a real port: neither wrapped past 65535 nor down to 0.
+    #[test]
+    fn both_easy_sym_port_offset_stays_in_valid_port_range() {
+        for (base, incremental, expected) in [
+            (10000, true, 10020),
+            (10000, false, 9980),
+            (65516, true, 65535),
+            (65530, true, 65535),
+            (65535, true, 65535),
+            (20, false, 1),
+            (10, false, 1),
+            (1, false, 1),
+        ] {
+            assert_eq!(
+                super::apply_peer_easy_sym_port_offset(base, incremental),
+                expected,
+                "base {base}, incremental {incremental}"
+            );
+        }
     }
 
     #[test]

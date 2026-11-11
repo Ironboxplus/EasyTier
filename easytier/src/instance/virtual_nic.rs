@@ -250,23 +250,21 @@ pub struct VirtualNic {
     /// The MTU the interface was last given: the MTU updater compares against what the
     /// device has, not against what the inventory says now.
     applied_mtu: u32,
+
+    // Keep the name reserved through firewall cleanup. The device itself may
+    // already have disappeared when its forwarding tasks stop.
+    #[cfg(target_os = "windows")]
+    name_reservation: Option<std::os::windows::io::OwnedHandle>,
+    // The resolved name is runtime state; the flags keep what the user asked for,
+    // so that recreating the NIC makes the same choice.
+    #[cfg(target_os = "windows")]
+    resolved_dev_name: Option<String>,
 }
 
 impl Drop for VirtualNic {
     fn drop(&mut self) {
         #[cfg(target_os = "windows")]
-        {
-            if let Some(ref ifname) = self.ifname {
-                // Try to clean up firewall rules, but don't panic in destructor
-                if let Err(error) = crate::arch::windows::remove_interface_firewall_rules(ifname) {
-                    log::warn!(
-                        %error,
-                        "failed to remove firewall rules for interface {}",
-                        ifname
-                    );
-                }
-            }
-        }
+        self.clear_windows_device();
     }
 }
 
@@ -277,7 +275,26 @@ impl VirtualNic {
             ifname: None,
             ifcfg: Box::new(IfConfiger {}),
             applied_mtu: 0,
+            #[cfg(target_os = "windows")]
+            name_reservation: None,
+            #[cfg(target_os = "windows")]
+            resolved_dev_name: None,
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn clear_windows_device(&mut self) {
+        if let Some(ifname) = self.ifname.take() {
+            // Try to clean up firewall rules, but don't panic in destructor
+            if let Err(error) = crate::arch::windows::remove_interface_firewall_rules(&ifname) {
+                log::warn!(
+                    %error,
+                    "failed to remove firewall rules for interface {}",
+                    ifname
+                );
+            }
+        }
+        self.name_reservation.take();
     }
 
     /// Check and create TUN device node if necessary on Linux systems
@@ -499,7 +516,7 @@ impl VirtualNic {
         Ok(())
     }
 
-    async fn create_tun(&self) -> Result<tun::platform::Device, Error> {
+    async fn create_tun(&mut self) -> Result<tun::platform::Device, Error> {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
@@ -533,7 +550,14 @@ impl VirtualNic {
 
         #[cfg(target_os = "windows")]
         {
-            let dev_name = self.global_ctx.get_flags().dev_name;
+            if self.name_reservation.is_none() {
+                let (name, reservation) = crate::arch::windows::reserve_tun_name(
+                    &self.global_ctx.get_flags().dev_name,
+                )?;
+                self.resolved_dev_name = Some(name);
+                self.name_reservation = Some(reservation);
+            }
+            let dev_name = self.resolved_dev_name.clone().unwrap_or_default();
 
             match crate::arch::windows::add_self_to_firewall_allowlist() {
                 Ok(_) => tracing::info!("add_self_to_firewall_allowlist successful!"),
@@ -545,33 +569,14 @@ impl VirtualNic {
                 }
             }
 
-            match RegistryManager::reg_delete_obsoleted_items(&dev_name) {
-                Ok(_) => tracing::trace!("delete successful!"),
-                Err(e) => tracing::error!("An error occurred: {}", e),
-            }
-
-            if !dev_name.is_empty() {
-                config.tun_name(&dev_name);
-            } else {
-                use rand::distributions::Distribution as _;
-                let c = crate::arch::windows::interface_count()?;
-                let mut rng = rand::thread_rng();
-                let s: String = rand::distributions::Alphanumeric
-                    .sample_iter(&mut rng)
-                    .take(4)
-                    .map(char::from)
-                    .collect::<String>()
-                    .to_lowercase();
-
-                let random_dev_name = format!("et_{}_{}", c, s);
-                config.tun_name(random_dev_name.clone());
-
-                let mut flags = self.global_ctx.get_flags();
-                flags.dev_name = random_dev_name.clone();
-                self.global_ctx.set_flags(flags);
-            }
-
+            config.tun_name(&dev_name);
             config.platform_config(|config| {
+                // Wintun uses the GUID for Windows network profile identity, so a
+                // GUID derived from the name keeps one profile across restarts.
+                let identity = format!("https://easytier.rs/wintun/{}", dev_name.to_lowercase());
+                config.device_guid(
+                    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, identity.as_bytes()).as_u128(),
+                );
                 config.skip_config(true);
                 config.ring_cap(Some(std::cmp::min(
                     config.min_ring_cap() * 32,
@@ -879,6 +884,12 @@ impl NicCtx {
             #[cfg(target_os = "windows")]
             windows_udp_broadcast_relay: None,
         }
+    }
+
+    /// The forwarding tasks own the TUN stream and sink. Wait until both have
+    /// released the device before another NIC with the same name is created.
+    pub async fn shutdown(&mut self) {
+        self.tasks.shutdown().await;
     }
 
     pub async fn ifname(&self) -> Option<String> {
@@ -1400,8 +1411,7 @@ impl NicCtx {
                 Ok(ret) => {
                     #[cfg(target_os = "windows")]
                     {
-                        let dev_name = self.global_ctx.get_flags().dev_name;
-                        let _ = RegistryManager::reg_change_catrgory_in_profile(&dev_name);
+                        let _ = RegistryManager::reg_change_catrgory_in_profile(nic.ifname());
                     }
 
                     #[cfg(any(

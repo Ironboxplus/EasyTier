@@ -5,7 +5,7 @@ use std::{
 };
 
 use crossbeam::atomic::AtomicCell;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use guarden::defer;
 use hotpath::instant::Instant;
 use rand::seq::SliceRandom as _;
@@ -230,8 +230,21 @@ pub(crate) struct UdpSocketArray {
     global_ctx: ArcGlobalCtx,
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 
-    intreast_tids: Arc<DashSet<u32>>,
+    // A transaction is of interest while it has an entry; its punched sockets are the value.
+    // One table, so registering, recording and removing cannot interleave into a leaked entry.
     tid_to_socket: Arc<DashMap<u32, Vec<PunchedUdpSocket>>>,
+}
+
+/// Takes a socket out of the array's map when dropped.
+struct RemoveSocketOnDrop {
+    sockets: Arc<DashMap<SocketAddr, Arc<UdpSocket>>>,
+    local_addr: SocketAddr,
+}
+
+impl Drop for RemoveSocketOnDrop {
+    fn drop(&mut self) {
+        self.sockets.remove(&self.local_addr);
+    }
 }
 
 impl UdpSocketArray {
@@ -246,7 +259,6 @@ impl UdpSocketArray {
             global_ctx,
             tasks,
 
-            intreast_tids: Arc::new(DashSet::new()),
             tid_to_socket: Arc::new(DashMap::new()),
         }
     }
@@ -255,15 +267,22 @@ impl UdpSocketArray {
         !self.sockets.is_empty()
     }
 
+    #[cfg(test)]
+    pub(crate) fn socket_addrs(&self) -> Vec<SocketAddr> {
+        self.sockets.iter().map(|socket| *socket.key()).collect()
+    }
+
     pub async fn add_new_socket(&self, socket: Arc<UdpSocket>) -> Result<(), anyhow::Error> {
         let socket_map = self.sockets.clone();
         let local_addr = socket.local_addr()?;
-        let intreast_tids = self.intreast_tids.clone();
         let tid_to_socket = self.tid_to_socket.clone();
         socket_map.insert(local_addr, socket.clone());
         self.tasks.lock().unwrap().spawn(
             async move {
-                defer!(socket_map.remove(&local_addr););
+                let socket_map_guard = RemoveSocketOnDrop {
+                    sockets: socket_map,
+                    local_addr,
+                };
                 let mut buf = [0u8; UDP_TUNNEL_HEADER_SIZE + HOLE_PUNCH_PACKET_BODY_LEN as usize];
                 tracing::trace!(?local_addr, "udp socket added");
                 loop {
@@ -290,17 +309,18 @@ impl UdpSocketArray {
                         continue;
                     }
 
-                    if intreast_tids.contains(&tid) {
+                    if let Some(mut punched) = tid_to_socket.get_mut(&tid) {
                         tracing::info!(?addr, ?tid, "got hole punching packet with intreast tid");
-                        tid_to_socket
-                            .entry(tid)
-                            .or_default()
-                            .push(PunchedUdpSocket {
-                                socket: socket.clone(),
-                                tid,
-                                remote_addr: addr,
-                            });
-                        break;
+                        // Stop receiving and take the candidate out of the array before handing
+                        // it over: the consumer may reuse the socket or bind its port again.
+                        drop(socket_map_guard);
+                        tracing::debug!(?local_addr, "udp socket recv loop end");
+                        punched.push(PunchedUdpSocket {
+                            socket,
+                            tid,
+                            remote_addr: addr,
+                        });
+                        return;
                     }
                 }
                 tracing::debug!(?local_addr, "udp socket recv loop end");
@@ -360,11 +380,10 @@ impl UdpSocketArray {
     }
 
     pub fn add_intreast_tid(&self, tid: u32) {
-        self.intreast_tids.insert(tid);
+        self.tid_to_socket.entry(tid).or_default();
     }
 
     pub fn remove_intreast_tid(&self, tid: u32) {
-        self.intreast_tids.remove(&tid);
         self.tid_to_socket.remove(&tid);
     }
 }
@@ -375,7 +394,6 @@ impl std::fmt::Debug for UdpSocketArray {
             .field("sockets", &self.sockets.len())
             .field("max_socket_count", &self.max_socket_count)
             .field("started", &self.started())
-            .field("intreast_tids", &self.intreast_tids.len())
             .field("tid_to_socket", &self.tid_to_socket.len())
             .finish()
     }
@@ -1260,5 +1278,73 @@ mod tests {
         assert!(!should_retry_public_listener_selection(
             false, 1, true, true
         ));
+    }
+}
+
+#[cfg(test)]
+mod socket_array_tests {
+    use std::{sync::Arc, time::Duration};
+
+    use tokio::net::UdpSocket;
+
+    use super::{HOLE_PUNCH_PACKET_BODY_LEN, UdpSocketArray};
+    use crate::{common::global_ctx::tests::get_mock_global_ctx, tunnel::udp::new_hole_punch_packet};
+
+    async fn send_punch_packet(tid: u32, to: std::net::SocketAddr) -> std::net::SocketAddr {
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        sender
+            .send_to(
+                &new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes(),
+                to,
+            )
+            .await
+            .unwrap();
+        sender.local_addr().unwrap()
+    }
+
+    /// The consumer may reuse the punched socket or bind its port again at once, so the
+    /// candidate array must be rid of it, and hold no second handle on it, by the time it
+    /// can be fetched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn punched_socket_leaves_the_array_before_it_is_handed_over() {
+        let array = UdpSocketArray::new(0, get_mock_global_ctx());
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let tid = 7;
+        array.add_intreast_tid(tid);
+        array.add_new_socket(socket.clone()).await.unwrap();
+
+        let remote = send_punch_packet(tid, socket.local_addr().unwrap()).await;
+        let punched = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(punched) = array.try_fetch_punched_socket(tid) {
+                    break punched;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the punch packet was never recorded");
+
+        assert_eq!(punched.remote_addr, remote);
+        assert!(Arc::ptr_eq(&punched.socket, &socket));
+        assert!(array.socket_addrs().is_empty());
+        drop(socket);
+        assert_eq!(Arc::strong_count(&punched.socket), 1);
+    }
+
+    #[tokio::test]
+    async fn late_punch_packets_of_a_removed_transaction_are_ignored() {
+        let array = UdpSocketArray::new(0, get_mock_global_ctx());
+        let tid = 7;
+        array.add_intreast_tid(tid);
+        array.remove_intreast_tid(tid);
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        array.add_new_socket(socket.clone()).await.unwrap();
+
+        send_punch_packet(tid, socket.local_addr().unwrap()).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert!(array.try_fetch_punched_socket(tid).is_none());
+        assert_eq!(array.socket_addrs(), vec![socket.local_addr().unwrap()]);
     }
 }

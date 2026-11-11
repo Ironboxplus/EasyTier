@@ -521,11 +521,16 @@ mod tests {
             global_ctx::{GlobalCtx, tests::get_mock_global_ctx},
             new_peer_id,
         },
-        peers::{create_packet_recv_chan, peer_conn::PeerConn, peer_session::PeerSessionStore},
+        peers::{
+            create_packet_recv_chan,
+            peer_conn::{PeerConn, PeerConnId},
+            peer_session::PeerSessionStore,
+        },
         proto::common::{SecureModeConfig, TunnelInfo},
         tunnel::{
             Tunnel,
             common::TunnelWrapper,
+            packet_def::ZCPacket,
             ring::{RING_TUNNEL_CAP, RingSink, RingStream, RingTunnel, create_ring_tunnel_pair},
         },
     };

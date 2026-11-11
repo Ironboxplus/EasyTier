@@ -8856,6 +8856,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "sha2"
 version = "0.10.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10834,7 +10840,7 @@ checksum = "7b3e06c9b9d80ed6b745c7159c40b311ad2916abb34a49e9be2653b90db0d8dd"
 [[package]]
 name = "tun-easytier"
 version = "1.1.1"
-source = "git+https://github.com/EasyTier/rust-tun#12378839e7985283df0e4fb536b7137230356db5"
+source = "git+https://github.com/EasyTier/rust-tun?rev=43621f70b02c47086b40d34fdde997719668a6c0#43621f70b02c47086b40d34fdde997719668a6c0"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -11082,6 +11088,7 @@ dependencies = [
  "js-sys",
  "rand 0.9.1",
  "serde",
+ "sha1_smol",
  "uuid-macro-internal",
  "wasm-bindgen",
 ]

@@ -1,5 +1,3 @@
-#[cfg(feature = "tun")]
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -414,7 +412,8 @@ struct MagicDnsContainer {
 // nic container will be cleared when dhcp ip changed
 #[cfg(feature = "tun")]
 pub struct NicCtxContainer {
-    nic_ctx: Option<Box<dyn Any + 'static + Send>>,
+    nic_ctx: Option<Box<NicCtx>>,
+    packet_drain: Option<JoinSet<()>>,
     #[cfg(feature = "magic-dns")]
     magic_dns: Option<MagicDnsContainer>,
 }
@@ -425,6 +424,7 @@ impl NicCtxContainer {
     fn new(nic_ctx: NicCtx) -> Self {
         Self {
             nic_ctx: Some(Box::new(nic_ctx)),
+            packet_drain: None,
         }
     }
 
@@ -438,6 +438,7 @@ impl NicCtxContainer {
             });
             Self {
                 nic_ctx: Some(Box::new(nic_ctx)),
+                packet_drain: None,
                 magic_dns: Some(MagicDnsContainer {
                     dns_runner_task: AbortOnDropHandle::new(task),
                     dns_runner_cancel_token: token,
@@ -446,16 +447,36 @@ impl NicCtxContainer {
         } else {
             Self {
                 nic_ctx: Some(Box::new(nic_ctx)),
+                packet_drain: None,
                 magic_dns: None,
             }
         }
     }
 
-    fn new_with_any<T: 'static + Send>(ctx: T) -> Self {
+    fn packet_drain(tasks: JoinSet<()>) -> Self {
         Self {
-            nic_ctx: Some(Box::new(ctx)),
+            nic_ctx: None,
+            packet_drain: Some(tasks),
             #[cfg(feature = "magic-dns")]
             magic_dns: None,
+        }
+    }
+
+    /// Wait until every task that owns the TUN device has released it, so that
+    /// the device name can be reused by the next NIC.
+    async fn shutdown(mut self) {
+        #[cfg(feature = "magic-dns")]
+        if let Some(dns_runner) = self.magic_dns.take() {
+            dns_runner.dns_runner_cancel_token.cancel();
+            tracing::debug!("cancelling dns runner task");
+            let ret = dns_runner.dns_runner_task.await;
+            tracing::debug!("dns runner task cancelled, ret: {:?}", ret);
+        }
+        if let Some(mut nic_ctx) = self.nic_ctx.take() {
+            nic_ctx.shutdown().await;
+        }
+        if let Some(mut tasks) = self.packet_drain.take() {
+            tasks.shutdown().await;
         }
     }
 }
@@ -1148,15 +1169,7 @@ impl Instance {
         arc_nic_ctx: ArcNicCtx,
         packet_recv: Arc<Mutex<PacketRecvChanReceiver>>,
     ) {
-        #[cfg(feature = "magic-dns")]
-        if let Some(old_ctx) = arc_nic_ctx.lock().await.take()
-            && let Some(dns_runner) = old_ctx.magic_dns
-        {
-            dns_runner.dns_runner_cancel_token.cancel();
-            tracing::debug!("cancelling dns runner task");
-            let ret = dns_runner.dns_runner_task.await;
-            tracing::debug!("dns runner task cancelled, ret: {:?}", ret);
-        };
+        Self::shutdown_nic_ctx(arc_nic_ctx.clone()).await;
 
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
@@ -1168,9 +1181,18 @@ impl Instance {
         arc_nic_ctx
             .lock()
             .await
-            .replace(NicCtxContainer::new_with_any(tasks));
+            .replace(NicCtxContainer::packet_drain(tasks));
 
         tracing::debug!("nic ctx cleared.");
+    }
+
+    // The lock is released before waiting, the old container is already detached.
+    #[cfg(feature = "tun")]
+    async fn shutdown_nic_ctx(arc_nic_ctx: ArcNicCtx) {
+        let old = arc_nic_ctx.lock().await.take();
+        if let Some(old) = old {
+            old.shutdown().await;
+        }
     }
 
     #[cfg(feature = "magic-dns")]
@@ -1361,6 +1383,9 @@ impl Instance {
                         }
                         return;
                     };
+
+                    // The previous NIC must release its device before the same name is reused.
+                    Self::shutdown_nic_ctx(nic_ctx.clone()).await;
 
                     let mut new_nic_ctx = NicCtx::new(
                         peer_mgr.get_global_ctx(),
@@ -2044,7 +2069,7 @@ impl Instance {
     pub async fn clear_resources(&mut self) {
         self.peer_manager.clear_resources().await;
         #[cfg(feature = "tun")]
-        let _ = self.nic_ctx.lock().await.take();
+        Self::shutdown_nic_ctx(self.nic_ctx.clone()).await;
     }
 }
 
@@ -2056,7 +2081,7 @@ impl Drop for Instance {
         let nic_ctx = self.nic_ctx.clone();
         tokio::spawn(async move {
             #[cfg(feature = "tun")]
-            nic_ctx.lock().await.take();
+            Instance::shutdown_nic_ctx(nic_ctx).await;
             if let Some(pm) = pm.upgrade() {
                 pm.clear_resources().await;
             };

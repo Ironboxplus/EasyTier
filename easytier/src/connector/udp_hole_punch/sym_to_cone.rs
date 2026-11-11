@@ -48,6 +48,40 @@ use super::common::{PunchHoleServerCommon, UdpNatType, UdpSocketArray};
 
 const UDP_ARRAY_SIZE_FOR_HARD_SYM: usize = 84;
 
+/// The ports an easy symmetric NAT's next mappings are predicted at: up to `max_port_num`
+/// ports after (incremental) or before `base_port_num`.
+fn easy_sym_ports(
+    base_port_num: u32,
+    max_port_num: u32,
+    is_incremental: bool,
+) -> Result<Vec<u16>, rpc_types::error::Error> {
+    if !(1..=u16::MAX as u32).contains(&base_port_num) {
+        return Err(anyhow::anyhow!("send_punch_packet_easy_sym invalid base port").into());
+    }
+    let max_port_num = max_port_num.max(1);
+
+    let port_start = if is_incremental {
+        base_port_num.saturating_add(1)
+    } else {
+        base_port_num.saturating_sub(max_port_num).max(1)
+    };
+
+    let port_end = if is_incremental {
+        base_port_num
+            .saturating_add(max_port_num)
+            .min(u16::MAX as u32)
+    } else {
+        base_port_num.saturating_sub(1)
+    };
+
+    // A single remaining port is a range too.
+    if port_end < port_start {
+        return Err(anyhow::anyhow!("send_punch_packet_easy_sym invalid port range").into());
+    }
+
+    Ok((port_start..=port_end).map(|x| x as u16).collect())
+}
+
 pub(crate) struct PunchSymToConeHoleServer {
     common: Arc<PunchHoleServerCommon>,
 
@@ -101,29 +135,11 @@ impl PunchSymToConeHoleServer {
         }
 
         let transaction_id = request.transaction_id;
-        let base_port_num = request.base_port_num;
-        let max_port_num = request.max_port_num.max(1);
-        let is_incremental = request.is_incremental;
-
-        let port_start = if is_incremental {
-            base_port_num.saturating_add(1)
-        } else {
-            base_port_num.saturating_sub(max_port_num)
-        };
-
-        let port_end = if is_incremental {
-            base_port_num.saturating_add(max_port_num)
-        } else {
-            base_port_num.saturating_sub(1)
-        };
-
-        if port_end <= port_start {
-            return Err(anyhow::anyhow!("send_punch_packet_easy_sym invalid port range").into());
-        }
-
-        let ports = (port_start..=port_end)
-            .map(|x| x as u16)
-            .collect::<Vec<_>>();
+        let ports = easy_sym_ports(
+            request.base_port_num,
+            request.max_port_num,
+            request.is_incremental,
+        )?;
         #[cfg(feature = "mpquic")]
         if request.use_mp {
             if request.requester_peer_id == 0 {
@@ -275,23 +291,18 @@ impl PunchSymToConeHoleClient {
     }
 
     async fn prepare_udp_array(&self) -> Result<Arc<UdpSocketArray>, anyhow::Error> {
-        let rlocked = self.udp_array.read().await;
-        if let Some(udp_array) = rlocked.clone() {
-            return Ok(udp_array);
-        }
-
-        drop(rlocked);
         let mut wlocked = self.udp_array.write().await;
-        if let Some(udp_array) = wlocked.clone() {
-            return Ok(udp_array);
-        }
-
-        let udp_array = Arc::new(UdpSocketArray::new(
-            UDP_ARRAY_SIZE_FOR_HARD_SYM,
-            self.peer_mgr.get_global_ctx(),
-        ));
+        let udp_array = wlocked
+            .get_or_insert_with(|| {
+                Arc::new(UdpSocketArray::new(
+                    UDP_ARRAY_SIZE_FOR_HARD_SYM,
+                    self.peer_mgr.get_global_ctx(),
+                ))
+            })
+            .clone();
+        // Sockets that hit leave the array even when the transport then refuses the peer.
+        // Refill only those slots, so the others keep their NAT mappings.
         udp_array.start().await?;
-        wlocked.replace(udp_array.clone());
         Ok(udp_array)
     }
 
@@ -660,6 +671,80 @@ pub mod tests {
 
     #[cfg(feature = "mpquic")]
     use crate::connector::mp_path::CarrierKind;
+
+    /// The predicted ports are real ports even next to either end of the port range.
+    #[test]
+    fn easy_sym_prediction_stays_in_valid_port_range() {
+        for (base_port_num, max_port_num, is_incremental, expected) in [
+            (10000, 4, true, vec![10001, 10002, 10003, 10004]),
+            (10000, 4, false, vec![9996, 9997, 9998, 9999]),
+            (65534, 50, true, vec![65535]),
+            (2, 50, false, vec![1]),
+            (65535, 50, true, vec![]),
+            (1, 50, false, vec![]),
+            (0, 50, true, vec![]),
+            (0, 50, false, vec![]),
+            (65536, 50, true, vec![]),
+        ] {
+            let ports = super::easy_sym_ports(base_port_num, max_port_num, is_incremental);
+            assert_eq!(
+                ports.is_ok(),
+                !expected.is_empty(),
+                "base {base_port_num}, max {max_port_num}, incremental {is_incremental}"
+            );
+            if let Ok(ports) = ports {
+                assert_eq!(ports, expected, "base {base_port_num}, incremental {is_incremental}");
+            }
+        }
+    }
+
+    /// Sockets that leave the array on a hit (and never come back when the transport then
+    /// refuses the peer) must be replaced by the next attempt, or the array dwindles.
+    #[tokio::test]
+    async fn sym_to_cone_array_is_refilled_after_punched_sockets_leave_it() {
+        use crate::{
+            connector::udp_hole_punch::common::HOLE_PUNCH_PACKET_BODY_LEN,
+            tunnel::udp::new_hole_punch_packet,
+        };
+
+        let peer_mgr = create_mock_peer_manager_with_mock_stun(NatType::Symmetric).await;
+        let client = super::PunchSymToConeHoleClient::new(
+            peer_mgr,
+            Arc::new(timedmap::TimedMap::new()),
+        );
+        let array = client.prepare_udp_array().await.unwrap();
+        let full = array.socket_addrs().len();
+        assert_eq!(full, super::UDP_ARRAY_SIZE_FOR_HARD_SYM);
+
+        let tid = 11;
+        array.add_intreast_tid(tid);
+        let target = array.socket_addrs()[0];
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        sender
+            .send_to(
+                &new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes(),
+                std::net::SocketAddr::from(([127, 0, 0, 1], target.port())),
+            )
+            .await
+            .unwrap();
+        let punched = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(punched) = array.try_fetch_punched_socket(tid) {
+                    break punched;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the punch packet was never recorded");
+        drop(punched);
+        array.remove_intreast_tid(tid);
+        assert_eq!(array.socket_addrs().len(), full - 1);
+
+        let again = client.prepare_udp_array().await.unwrap();
+        assert!(Arc::ptr_eq(&array, &again));
+        assert_eq!(again.socket_addrs().len(), full);
+    }
 
     #[tokio::test]
     #[serial_test::serial]
