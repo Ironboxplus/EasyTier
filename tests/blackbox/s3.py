@@ -1338,12 +1338,16 @@ def s32_reliable_class(run, args):
     secs = int(args.tcp_secs)
     res = {}
     # The 2% loss is random: one 20 s run of each mode carries a few % of noise, as much as the margin
-    # this check holds the modes to. Three runs each, the median of them compared.
+    # this check holds the modes to. Three runs each, the median of them compared. The runs alternate
+    # (stream, reliable | reliable, stream | ...) so a runner that slows down during the twelve minutes
+    # does not hit one mode only (reliable ran 20.1, 18.6, 17.5 Mbit/s after stream's 20.4).
     trials = 3
-    for label, dp in [("stream", {"enabled": False}),
-                      ("reliable", {"enabled": True, "class_policies": [{"class": "tcp", "mode": "reliable_stream"}]})]:
-        runs, wire = [], []
-        for trial in range(trials):
+    modes = [("stream", {"enabled": False}),
+             ("reliable", {"enabled": True, "class_policies": [{"class": "tcp", "mode": "reliable_stream"}]})]
+    runs_of = {"stream": [], "reliable": []}
+    wire_of = {}
+    for trial in range(trials):
+        for label, dp in (modes if trial % 2 == 0 else modes[::-1]):
             net, a, b = pair(run, "udp", mp_extra={"data_plane": dp}, flags_extra={"egress_wire_limit_bps": limit})
             established(run, a, "udp")
             net.netem("delay 10ms loss 2%")
@@ -1351,10 +1355,12 @@ def s32_reliable_class(run, args):
             time.sleep(5)
             wire = wire_series(a, 11)
             bulk.join()
-            runs.append(run.evidence[label]["bps"])
+            runs_of[label].append(run.evidence[label]["bps"])
+            wire_of[label] = wire
             run.check(f"{label} wire within limit (run {trial + 1})", statistics.mean(wire) <= limit * 1.02, wire=wire)
             run.reset()
-        res[label] = {"bps": statistics.median(runs), "bps_runs": runs, "wire": wire}
+    for label, runs in runs_of.items():
+        res[label] = {"bps": statistics.median(runs), "bps_runs": runs, "wire": wire_of[label]}
     run.evidence["reliable"] = res
     et_ratio = res["reliable"]["bps"] / res["stream"]["bps"]
     # The link the inner TCP sees: what the single-stream mode delivered.

@@ -225,7 +225,17 @@ mod tests {
         drop(server);
 
         // tcp should closed
-        let mut connector = TcpTunnelConnector::new(addr);
-        connector.connect().await.unwrap_err();
+        // The listener task is aborted by the drop and closes its socket a moment later (longer on
+        // Windows): the port must refuse connections soon, not at the very instant of the drop.
+        let mut closed = false;
+        for _ in 0..50 {
+            let mut connector = TcpTunnelConnector::new(addr.clone());
+            if connector.connect().await.is_err() {
+                closed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(closed, "the port still accepts connections five seconds after the server was dropped");
     }
 }
