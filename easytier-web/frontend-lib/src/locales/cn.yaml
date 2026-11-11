@@ -179,7 +179,6 @@ mp_group_col:
   remotes: 远端地址
 mp_group_name_placeholder: 新网卡组名称
 mp_group_add: 添加网卡组
-mp_config_help: 随网络配置保存。网络运行时，标为“立即生效”的设置马上生效；“对新路径生效”的设置对之后建立的路径生效；“需重连”的设置要在状态页点重连。
 mp_runtime_title: 多路径与 SQM 运行状态
 mp_runtime_empty: 还没有对端上报多路径会话。
 mp_sqm_enabled: 启用 SQM
@@ -226,9 +225,9 @@ mp_sqm_autorate_max: Autorate 带宽估计上限
 mp_sqm_range_invalid: Autorate 下限不能大于上限。
 mp_effect:
   hot: 立即生效
-  new_path: 对新路径生效
-  reconnect: 需重连
-  restart: 需重启实例
+  new_path: 新路径生效
+  reconnect: 重连后生效
+  restart: 重启后生效
 mp_hot_applied: 已应用到运行中的网络，未重启。
 mp_patch_failed: 应用到运行中的网络失败
 mp_policy:
@@ -243,7 +242,6 @@ mp_policy:
   clear_help: 清除此路径的策略
 mp_live:
   title: 多路径设置
-  hint: 在这里修改，立即作用于运行中的网络；每项标明何时生效。
   applied: 已应用多路径设置
   egress_limit: 网卡发送速率上限
   sqm_enabled: 智能队列管理
@@ -251,9 +249,7 @@ mp_live:
   data_plane: 数据报数据面
   hole_mode: TCP 打洞方式
   punch_attempts: 打洞尝试次数
-  punch_pps: 打洞每秒包数（0 为不限）
-  apply: 应用
-  discard: 放弃修改
+  punch_pps: 打洞每秒包数
 mp_restart:
   title: 需要重启
   message: "对 {0} 的修改要在网络重启后才生效。现在保存并重启？"

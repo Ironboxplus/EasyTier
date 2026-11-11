@@ -85,7 +85,7 @@ function setParam(key: string, val: unknown) {
 </script>
 
 <template>
-  <div class="mp-scheduler-panel flex flex-col gap-4">
+  <div class="mp-scheduler-panel flex flex-col gap-4 min-w-0">
     <div class="flex flex-col gap-1">
       <label class="font-medium">{{ label }}</label>
       <Select

@@ -24,10 +24,10 @@ const sliderValue = computed(() => {
 </script>
 
 <template>
-  <div class="mp-number-field flex items-center gap-3 min-w-[16rem]">
-    <Slider class="flex-1 min-w-[6rem]" :model-value="sliderValue" :min="range[0]" :max="range[1]" :step="step"
+  <div class="mp-number-field flex items-center gap-3 min-w-0 max-w-full sm:min-w-[16rem]">
+    <Slider class="flex-1 min-w-[3rem]" :model-value="sliderValue" :min="range[0]" :max="range[1]" :step="step"
       @update:model-value="(v: number | number[]) => emit('update:modelValue', Array.isArray(v) ? v[0] : v)" />
-    <InputNumber v-bind="$attrs" class="w-28" input-class="w-full" :model-value="modelValue ?? null"
+    <InputNumber v-bind="$attrs" class="w-28 shrink-0" input-class="w-full" :model-value="modelValue ?? null"
       @update:model-value="(v: number | null) => emit('update:modelValue', v)" />
     <span v-if="unit" class="text-sm text-color-secondary w-10">{{ unit }}</span>
   </div>

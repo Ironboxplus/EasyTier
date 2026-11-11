@@ -178,7 +178,6 @@ mp_group_col:
   remotes: Remote endpoints
 mp_group_name_placeholder: New group name
 mp_group_add: Add group
-mp_config_help: Saved with the network config. While the network runs, "hot" fields apply immediately without a restart, "new paths" fields apply to paths created afterwards, and "reconnect" fields need the reconnect button on the status page.
 mp_runtime_title: Multipath / SQM live status
 mp_runtime_empty: No multipath peers/paths reported yet.
 mp_sqm_enabled: Enable SQM
@@ -224,10 +223,10 @@ mp_sqm_autorate_min: Autorate minimum
 mp_sqm_autorate_max: Autorate maximum
 mp_sqm_range_invalid: Autorate minimum must not exceed the maximum.
 mp_effect:
-  hot: hot
-  new_path: new paths
-  reconnect: reconnect
-  restart: instance restart
+  hot: applies now
+  new_path: for new paths
+  reconnect: after reconnect
+  restart: after restart
 mp_hot_applied: Applied to the running network without restarting it.
 mp_patch_failed: Failed to apply to the running network
 mp_policy:
@@ -242,7 +241,6 @@ mp_policy:
   clear_help: Remove the policy for this path
 mp_live:
   title: Multipath settings
-  hint: Edited here, applied to the running network at once; each field says when it takes effect.
   applied: Multipath settings applied
   egress_limit: Send rate limit of the network cards
   sqm_enabled: Smart queue management
@@ -250,9 +248,7 @@ mp_live:
   data_plane: Datagram data plane
   hole_mode: TCP hole punch mode
   punch_attempts: Hole punch attempts
-  punch_pps: Hole punch packets per second (0 = unlimited)
-  apply: Apply
-  discard: Discard
+  punch_pps: Hole punch packets per second
 mp_restart:
   title: Restart needed
   message: "Changes to {0} only take effect when the network restarts. Save and restart now?"

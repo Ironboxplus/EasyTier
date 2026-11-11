@@ -191,6 +191,60 @@ def no_sideways_scroll(page, label):
     check(f"{label}: no sideways scroll", width[0] <= width[1] + 1, scroll_width=width[0], inner_width=width[1])
 
 
+def effect_badges_fit(page, label):
+    """Every effect badge is a small block inside the window, and so is every field the page shows
+    (a card that clips its content leaves scrollWidth unchanged, so the boxes are measured)."""
+    boxes = page.evaluate("""() => {
+        const inner = window.innerWidth
+        const rect = el => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width,
+            visible: r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden' } }
+        const out = { badges: [], fields: [], inner }
+        document.querySelectorAll('.mp-effect').forEach(el => out.badges.push({ ...rect(el), text: el.textContent }))
+        document.querySelectorAll('.p-inputtext, .p-select, .p-slider, .p-inputnumber').forEach(el =>
+            out.fields.push({ ...rect(el), cls: el.className.toString().slice(0, 40) }))
+        return out
+    }""")
+    inner = boxes["inner"]
+    wide = [b for b in boxes["badges"] if b["visible"] and b["width"] >= 120]
+    outside = [b for b in boxes["badges"] + boxes["fields"] if b["visible"] and (b["right"] > inner + 1 or b["left"] < -1)]
+    check(f"{label}: every effect badge is under 120 px wide", not wide, wide=wide[:3], badges=len(boxes["badges"]))
+    check(f"{label}: no badge or field sticks out of the window", not outside, outside=outside[:3])
+
+
+def nothing_cut(page, label):
+    """No pipeline step and no peer-row text is cut short (text wider than its box)."""
+    cut = page.evaluate("""() => [...document.querySelectorAll('.mp-step b, .mp-step-name, [data-testid="peer-row"] *')]
+        .filter(el => el.children.length === 0 && el.clientWidth > 0 && el.scrollWidth > el.clientWidth + 1)
+        .map(el => ({ text: el.textContent.slice(0, 40), scroll: el.scrollWidth, client: el.clientWidth }))""")
+    check(f"{label}: no text is cut short", not cut, cut=cut[:5])
+
+
+def login(pg):
+    pg.goto(f"{args.web}/#/auth")
+    pg.locator("#username").fill(args.user)
+    pg.locator('input[type="password"]').first.fill(args.password)
+    pg.locator('button[type="submit"]').click()
+    pg.wait_for_url("**/#/h/**", timeout=30000)
+
+
+def shoot_status(pg, lang, width):
+    """The status page as pictures: the window, the page at full height (the page scrolls inside its
+    own container, so the window is made tall for a moment), and the runway, the peer list and the MP
+    settings card each by themselves."""
+    pg.screenshot(path=str(SHOTS / f"status-{lang}-{width}-window.png"))
+    pg.set_viewport_size({"width": width, "height": 3200})
+    pg.wait_for_timeout(800)
+    pg.screenshot(path=str(SHOTS / f"status-{lang}-{width}-long.png"))
+    pg.set_viewport_size({"width": width, "height": 900})
+    pg.wait_for_timeout(500)
+    for name, testid in (("runway", "path-runway"), ("peers", "peer-list"), ("settings", "mp-live-settings")):
+        target = pg.locator(f'[data-testid="{testid}"]').first
+        if target.count() and target.is_visible():
+            target.screenshot(path=str(SHOTS / f"status-{lang}-{width}-{name}.png"))
+        else:
+            check(f"{lang} {width} px: {name} is on the page", False)
+
+
 def peer_row(page):
     """The status page's row of node B (the first row is this node, the relay is another one)."""
     return page.locator('[data-testid="peer-row"]').filter(has=page.get_by_text("b", exact=True)).first
@@ -335,10 +389,43 @@ def run() -> None:
             peer_row(page).wait_for(state="visible", timeout=60000)
             open_runway(page)
             no_sideways_scroll(page, f"status page, {width} px")
-            page.screenshot(path=str(SHOTS / f"status-{width}.png"), full_page=True)
+            effect_badges_fit(page, f"status page, {width} px")
+            nothing_cut(page, f"status page, {width} px")
+            shoot_status(page, "en", width)
             open_config()
             no_sideways_scroll(page, f"config page, {width} px")
-            page.screenshot(path=str(SHOTS / f"config-{width}.png"), full_page=True)
+            effect_badges_fit(page, f"config page, {width} px")
+            page.set_viewport_size({"width": width, "height": 3200})
+            page.wait_for_timeout(800)
+            page.screenshot(path=str(SHOTS / f"config-en-{width}-long.png"))
+            page.set_viewport_size({"width": width, "height": 900})
+
+        # ---- the same pages in Chinese, the language the owner reads
+        cn = browser.new_context(viewport={"width": 1040, "height": 900}, locale="zh-CN")
+        cpage = cn.new_page()
+        cpage.on("pageerror", lambda e: errors.append(str(e)))
+        login(cpage)
+        for width in (360, 390, 1040):
+            cpage.set_viewport_size({"width": width, "height": 900})
+            cpage.goto("about:blank")
+            cpage.goto(device_url(INSTANCE))
+            peer_row(cpage).wait_for(state="visible", timeout=60000)
+            open_runway(cpage)
+            no_sideways_scroll(cpage, f"status page (Chinese), {width} px")
+            effect_badges_fit(cpage, f"status page (Chinese), {width} px")
+            nothing_cut(cpage, f"status page (Chinese), {width} px")
+            shoot_status(cpage, "cn", width)
+            cpage.goto("about:blank")
+            cpage.goto(device_url(INSTANCE))
+            cpage.locator('button:has(.pi-ellipsis-v)').first.click()
+            cpage.get_by_text("编辑网络").first.click()
+            open_panel(cpage, "高级设置", "#hostname")
+            no_sideways_scroll(cpage, f"config page (Chinese), {width} px")
+            effect_badges_fit(cpage, f"config page (Chinese), {width} px")
+            cpage.set_viewport_size({"width": width, "height": 3200})
+            cpage.wait_for_timeout(800)
+            cpage.screenshot(path=str(SHOTS / f"config-cn-{width}-long.png"))
+            cpage.set_viewport_size({"width": width, "height": 900})
         check("the page raised no script error", not errors, errors=errors[:5])
         browser.close()
 

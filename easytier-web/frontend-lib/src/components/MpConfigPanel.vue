@@ -253,13 +253,13 @@ const sqmRangeInvalid = computed(() =>
   <div class="mp-config-panel flex flex-col gap-4" data-testid="mp-config-panel">
     <!-- ================= basic ================= -->
     <div class="flex flex-row flex-wrap gap-4 items-center">
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
         <Checkbox :model-value="mp.enabled" input-id="mp-enabled" :binary="true" data-testid="mp-enabled"
           @update:model-value="(v: boolean) => patch({ enabled: v })" />
         <label for="mp-enabled">{{ t('mp_enabled') }}</label>
         <MpEffectBadge field="mp.enabled" />
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
         <Checkbox :model-value="mp.sqm.enabled" input-id="mp-sqm-enabled" :binary="true" data-testid="mp-sqm-enabled"
           @update:model-value="(v: boolean) => patchSqm({ enabled: v })" />
         <label for="mp-sqm-enabled">{{ t('mp_sqm_enabled') }}</label>
@@ -269,7 +269,7 @@ const sqmRangeInvalid = computed(() =>
     </div>
 
     <div class="flex flex-row flex-wrap gap-4">
-      <div class="flex flex-col gap-1 min-w-[14rem]">
+      <div class="flex flex-col gap-1 min-w-0 sm:min-w-[14rem] max-w-full">
         <label>{{ t('mp_egress_wire_limit') }}
           <span class="pi pi-question-circle" v-tooltip="t('mp_egress_wire_limit_help')"></span>
           <MpEffectBadge field="egress_wire_limit_bps" /></label>
@@ -279,11 +279,11 @@ const sqmRangeInvalid = computed(() =>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <div class="flex flex-col gap-1">
+      <div class="flex flex-col gap-1 min-w-0">
         <MpEffectBadge field="mp.packet_scheduler" />
         <MpSchedulerPanel v-model="schedulerModel" kind="scheduler" :label="t('mp_packet_scheduler')" />
       </div>
-      <div class="flex flex-col gap-1" data-testid="mp-cc-panel">
+      <div class="flex flex-col gap-1 min-w-0" data-testid="mp-cc-panel">
         <MpEffectBadge field="mp.congestion_control" />
         <MpSchedulerPanel v-model="congestionModel" kind="congestion_control" :label="t('mp_congestion_control')"
           testid="mp-cc-select" />
@@ -343,7 +343,7 @@ const sqmRangeInvalid = computed(() =>
           </div>
         </div>
         <div class="flex flex-row flex-wrap gap-4">
-          <div class="flex flex-col gap-1 min-w-[14rem]">
+          <div class="flex flex-col gap-1 min-w-0 sm:min-w-[14rem] max-w-full">
             <label>{{ t('tcp_hole_punch_mode') }}
               <MpEffectBadge field="tcp_hole_punch_mode" /></label>
             <Select v-model="holeMode" :options="holeModeOptions" option-label="label" option-value="value"
@@ -532,7 +532,6 @@ const sqmRangeInvalid = computed(() =>
     </motion.div>
     </AnimatePresence>
 
-    <small class="text-color-secondary">{{ t('mp_config_help') }}</small>
   </div>
 </template>
 
