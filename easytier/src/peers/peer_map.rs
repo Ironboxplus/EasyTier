@@ -167,6 +167,32 @@ impl PeerMap {
         Ok(())
     }
 
+    /// `send_msg_directly`, except that a peer without a usable connection hands the packet
+    /// back instead of failing, for the caller to route around it.
+    pub(crate) async fn try_send_msg_directly(
+        &self,
+        msg: ZCPacket,
+        dst_peer_id: PeerId,
+    ) -> Result<Option<ZCPacket>, Error> {
+        if dst_peer_id == self.my_peer_id {
+            self.send_msg_directly(msg, dst_peer_id).await?;
+            return Ok(None);
+        }
+        match self.get_peer_by_id(dst_peer_id) {
+            Some(peer) => peer.try_send_msg(msg).await,
+            None => Ok(Some(msg)),
+        }
+    }
+
+    /// Whether `dst_peer_id` is this node or a peer with a live connection: what `p2p_only`
+    /// counts as a direct link.
+    pub fn has_live_peer(&self, dst_peer_id: PeerId) -> bool {
+        dst_peer_id == self.my_peer_id
+            || self
+                .get_peer_by_id(dst_peer_id)
+                .is_some_and(|peer| peer.has_live_conns())
+    }
+
     /// Sends through a direct peer connection while deliberately excluding
     /// endpoint MP tunnels. Relay MP datagrams use this on both endpoint and
     /// intermediate forwarding hops to avoid recursively carrying one MP
@@ -204,7 +230,13 @@ impl PeerMap {
             return Some(dst_peer_id);
         }
 
-        if self.has_peer(dst_peer_id) && matches!(policy, NextHopPolicy::LeastHop) {
+        // A `Peer` outlives its last connection until the periodic cleanup, and is no next hop
+        // while it has none.
+        if matches!(policy, NextHopPolicy::LeastHop)
+            && self
+                .get_peer_by_id(dst_peer_id)
+                .is_some_and(|peer| peer.has_live_conns())
+        {
             return Some(dst_peer_id);
         }
 

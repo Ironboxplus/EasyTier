@@ -1694,6 +1694,80 @@ mod tests {
         Ok(())
     }
 
+    /// Every flag away from its default survives NetworkConfig and TOML. The struct literal
+    /// names all fields: a flag added later (by a merge, say) does not compile until this
+    /// test sets it, so a flag the conversions forget cannot slip in unnoticed.
+    #[test]
+    fn test_every_flag_survives_network_config_and_toml_round_trips() -> Result<(), anyhow::Error> {
+        use crate::common::config::{Flags, TomlConfigLoader, gen_default_flags, gen_default_mp_config};
+
+        let d = gen_default_flags();
+        #[allow(deprecated)]
+        let flags = Flags {
+            default_protocol: "udp".to_string(),
+            dev_name: "etx9".to_string(),
+            enable_encryption: !d.enable_encryption,
+            enable_ipv6: !d.enable_ipv6,
+            mtu: 1300,
+            latency_first: !d.latency_first,
+            enable_exit_node: !d.enable_exit_node,
+            no_tun: !d.no_tun,
+            use_smoltcp: !d.use_smoltcp,
+            relay_network_whitelist: "netA netB".to_string(),
+            disable_p2p: !d.disable_p2p,
+            relay_all_peer_rpc: !d.relay_all_peer_rpc,
+            disable_udp_hole_punching: !d.disable_udp_hole_punching,
+            multi_thread: !d.multi_thread,
+            data_compress_algo: CompressionAlgoPb::Zstd as i32,
+            bind_device: !d.bind_device,
+            enable_kcp_proxy: !d.enable_kcp_proxy,
+            disable_kcp_input: !d.disable_kcp_input,
+            disable_relay_kcp: !d.disable_relay_kcp,
+            proxy_forward_by_system: !d.proxy_forward_by_system,
+            accept_dns: !d.accept_dns,
+            private_mode: !d.private_mode,
+            enable_quic_proxy: !d.enable_quic_proxy,
+            disable_quic_input: !d.disable_quic_input,
+            disable_relay_quic: !d.disable_relay_quic,
+            // Deprecated: neither NetworkConfig nor the TOML carries it.
+            quic_listen_port: d.quic_listen_port,
+            foreign_relay_bps_limit: 5_000_000,
+            multi_thread_count: d.multi_thread_count + 2,
+            enable_relay_foreign_network_kcp: !d.enable_relay_foreign_network_kcp,
+            enable_relay_foreign_network_quic: !d.enable_relay_foreign_network_quic,
+            encryption_algorithm: "xor".to_string(),
+            disable_sym_hole_punching: !d.disable_sym_hole_punching,
+            tld_dns_zone: "flags.example.".to_string(),
+            p2p_only: !d.p2p_only,
+            disable_tcp_hole_punching: !d.disable_tcp_hole_punching,
+            lazy_p2p: !d.lazy_p2p,
+            need_p2p: !d.need_p2p,
+            instance_recv_bps_limit: 7_000_000,
+            disable_upnp: !d.disable_upnp,
+            disable_relay_data: !d.disable_relay_data,
+            enable_udp_broadcast_relay: !d.enable_udp_broadcast_relay,
+            socket_mark: Some(9),
+            tcp_hole_punch_mode: "faketcp".to_string(),
+            mp: Some(crate::proto::common::MpConfig {
+                enabled: true,
+                kmax: 2,
+                ..gen_default_mp_config()
+            }),
+            egress_wire_limit_bps: Some(2_000_000),
+        };
+        let config = gen_default_config();
+        config.set_flags(flags.clone());
+
+        let from_network_config = super::NetworkConfig::new_from_config(&config)?
+            .gen_config()?
+            .get_flags();
+        assert_eq!(from_network_config, flags, "lost across NetworkConfig");
+
+        let from_toml = TomlConfigLoader::new_from_str(&config.dump())?.get_flags();
+        assert_eq!(from_toml, flags, "lost across the TOML");
+        Ok(())
+    }
+
     /// The core switches and top-level items that only the TOML had: a
     /// config that sets them reads back into `NetworkConfig` and generates
     /// the same config again.

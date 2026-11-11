@@ -14,8 +14,8 @@ use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
 use parking_lot::RwLock;
 use quinn::{
-    ClientConfig, ConnectError, Connection, Endpoint, EndpointConfig, ServerConfig,
-    TransportConfig, congestion::BbrConfig, default_runtime,
+    ClientConfig, ConnectError, Connection, ConnectionError, Endpoint, EndpointConfig,
+    ServerConfig, TransportConfig, congestion::BbrConfig, default_runtime,
 };
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
@@ -398,6 +398,28 @@ pub(crate) fn endpoint_config_with_versions(versions: Vec<u32>) -> EndpointConfi
 pub fn endpoint_config() -> EndpointConfig {
     endpoint_config_with_versions(vec![QUIC_VERSION_ETQ1, 1])
 }
+
+/// Dial `endpoint` preferring [`QUIC_VERSION_ETQ1`], falling back to legacy
+/// version 1 when the remote rejects ETQ1 via version negotiation.
+pub(crate) async fn connect_with_etq1(
+    endpoint: &Endpoint,
+    addr: SocketAddr,
+    server_name: &str,
+) -> anyhow::Result<Connection> {
+    match endpoint
+        .connect_with(etq1_client_config(), addr, server_name)
+        .with_context(|| format!("failed to start connection to {addr}"))?
+        .await
+    {
+        Ok(connection) => Ok(connection),
+        Err(ConnectionError::VersionMismatch) => endpoint
+            .connect_with(client_config(), addr, server_name)
+            .with_context(|| format!("failed to start connection to {addr}"))?
+            .await
+            .with_context(|| format!("failed to connect to {addr}")),
+        Err(error) => Err(error).with_context(|| format!("failed to connect to {addr}")),
+    }
+}
 //endregion
 
 //region rw pool
@@ -775,9 +797,14 @@ impl QuicEndpointManager {
 
         loop {
             let endpoint = self.client_endpoint(ip_version, socket_mark)?;
-            let connecting = match endpoint.connect(addr, "localhost") {
-                Ok(connecting) => connecting,
-                Err(ConnectError::EndpointStopping) => {
+            match connect_with_etq1(&endpoint, addr, "localhost").await {
+                Ok(connection) => return Ok((endpoint, connection)),
+                Err(error)
+                    if matches!(
+                        error.downcast_ref::<ConnectError>(),
+                        Some(ConnectError::EndpointStopping)
+                    ) =>
+                {
                     let local_addr = endpoint.local_addr().ok();
                     let removed = self.remove_endpoint(&endpoint);
                     endpoint_stopping_retries += 1;
@@ -794,17 +821,12 @@ impl QuicEndpointManager {
                     }
                     continue;
                 }
-                Err(e) => {
-                    return Err(anyhow::Error::new(e)
+                Err(error) => {
+                    return Err(error
                         .context(format!("failed to create connection to {}", addr))
                         .into());
                 }
-            };
-            let connection = connecting
-                .await
-                .with_context(|| format!("failed to connect to {}", addr))?;
-
-            return Ok((endpoint, connection));
+            }
         }
     }
 }

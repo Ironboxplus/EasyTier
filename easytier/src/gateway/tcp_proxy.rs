@@ -2,7 +2,7 @@ use anyhow::Context;
 use cidr::Ipv4Inet;
 use core::panic;
 use crossbeam::atomic::AtomicCell;
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 use hotpath::instant::Instant;
 use pnet::packet::MutablePacket;
 use pnet::packet::Packet;
@@ -113,10 +113,21 @@ impl NatDstConnector for NatDstTcpConnector {
 
 type NatDstEntryState = TcpProxyEntryState;
 
+/// A flow as the peer addresses it. Two connections may share a source address, so the source
+/// alone does not identify one.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct NatFlowKey {
+    src: SocketAddr,
+    mapped_dst: SocketAddr,
+}
+
 #[derive(Debug)]
 pub struct NatDstEntry {
     id: uuid::Uuid,
     src: SocketAddr,
+    /// What the local listener sees as the peer: the source address with a port that is unique
+    /// per flow. Packets towards the peer are matched on it, and the original port is restored.
+    translated_src: SocketAddr,
     real_dst: SocketAddr,
     mapped_dst: SocketAddr,
     start_time: Instant,
@@ -126,16 +137,24 @@ pub struct NatDstEntry {
 }
 
 impl NatDstEntry {
-    pub fn new(src: SocketAddr, real_dst: SocketAddr, mapped_dst: SocketAddr) -> Self {
+    fn new(flow: NatFlowKey, translated_src: SocketAddr, real_dst: SocketAddr) -> Self {
         Self {
             id: uuid::Uuid::new_v4(),
-            src,
+            src: flow.src,
+            translated_src,
             real_dst,
-            mapped_dst,
+            mapped_dst: flow.mapped_dst,
             start_time: Instant::now(),
             start_time_local: chrono::Local::now(),
             tasks: Mutex::new(JoinSet::new()),
             state: AtomicCell::new(NatDstEntryState::SynReceived),
+        }
+    }
+
+    fn flow(&self) -> NatFlowKey {
+        NatFlowKey {
+            src: self.src,
+            mapped_dst: self.mapped_dst,
         }
     }
 
@@ -335,32 +354,44 @@ impl ProxyTcpListener {
 
 type ArcNatDstEntry = Arc<NatDstEntry>;
 
-type SynSockMap = Arc<DashMap<SocketAddr, ArcNatDstEntry>>;
-type ConnSockMap = Arc<DashMap<uuid::Uuid, ArcNatDstEntry>>;
-// peer src addr to nat entry, when respond tcp packet, should modify the tcp src addr to the nat entry's dst addr
-type AddrConnSockMap = Arc<DashMap<SocketAddr, ArcNatDstEntry>>;
-
-// Read the old table first: a promotion publishes the new table entry before
-// removing the old one. Reversing either order can miss a live connection.
-fn proxy_entry_for_source(
-    syn_map: &AddrConnSockMap,
-    addr_conn_map: &AddrConnSockMap,
-    src: &SocketAddr,
-) -> Option<ArcNatDstEntry> {
-    syn_map.get(src).map(|entry| entry.clone())
-        .or_else(|| addr_conn_map.get(src).map(|entry| entry.clone()))
+/// What the proxy did with a packet from a peer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeerPacketAction {
+    /// Rewritten for the local listener.
+    Handled,
+    /// Belongs to the proxy but cannot be served; nothing else may see it either.
+    Drop,
+    /// Not the proxy's packet.
+    Pass,
 }
 
-fn promote_proxy_entry(
-    syn_map: &AddrConnSockMap,
-    addr_conn_map: &AddrConnSockMap,
-    conn_map: &ConnSockMap,
-    entry: ArcNatDstEntry,
-) {
+// every flow, from its SYN until its entry is removed
+type FlowMap = Arc<DashMap<NatFlowKey, ArcNatDstEntry>>;
+// connections that were accepted by the local listener
+type ConnSockMap = Arc<DashMap<uuid::Uuid, ArcNatDstEntry>>;
+// translated peer addr to nat entry: the listener's accept and every packet responding to the peer
+// find the entry here, and the response gets the entry's original ports back
+type TranslatedSrcMap = Arc<DashMap<SocketAddr, ArcNatDstEntry>>;
+
+/// The two maps an entry lives in besides `conn_map`, always updated together.
+#[derive(Clone, Debug, Default)]
+struct NatIndices {
+    flow_map: FlowMap,
+    translated_src_map: TranslatedSrcMap,
+}
+
+impl NatIndices {
+    fn remove(&self, entry: &NatDstEntry) {
+        self.flow_map
+            .remove_if(&entry.flow(), |_, current| current.id == entry.id);
+        self.translated_src_map
+            .remove_if(&entry.translated_src, |_, current| current.id == entry.id);
+    }
+}
+
+fn promote_proxy_entry(conn_map: &ConnSockMap, entry: ArcNatDstEntry) {
     entry.state.store(NatDstEntryState::ConnectingDst);
-    addr_conn_map.insert(entry.src, entry.clone());
     assert!(conn_map.insert(entry.id, entry.clone()).is_none());
-    syn_map.remove_if(&entry.src, |_, current| current.id == entry.id);
 }
 
 #[derive(Debug)]
@@ -369,11 +400,12 @@ pub struct TcpProxy<C: NatDstConnector> {
     peer_manager: Weak<PeerManager>,
     local_port: AtomicU16,
 
+    next_translated_port: AtomicU16,
+
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 
-    syn_map: SynSockMap,
+    indices: NatIndices,
     conn_map: ConnSockMap,
-    addr_conn_map: AddrConnSockMap,
 
     cidr_set: CidrSet,
 
@@ -391,20 +423,22 @@ pub struct TcpProxy<C: NatDstConnector> {
 #[async_trait::async_trait]
 impl<C: NatDstConnector> PeerPacketFilter for TcpProxy<C> {
     async fn try_process_packet_from_peer(&self, mut packet: ZCPacket) -> Option<ZCPacket> {
-        if self.try_handle_peer_packet(&mut packet).await.is_some() {
-            if self.is_smoltcp_enabled() {
-                let smoltcp_stack_sender = self.smoltcp_stack_sender.as_ref().unwrap();
-                if let Err(e) = smoltcp_stack_sender.try_send(packet) {
-                    tracing::error!("send to smoltcp stack failed: {:?}", e);
+        match self.try_handle_peer_packet(&mut packet).await {
+            PeerPacketAction::Handled => {
+                if self.is_smoltcp_enabled() {
+                    let smoltcp_stack_sender = self.smoltcp_stack_sender.as_ref().unwrap();
+                    if let Err(e) = smoltcp_stack_sender.try_send(packet) {
+                        tracing::error!("send to smoltcp stack failed: {:?}", e);
+                    }
+                } else if let Some(peer_manager) = self.get_peer_manager()
+                    && let Err(e) = peer_manager.get_nic_channel().send(packet).await
+                {
+                    tracing::error!("send to nic failed: {:?}", e);
                 }
-            } else if let Some(peer_manager) = self.get_peer_manager()
-                && let Err(e) = peer_manager.get_nic_channel().send(packet).await
-            {
-                tracing::error!("send to nic failed: {:?}", e);
+                None
             }
-            return None;
-        } else {
-            Some(packet)
+            PeerPacketAction::Drop => None,
+            PeerPacketAction::Pass => Some(packet),
         }
     }
 }
@@ -445,10 +479,15 @@ impl<C: NatDstConnector> NicPacketFilter for TcpProxy<C> {
         }
 
         tracing::trace!(dst_addr = ?dst_addr, "tcp packet try find entry");
-        let Some(nat_entry) = proxy_entry_for_source(&self.syn_map, &self.addr_conn_map, &dst_addr) else {
+        let Some(nat_entry) = self
+            .indices
+            .translated_src_map
+            .get(&dst_addr)
+            .map(|entry| entry.clone())
+        else {
             return false;
         };
-        assert_eq!(nat_entry.src, dst_addr);
+        assert_eq!(nat_entry.translated_src, dst_addr);
 
         let IpAddr::V4(ip) = nat_entry.mapped_dst.ip() else {
             panic!("v4 nat entry src ip is not v4");
@@ -471,6 +510,7 @@ impl<C: NatDstConnector> NicPacketFilter for TcpProxy<C> {
 
         let mut tcp_packet = MutableTcpPacket::new(ip_packet.payload_mut()).unwrap();
         tcp_packet.set_source(nat_entry.real_dst.port());
+        tcp_packet.set_destination(nat_entry.src.port());
 
         Self::update_tcp_packet_checksum(&mut tcp_packet, &ip, &dst);
         drop(tcp_packet);
@@ -492,11 +532,11 @@ impl<C: NatDstConnector> TcpProxy<C> {
             peer_manager: Arc::downgrade(&peer_manager),
 
             local_port: AtomicU16::new(0),
+            next_translated_port: AtomicU16::new(1),
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
 
-            syn_map: Arc::new(DashMap::new()),
+            indices: NatIndices::default(),
             conn_map: Arc::new(DashMap::new()),
-            addr_conn_map: Arc::new(DashMap::new()),
 
             cidr_set: CidrSet::new(global_ctx),
 
@@ -554,20 +594,31 @@ impl<C: NatDstConnector> TcpProxy<C> {
     }
 
     async fn run_syn_map_cleaner(&self) -> Result<()> {
-        let syn_map = self.syn_map.clone();
+        let indices = self.indices.clone();
         let tasks = self.tasks.clone();
         let syn_map_cleaner_task = async move {
             loop {
-                syn_map.retain(|_, entry| {
-                    if entry.start_time.elapsed() > Duration::from_secs(30) {
+                // Only a flow that was never accepted can expire here; an accepted one is
+                // removed when its connection ends.
+                indices.flow_map.retain(|_, entry| {
+                    let expired = entry.start_time.elapsed() > Duration::from_secs(30)
+                        && entry
+                            .state
+                            .compare_exchange(
+                                NatDstEntryState::SynReceived,
+                                NatDstEntryState::Closed,
+                            )
+                            .is_ok();
+                    if expired {
                         tracing::warn!(entry = ?entry, "syn nat entry expired");
-                        entry.state.store(NatDstEntryState::Closed);
-                        false
-                    } else {
-                        true
+                        indices
+                            .translated_src_map
+                            .remove_if(&entry.translated_src, |_, current| current.id == entry.id);
                     }
+                    !expired
                 });
-                syn_map.shrink_to_fit();
+                indices.flow_map.shrink_to_fit();
+                indices.translated_src_map.shrink_to_fit();
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
         };
@@ -695,9 +746,8 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
         let global_ctx = self.global_ctx.clone();
         let tasks = Arc::downgrade(&self.tasks);
-        let syn_map = self.syn_map.clone();
+        let indices = self.indices.clone();
         let conn_map = self.conn_map.clone();
-        let addr_conn_map = self.addr_conn_map.clone();
         let connector = self.connector.clone();
         let accept_task = async move {
             let conn_map = conn_map.clone();
@@ -720,7 +770,11 @@ impl<C: NatDstConnector> TcpProxy<C> {
                     socket_addr.set_ip(IpAddr::V4(my_ip));
                 }
 
-                let Some(entry) = syn_map.get(&socket_addr) else {
+                let Some(entry_clone) = indices
+                    .translated_src_map
+                    .get(&socket_addr)
+                    .map(|entry| entry.clone())
+                else {
                     tracing::error!(
                         ?my_ip,
                         ?socket_addr,
@@ -731,13 +785,28 @@ impl<C: NatDstConnector> TcpProxy<C> {
                 tracing::info!(
                     ?socket_addr,
                     "tcp connection accepted for proxy, nat dst: {:?}",
-                    entry.real_dst
+                    entry_clone.real_dst
                 );
-                assert_eq!(entry.state.load(), NatDstEntryState::SynReceived);
-
-                let entry_clone = entry.clone();
-                drop(entry);
-                promote_proxy_entry(&syn_map, &addr_conn_map, &conn_map, entry_clone.clone());
+                // The cleaner may have expired the entry while the connection was in flight.
+                if entry_clone
+                    .state
+                    .compare_exchange(
+                        NatDstEntryState::SynReceived,
+                        NatDstEntryState::ConnectingDst,
+                    )
+                    .is_err()
+                {
+                    tracing::warn!(
+                        ?socket_addr,
+                        state = ?entry_clone.state.load(),
+                        "tcp connection for a flow that is no longer waiting, ignore it"
+                    );
+                    if entry_clone.state.load() == NatDstEntryState::Closed {
+                        indices.remove(&entry_clone);
+                    }
+                    continue;
+                }
+                promote_proxy_entry(&conn_map, entry_clone.clone());
 
                 let Some(tasks) = tasks.upgrade() else {
                     tracing::error!("tcp proxy tasks is dropped, exit accept loop");
@@ -749,7 +818,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
                     global_ctx.clone(),
                     tcp_stream,
                     conn_map.clone(),
-                    addr_conn_map.clone(),
+                    indices.clone(),
                     entry_clone,
                 ));
             }
@@ -764,16 +833,19 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
     fn remove_entry_from_all_conn_map(
         conn_map: ConnSockMap,
-        addr_conn_map: AddrConnSockMap,
+        indices: NatIndices,
         nat_entry: ArcNatDstEntry,
     ) {
         conn_map.remove(&nat_entry.id);
-        addr_conn_map.remove_if(&nat_entry.src, |_, entry| entry.id == nat_entry.id);
+        indices.remove(&nat_entry);
         if conn_map.capacity() - conn_map.len() > 16 {
             conn_map.shrink_to_fit();
         }
-        if addr_conn_map.capacity() - addr_conn_map.len() > 16 {
-            addr_conn_map.shrink_to_fit();
+        if indices.flow_map.capacity() - indices.flow_map.len() > 16 {
+            indices.flow_map.shrink_to_fit();
+        }
+        if indices.translated_src_map.capacity() - indices.translated_src_map.len() > 16 {
+            indices.translated_src_map.shrink_to_fit();
         }
     }
 
@@ -782,7 +854,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
         global_ctx: ArcGlobalCtx,
         src_tcp_stream: ProxyTcpStream,
         conn_map: ConnSockMap,
-        addr_conn_map: AddrConnSockMap,
+        indices: NatIndices,
         nat_entry: ArcNatDstEntry,
     ) {
         if let Err(e) = src_tcp_stream.set_nodelay(true) {
@@ -796,7 +868,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
                 nat_entry.real_dst.port()
             );
             nat_entry.state.store(NatDstEntryState::Closed);
-            Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry);
+            Self::remove_entry_from_all_conn_map(conn_map, indices, nat_entry);
             return;
         }
 
@@ -827,7 +899,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
         let Ok(dst_tcp_stream) = connector.connect(nat_entry.src, nat_dst).await else {
             tracing::error!("connect to dst failed: {:?}", nat_entry);
             nat_entry.state.store(NatDstEntryState::Closed);
-            Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry);
+            Self::remove_entry_from_all_conn_map(conn_map, indices, nat_entry);
             return;
         };
         drop(_guard);
@@ -841,7 +913,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             src_tcp_stream,
             dst_tcp_stream,
             conn_map,
-            addr_conn_map,
+            indices,
             nat_entry,
         )
         .await;
@@ -851,7 +923,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
         mut src_tcp_stream: ProxyTcpStream,
         mut dst_tcp_stream: C::DstStream,
         conn_map: ConnSockMap,
-        addr_conn_map: AddrConnSockMap,
+        indices: NatIndices,
         nat_entry: ArcNatDstEntry,
     ) {
         let nat_entry_clone = nat_entry.clone();
@@ -874,7 +946,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             // sleep later so the fin packet can be processed
             tokio::time::sleep(Duration::from_secs(10)).await;
 
-            Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry_clone);
+            Self::remove_entry_from_all_conn_map(conn_map, indices, nat_entry_clone);
         });
     }
 
@@ -914,15 +986,17 @@ impl<C: NatDstConnector> TcpProxy<C> {
         local_ip.first_address()
     }
 
-    async fn try_handle_peer_packet(&self, packet: &mut ZCPacket) -> Option<()> {
+    async fn try_handle_peer_packet(&self, packet: &mut ZCPacket) -> PeerPacketAction {
         if !self
             .connector
             .check_packet_from_peer_fast(&self.cidr_set, &self.global_ctx)
         {
-            return None;
+            return PeerPacketAction::Pass;
         }
 
-        let ipv4_inet = self.get_local_inet()?;
+        let Some(ipv4_inet) = self.get_local_inet() else {
+            return PeerPacketAction::Pass;
+        };
         let ipv4_addr = ipv4_inet.address();
         {
             let hdr = packet.peer_manager_header().unwrap();
@@ -931,17 +1005,19 @@ impl<C: NatDstConnector> TcpProxy<C> {
                 && hdr.packet_type != PacketType::DataWithQuicSrcModified as u8)
                 || hdr.is_no_proxy()
             {
-                return None;
+                return PeerPacketAction::Pass;
             };
         }
 
         let origin_ip = {
             let payload_bytes = packet.mut_payload();
-            let ipv4 = Ipv4Packet::new(payload_bytes)?;
+            let Some(ipv4) = Ipv4Packet::new(payload_bytes) else {
+                return PeerPacketAction::Pass;
+            };
             if ipv4.get_version() != 4
                 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
             {
-                return None;
+                return PeerPacketAction::Pass;
             }
 
             ipv4.get_destination()
@@ -956,7 +1032,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             &origin_ip,
             &mut real_dst_ip,
         ) {
-            return None;
+            return PeerPacketAction::Pass;
         }
 
         // restore to data packet
@@ -971,23 +1047,35 @@ impl<C: NatDstConnector> TcpProxy<C> {
         let source_ip = ip_packet.get_source();
         let source_port = tcp_packet.get_source();
         let src = SocketAddr::V4(SocketAddrV4::new(source_ip, source_port));
+        let dest_ip = ip_packet.get_destination();
+        let dest_port = tcp_packet.get_destination();
+        let flow = NatFlowKey {
+            src,
+            mapped_dst: SocketAddr::V4(SocketAddrV4::new(dest_ip, dest_port)),
+        };
 
         let is_tcp_syn = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::SYN != 0;
         let is_tcp_ack = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::ACK != 0;
-        if is_tcp_syn && !is_tcp_ack {
-            let dest_ip = ip_packet.get_destination();
-            let dest_port = tcp_packet.get_destination();
-            let mapped_dst = SocketAddr::V4(SocketAddrV4::new(dest_ip, dest_port));
+        let nat_entry = if is_tcp_syn && !is_tcp_ack {
             let real_dst = SocketAddr::V4(SocketAddrV4::new(real_dst_ip, dest_port));
-
-            let old_val = self
-                .syn_map
-                .insert(src, Arc::new(NatDstEntry::new(src, real_dst, mapped_dst)));
-            tracing::info!(src = ?src, ?real_dst, ?mapped_dst, old_entry = ?old_val, "tcp syn received");
+            let Some((entry, new_syn)) = self.entry_for_syn(flow, real_dst) else {
+                tracing::error!(?flow, "tcp proxy translated source ports exhausted");
+                // Not passed on either: the host stack would answer it, not the proxy.
+                return PeerPacketAction::Drop;
+            };
+            if new_syn {
+                tracing::info!(
+                    ?src,
+                    translated_src = ?entry.translated_src,
+                    ?real_dst,
+                    mapped_dst = ?entry.mapped_dst,
+                    "tcp syn received"
+                );
+            }
 
             // if smoltcp is enabled, add the listener to the net
             #[cfg(feature = "smoltcp")]
-            if self.is_smoltcp_enabled() {
+            if new_syn && self.is_smoltcp_enabled() {
                 let smoltcp_listener_tx = self.smoltcp_listener_tx.lock().unwrap().clone().unwrap();
                 SmolTcpListener::add_listener(
                     smoltcp_listener_tx,
@@ -997,10 +1085,13 @@ impl<C: NatDstConnector> TcpProxy<C> {
                 .await;
                 tracing::info!("smol tcp listener added for src: {:?}", src);
             }
-        } else if proxy_entry_for_source(&self.syn_map, &self.addr_conn_map, &src).is_none() {
-            // if not in syn map and addr conn map, may forwarding n2n packet
-            return None;
-        }
+            entry
+        } else if let Some(entry) = self.indices.flow_map.get(&flow) {
+            entry.clone()
+        } else {
+            // not a flow of this proxy, may forwarding n2n packet
+            return PeerPacketAction::Pass;
+        };
 
         let mut ip_packet = MutableIpv4Packet::new(payload_bytes).unwrap();
         if !self.is_smoltcp_enabled() && source_ip == ipv4_addr {
@@ -1011,6 +1102,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
         let source = ip_packet.get_source();
 
         let mut tcp_packet = MutableTcpPacket::new(ip_packet.payload_mut()).unwrap();
+        tcp_packet.set_source(nat_entry.translated_src.port());
         tcp_packet.set_destination(self.get_local_port());
 
         Self::update_tcp_packet_checksum(&mut tcp_packet, &source, &ipv4_addr);
@@ -1019,18 +1111,82 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
         tracing::trace!(?source, ?ipv4_addr, ?packet, "tcp packet after modified");
 
-        Some(())
+        PeerPacketAction::Handled
     }
 
-    pub fn is_tcp_proxy_connection(&self, src: SocketAddr) -> bool {
-        proxy_entry_for_source(&self.syn_map, &self.addr_conn_map, &src).is_some()
+    /// The entry of the flow, created by its SYN. A flow whose connection is already ending gets
+    /// a new entry, so a reused source port never inherits the old one's state.
+    fn entry_for_syn(
+        &self,
+        flow: NatFlowKey,
+        real_dst: SocketAddr,
+    ) -> Option<(ArcNatDstEntry, bool)> {
+        match self.indices.flow_map.entry(flow) {
+            Entry::Occupied(mut slot) => {
+                let entry = slot.get();
+                if !matches!(
+                    entry.state.load(),
+                    NatDstEntryState::ClosingSrc
+                        | NatDstEntryState::ClosingDst
+                        | NatDstEntryState::Closed
+                ) {
+                    return Some((entry.clone(), false));
+                }
+                let entry = self.allocate_entry(flow, real_dst)?;
+                slot.insert(entry.clone());
+                Some((entry, true))
+            }
+            Entry::Vacant(slot) => {
+                let entry = self.allocate_entry(flow, real_dst)?;
+                slot.insert(entry.clone());
+                Some((entry, true))
+            }
+        }
+    }
+
+    /// A new entry under a source port nobody else of this source address holds, never the
+    /// listener's own port. `None` when all 65535 are taken.
+    fn allocate_entry(&self, flow: NatFlowKey, real_dst: SocketAddr) -> Option<ArcNatDstEntry> {
+        let local_port = self.get_local_port();
+        for _ in 0..u16::MAX {
+            let translated_port = self
+                .next_translated_port
+                .fetch_update(
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                    |port| Some(if port == u16::MAX { 1 } else { port + 1 }),
+                )
+                .expect("translated port counter update cannot fail");
+            if translated_port == local_port {
+                continue;
+            }
+            let translated_src = SocketAddr::new(flow.src.ip(), translated_port);
+            let Entry::Vacant(slot) = self.indices.translated_src_map.entry(translated_src) else {
+                continue;
+            };
+            let entry = Arc::new(NatDstEntry::new(flow, translated_src, real_dst));
+            slot.insert(entry.clone());
+            return Some(entry);
+        }
+        None
+    }
+
+    /// Whether a packet of the flow from this source to this destination belongs to a proxied
+    /// connection.
+    pub fn is_tcp_proxy_flow(&self, src: SocketAddr, mapped_dst: SocketAddr) -> bool {
+        self.indices
+            .flow_map
+            .contains_key(&NatFlowKey { src, mapped_dst })
     }
 
     pub fn list_proxy_entries(&self) -> Vec<TcpProxyEntry> {
         let mut entries: Vec<TcpProxyEntry> = Vec::new();
         let transport_type = self.connector.transport_type();
-        for entry in self.syn_map.iter() {
-            entries.push(entry.value().as_ref().parse_as_pb(transport_type));
+        for entry in self.indices.flow_map.iter() {
+            // an accepted flow is listed from `conn_map`
+            if entry.state.load() == NatDstEntryState::SynReceived {
+                entries.push(entry.value().as_ref().parse_as_pb(transport_type));
+            }
         }
         for entry in self.conn_map.iter() {
             entries.push(entry.value().as_ref().parse_as_pb(transport_type));
@@ -1079,29 +1235,30 @@ mod kernel_entry_tests {
 
     #[test]
     fn accepting_a_proxy_connection_never_loses_its_packet_mapping() {
-        let syn = AddrConnSockMap::default();
-        let established = AddrConnSockMap::default();
+        let indices = NatIndices::default();
         let all = ConnSockMap::default();
-        let (tx, rx) = std::sync::mpsc::sync_channel::<(SocketAddr, Arc<AtomicBool>)>(0);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(NatFlowKey, SocketAddr, Arc<AtomicBool>)>(0);
         std::thread::scope(|scope| {
-            let syn = &syn;
-            let established = &established;
+            let indices = &indices;
             let all = &all;
             scope.spawn(move || {
                 for i in 1..=10_000 {
                     let src = SocketAddr::from(([127, 0, 0, 1], i));
                     let dst = "192.0.2.1:443".parse().unwrap();
-                    let entry = Arc::new(NatDstEntry::new(src, dst, dst));
-                    syn.insert(src, entry.clone());
+                    let flow = NatFlowKey { src, mapped_dst: dst };
+                    let entry = Arc::new(NatDstEntry::new(flow, src, dst));
+                    indices.flow_map.insert(flow, entry.clone());
+                    indices.translated_src_map.insert(src, entry.clone());
                     let done = Arc::new(AtomicBool::new(false));
-                    if tx.send((src, done.clone())).is_err() { return; }
-                    promote_proxy_entry(syn, established, all, entry);
+                    if tx.send((flow, src, done.clone())).is_err() { return; }
+                    promote_proxy_entry(all, entry);
                     done.store(true, std::sync::atomic::Ordering::Release);
                 }
             });
-            for (src, done) in rx {
+            for (flow, translated_src, done) in rx {
                 loop {
-                    assert!(proxy_entry_for_source(syn, established, &src).is_some(),
+                    assert!(indices.flow_map.contains_key(&flow)
+                        && indices.translated_src_map.contains_key(&translated_src),
                         "an accepted connection's packet escaped the proxy during promotion");
                     if done.load(std::sync::atomic::Ordering::Acquire) { break; }
                     std::hint::spin_loop();
@@ -1269,7 +1426,10 @@ mod flow_tests {
         dst: SocketAddrV4,
     ) -> SocketAddrV4 {
         let mut syn = tcp_packet(src, dst, SYN);
-        assert!(proxy.try_handle_peer_packet(&mut syn).await.is_some());
+        assert_eq!(
+            proxy.try_handle_peer_packet(&mut syn).await,
+            PeerPacketAction::Handled
+        );
         let (seen_src, seen_dst) = addrs(&syn);
         assert_eq!(seen_dst, SocketAddrV4::new(LOCAL_IP, LOCAL_PORT));
         seen_src
@@ -1321,6 +1481,100 @@ mod flow_tests {
         assert_eq!(proxy.list_proxy_entries().len(), 1);
     }
 
+    fn flow(src_port: u16) -> NatFlowKey {
+        NatFlowKey {
+            src: SocketAddr::from(([10, 144, 144, 9], src_port)),
+            mapped_dst: SocketAddr::from(([192, 0, 2, 1], 80)),
+        }
+    }
+
+    #[tokio::test]
+    async fn translated_ports_skip_the_listener_port_and_wrap() {
+        let (_pm, proxy) = kernel_proxy().await;
+        let dst = SocketAddr::from(([192, 0, 2, 1], 80));
+        proxy.local_port.store(5, Ordering::Relaxed);
+        proxy.next_translated_port.store(u16::MAX - 1, Ordering::Relaxed);
+
+        let ports: Vec<u16> = (0..6)
+            .map(|i| {
+                proxy
+                    .allocate_entry(flow(1000 + i), dst)
+                    .unwrap()
+                    .translated_src
+                    .port()
+            })
+            .collect();
+
+        // 65534, 65535, then around to 1, 2, 3, 4 and past the listener's 5 would be 6
+        assert_eq!(ports, [65534, 65535, 1, 2, 3, 4]);
+        let next = proxy.allocate_entry(flow(2000), dst).unwrap();
+        assert_eq!(next.translated_src.port(), 6);
+    }
+
+    #[tokio::test]
+    async fn exhausted_translated_ports_drop_the_syn_and_free_ones_are_reused() {
+        let (_pm, proxy) = kernel_proxy().await;
+        let src = SocketAddrV4::new(Ipv4Addr::new(10, 144, 144, 9), 5000);
+        let dst = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 80);
+        let flow_of = |dst_port: u16| NatFlowKey {
+            src: SocketAddr::V4(src),
+            mapped_dst: SocketAddr::from(([192, 0, 2, 1], dst_port)),
+        };
+        // every port but the listener's belongs to some flow
+        let mut held = Vec::new();
+        for i in 1..=u16::MAX - 1 {
+            held.push(proxy.allocate_entry(flow_of(i), dst.into()).unwrap());
+        }
+        assert!(proxy.allocate_entry(flow_of(0), dst.into()).is_none());
+
+        let mut syn = tcp_packet(src, SocketAddrV4::new(*dst.ip(), 65535), SYN);
+        assert_eq!(
+            proxy.try_handle_peer_packet(&mut syn).await,
+            PeerPacketAction::Drop
+        );
+
+        let freed = held.pop().unwrap();
+        proxy.indices.remove(&freed);
+        assert!(proxy.allocate_entry(flow_of(0), dst.into()).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_syn_replaces_an_ending_flow_without_the_old_cleanup_touching_the_new_one() {
+        let (_pm, proxy) = kernel_proxy().await;
+        let dst = SocketAddr::from(([192, 0, 2, 1], 80));
+        let (old, new_syn) = proxy.entry_for_syn(flow(5000), dst).unwrap();
+        assert!(new_syn);
+        let (same, new_syn) = proxy.entry_for_syn(flow(5000), dst).unwrap();
+        assert!(!new_syn && same.id == old.id);
+
+        old.state.store(NatDstEntryState::Closed);
+        let (replacement, new_syn) = proxy.entry_for_syn(flow(5000), dst).unwrap();
+        assert!(new_syn && replacement.id != old.id);
+        assert_ne!(replacement.translated_src, old.translated_src);
+
+        // The old connection's delayed cleanup must leave the replacement in place.
+        proxy.indices.remove(&old);
+        assert!(
+            proxy
+                .indices
+                .flow_map
+                .get(&flow(5000))
+                .is_some_and(|entry| entry.id == replacement.id)
+        );
+        assert!(
+            proxy
+                .indices
+                .translated_src_map
+                .contains_key(&replacement.translated_src)
+        );
+        assert!(
+            !proxy
+                .indices
+                .translated_src_map
+                .contains_key(&old.translated_src)
+        );
+    }
+
     #[tokio::test]
     async fn packets_of_an_unknown_flow_are_not_proxied() {
         let (_pm, proxy) = kernel_proxy().await;
@@ -1331,7 +1585,10 @@ mod flow_tests {
 
         // Same source, other destination, and no SYN: nothing tracks this flow.
         let mut ack = tcp_packet(src, dst_b, ACK);
-        assert!(proxy.try_handle_peer_packet(&mut ack).await.is_none());
+        assert_eq!(
+            proxy.try_handle_peer_packet(&mut ack).await,
+            PeerPacketAction::Pass
+        );
     }
 
     /// A relay between a real TCP stream, as the kernel proxy entry accepts, and an in-memory

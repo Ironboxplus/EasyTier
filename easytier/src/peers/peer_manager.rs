@@ -1923,7 +1923,7 @@ impl PeerManager {
     }
 
     fn check_p2p_only_before_send(&self, dst_peer_id: PeerId) -> Result<(), Error> {
-        if self.global_ctx.p2p_only() && !self.peers.has_peer(dst_peer_id) {
+        if self.global_ctx.p2p_only() && !self.peers.has_live_peer(dst_peer_id) {
             return Err(Error::RouteError(None));
         }
         Ok(())
@@ -1941,6 +1941,11 @@ impl PeerManager {
         // before compression/encryption obscures the 5-tuple. `packet_flow_hash`
         // is a no-op (returns None) unless weighted multipath is enabled.
         let flow_hash = self.packet_flow_hash(&msg);
+        // Proxied responses are data packets of TCP/UDP flows too; the wrapped kcp/quic
+        // packet types carry no IP header of their own to read.
+        if msg.peer_manager_header().unwrap().packet_type == PacketType::Data as u8 {
+            msg.set_flow_key(crate::tunnel::flow::parse_flow_key(&msg));
+        }
 
         self.self_tx_counters
             .compress_tx_bytes_before
@@ -2069,47 +2074,60 @@ impl PeerManager {
         // reached only over mpquic goes through the route's gateway instead.
         let direct_peer = peers.has_peer(dst_peer_id)
             && (!direct_send_requires_non_mpquic || peers.has_live_non_mpquic_conn(dst_peer_id));
-        let send_result = if let Some(gateway) = mp_gateway
-            && (peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway))
-        {
-            relay_peer_map.send_msg(msg, dst_peer_id, policy).await
-        } else if direct_peer {
-            if direct_send_requires_non_mpquic {
-                peers.send_msg_directly_non_mpquic(msg, dst_peer_id).await
-            } else {
-                peers.send_msg_directly(msg, dst_peer_id).await
+        let send_result = async {
+            if let Some(gateway) = mp_gateway
+                && (peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway))
+            {
+                return relay_peer_map.send_msg(msg, dst_peer_id, policy).await;
             }
-        } else if foreign_network_client.has_next_hop(dst_peer_id) {
-            if direct_send_requires_non_mpquic {
-                foreign_network_client
-                    .get_peer_map()
-                    .send_msg_directly_non_mpquic(msg, dst_peer_id)
-                    .await
+            // A `Peer` outlives its last connection until the periodic cleanup. When it has
+            // none to select, the packet comes back untouched and takes the routes below, as
+            // for a peer that is not directly connected. Only a failed send attempt is an error:
+            // the packet may be on the wire by then.
+            let msg = if direct_peer {
+                if direct_send_requires_non_mpquic {
+                    return peers.send_msg_directly_non_mpquic(msg, dst_peer_id).await;
+                }
+                match peers.try_send_msg_directly(msg, dst_peer_id).await? {
+                    None => return Ok(()),
+                    Some(msg) => msg,
+                }
             } else {
+                msg
+            };
+            if foreign_network_client.has_next_hop(dst_peer_id) {
+                if direct_send_requires_non_mpquic {
+                    foreign_network_client
+                        .get_peer_map()
+                        .send_msg_directly_non_mpquic(msg, dst_peer_id)
+                        .await
+                } else {
+                    foreign_network_client.send_msg(msg, dst_peer_id).await
+                }
+            } else if let Some(gateway) = peers
+                .get_gateway_peer_id(dst_peer_id, policy.clone())
+                .await
+                .filter(|gateway| !(direct_send_requires_non_mpquic && *gateway == dst_peer_id))
+            {
+                if peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway) {
+                    relay_peer_map.send_msg(msg, dst_peer_id, policy).await
+                } else {
+                    tracing::warn!(
+                        ?gateway,
+                        ?dst_peer_id,
+                        "cannot send msg to peer through gateway"
+                    );
+                    Err(Error::RouteError(None))
+                }
+            } else if foreign_network_client.has_next_hop(dst_peer_id) {
+                // check foreign network again. so in happy path we can avoid extra check
                 foreign_network_client.send_msg(msg, dst_peer_id).await
-            }
-        } else if let Some(gateway) = peers
-            .get_gateway_peer_id(dst_peer_id, policy.clone())
-            .await
-            .filter(|gateway| !(direct_send_requires_non_mpquic && *gateway == dst_peer_id))
-        {
-            if peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway) {
-                relay_peer_map.send_msg(msg, dst_peer_id, policy).await
             } else {
-                tracing::warn!(
-                    ?gateway,
-                    ?dst_peer_id,
-                    "cannot send msg to peer through gateway"
-                );
+                tracing::debug!(?dst_peer_id, "no gateway for peer");
                 Err(Error::RouteError(None))
             }
-        } else if foreign_network_client.has_next_hop(dst_peer_id) {
-            // check foreign network again. so in happy path we can avoid extra check
-            foreign_network_client.send_msg(msg, dst_peer_id).await
-        } else {
-            tracing::debug!(?dst_peer_id, "no gateway for peer");
-            Err(Error::RouteError(None))
-        };
+        }
+        .await;
 
         if send_result.is_ok()
             && let Some(metrics) = direct_tx_metrics
@@ -2287,6 +2305,9 @@ impl PeerManager {
             let inner_flow = crate::tunnel::mp_dataplane::inner_flow_hash(msg.payload());
             msg.set_mp_dataplane_tag(Some((0, inner_flow)));
         }
+        // Likewise the TCP/UDP flow, for `Peer` to keep it on one conn: once the packet is
+        // compressed and encrypted it cannot be told any more.
+        msg.set_flow_key(crate::tunnel::flow::parse_flow_key(&msg));
         let cur_to_peer_id = msg.peer_manager_header().unwrap().to_peer_id.into();
         if cur_to_peer_id != 0 {
             self.mark_recent_traffic(cur_to_peer_id);
@@ -6082,5 +6103,169 @@ mod tests {
         assert!(result.is_ok(), "a full host queue blocked the peer router");
         assert!(result.unwrap().is_none());
         assert_eq!(nic_receiver.try_recv().unwrap().payload(), b"queued");
+    }
+
+    /// Reaches `via` for `dst` and nothing else.
+    struct RelayViaRoute {
+        dst: PeerId,
+        via: PeerId,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::peers::route_trait::Route for RelayViaRoute {
+        async fn open(
+            &self,
+            _interface: crate::peers::route_trait::RouteInterfaceBox,
+        ) -> Result<u8, ()> {
+            Ok(0)
+        }
+
+        async fn close(&self) {}
+
+        async fn get_next_hop(&self, peer_id: PeerId) -> Option<PeerId> {
+            (peer_id == self.dst).then_some(self.via)
+        }
+
+        async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route> {
+            Vec::new()
+        }
+
+        async fn list_proxy_cidrs(&self) -> std::collections::BTreeSet<cidr::Ipv4Cidr> {
+            Default::default()
+        }
+
+        async fn list_proxy_cidrs_v6(&self) -> std::collections::BTreeSet<cidr::Ipv6Cidr> {
+            Default::default()
+        }
+
+        async fn get_peer_info(
+            &self,
+            _peer_id: PeerId,
+        ) -> Option<crate::proto::peer_rpc::RoutePeerInfo> {
+            None
+        }
+
+        async fn get_peer_info_last_update_time(&self) -> Instant {
+            Instant::now()
+        }
+
+        fn get_peer_groups(&self, _peer_id: PeerId) -> Arc<Vec<String>> {
+            Arc::new(Vec::new())
+        }
+    }
+
+    /// A direct peer connection to `peer_id` over a ring tunnel; the far end keeps receiving
+    /// into `sender` for as long as the returned connection lives.
+    async fn add_ring_peer_conn(
+        peer_mgr: &PeerManager,
+        peer_id: PeerId,
+        sender: crate::peers::PacketRecvChan,
+    ) -> (crate::peers::peer_conn::PeerConn, crate::peers::peer_conn::PeerConnId) {
+        use crate::peers::{peer_conn::PeerConn, peer_session::PeerSessionStore};
+        let (left, right) = create_ring_tunnel_pair();
+        let sessions = Arc::new(PeerSessionStore::new());
+        let mut client = PeerConn::new(
+            peer_mgr.my_peer_id(),
+            peer_mgr.get_global_ctx(),
+            left,
+            sessions.clone(),
+        );
+        let mut far_end = PeerConn::new(peer_id, get_mock_global_ctx(), right, sessions);
+        let (client_result, far_end_result) = tokio::join!(
+            client.do_handshake_as_client(),
+            far_end.do_handshake_as_server()
+        );
+        client_result.unwrap();
+        far_end_result.unwrap();
+        far_end.start_recv_loop(sender).await;
+        let conn_id = client.get_conn_id();
+        peer_mgr.peers.add_new_peer_conn(client).await.unwrap();
+        (far_end, conn_id)
+    }
+
+    /// A `Peer` outlives its last connection until the periodic cleanup (every 3 s). Until
+    /// then a packet for it must take the relay route, not fail on the dead direct one.
+    async fn empty_peer_relay_case(p2p_only: bool) {
+        let (s, _r) = create_packet_recv_chan();
+        let peer_mgr = Arc::new(PeerManager::new(
+            RouteAlgoType::None,
+            get_mock_global_ctx(),
+            s,
+        ));
+        if p2p_only {
+            let mut flags = peer_mgr.get_global_ctx().get_flags();
+            flags.p2p_only = true;
+            peer_mgr.get_global_ctx().set_flags(flags);
+        }
+        let dst = crate::common::new_peer_id();
+        let via = crate::common::new_peer_id();
+        peer_mgr
+            .peers
+            .add_route(Arc::new(Box::new(RelayViaRoute { dst, via })))
+            .await;
+
+        let (sender, mut receiver) = create_packet_recv_chan();
+        let (dst_far_end, dst_conn_id) = add_ring_peer_conn(&peer_mgr, dst, sender.clone()).await;
+        let (via_far_end, _) = add_ring_peer_conn(&peer_mgr, via, sender.clone()).await;
+
+        for direct in [true, false] {
+            if !direct {
+                peer_mgr.peers.close_peer_conn(dst, &dst_conn_id).await.unwrap();
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while peer_mgr.peers.get_peer_by_id(dst).unwrap().has_live_conns() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("the closed connection stayed live");
+                assert!(peer_mgr.peers.has_peer(dst), "the empty peer was cleaned up");
+            }
+            for flow_key in [
+                None,
+                Some(crate::tunnel::flow::FlowKey {
+                    src: ([10, 0, 0, 1], 1234).into(),
+                    dst: ([10, 0, 0, 2], 5000).into(),
+                    protocol: 6,
+                }),
+            ] {
+                let mut packet = ZCPacket::new_with_payload(b"business data");
+                packet.fill_peer_manager_hdr(peer_mgr.my_peer_id(), dst, PacketType::Data as u8);
+                packet.set_flow_key(flow_key);
+                if !direct && p2p_only {
+                    // No relay may carry it when only direct links are allowed: the empty
+                    // peer is not a direct link.
+                    assert!(peer_mgr.send_msg_for_proxy(packet, dst).await.is_err());
+                    continue;
+                }
+                PeerManager::send_msg_internal(
+                    &peer_mgr.peers,
+                    &peer_mgr.foreign_network_client,
+                    &peer_mgr.relay_peer_map,
+                    None,
+                    packet,
+                    dst,
+                )
+                .await
+                .unwrap();
+                let packet = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+                    .await
+                    .expect("the packet was delivered nowhere")
+                    .unwrap();
+                assert_eq!(packet.payload(), b"business data");
+                let to_peer_id: PeerId = packet.peer_manager_header().unwrap().to_peer_id.into();
+                assert_eq!(to_peer_id, dst, "the packet changed its destination");
+            }
+        }
+        drop((dst_far_end, via_far_end));
+    }
+
+    #[tokio::test]
+    async fn empty_peer_uses_relay_before_periodic_cleanup() {
+        empty_peer_relay_case(false).await;
+    }
+
+    #[tokio::test]
+    async fn empty_peer_is_no_direct_link_under_p2p_only() {
+        empty_peer_relay_case(true).await;
     }
 }

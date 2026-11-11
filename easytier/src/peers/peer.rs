@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use tokio::{select, sync::mpsc};
 
@@ -11,6 +11,7 @@ use tracing::Instrument;
 use super::{
     PacketRecvChan,
     peer_conn::{PeerConn, PeerConnId},
+    peer_flow::FlowBindings,
 };
 use crate::{common::shrink_dashmap, proto::api::instance::PeerConnInfo};
 use crate::{
@@ -20,7 +21,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     },
     proto::peer_rpc::PeerIdentityType,
-    tunnel::packet_def::ZCPacket,
+    tunnel::{flow::FlowKey, packet_def::ZCPacket},
 };
 use tokio_util::task::AbortOnDropHandle;
 
@@ -46,6 +47,10 @@ pub struct Peer {
     shutdown_notifier: Arc<tokio::sync::Notify>,
 
     default_conn_id: Arc<AtomicCell<PeerConnId>>,
+    /// Active TCP/UDP flows and the conn each one started on. The default conn is re-picked
+    /// every few seconds by latency; a flow that moved with it would be reordered, and a busy
+    /// one could flip between two conns as their queues change.
+    flow_bindings: Mutex<FlowBindings>,
     peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
     peer_public_key: Arc<RwLock<Option<Vec<u8>>>>,
     default_conn_id_clear_task: AbortOnDropHandle<()>,
@@ -133,6 +138,7 @@ impl Peer {
 
             shutdown_notifier,
             default_conn_id,
+            flow_bindings: Mutex::new(FlowBindings::default()),
             peer_identity_type,
             peer_public_key,
             default_conn_id_clear_task,
@@ -308,14 +314,68 @@ impl Peer {
             .map(|entry| entry.value().clone())
     }
 
+    /// The conn an unfragmented TCP/UDP flow sends on: the one it is bound to while that conn is
+    /// alive and would be kept by `select_conn` too, else a fresh pick that the flow is then
+    /// bound to. A live mpquic conn carries everything, so while there is one nothing is bound
+    /// and `select_conn` decides alone.
+    async fn select_flow_conn(&self, key: FlowKey) -> Option<ArcPeerConn> {
+        if self.has_endpoint_mp_conn() {
+            return self.select_conn().await;
+        }
+
+        let bound = {
+            let mut flows = self.flow_bindings.lock();
+            let bucket = flows.bucket(key);
+            flows
+                .buckets
+                .get_mut(&bucket)
+                .filter(|binding| binding.last_active.elapsed() < FlowBindings::IDLE_TIMEOUT)
+                .map(|binding| (binding.conn_id, bucket))
+        };
+        if let Some((conn_id, bucket)) = bound {
+            let conn = self.conns.get(&conn_id).map(|entry| entry.clone());
+            if let Some(conn) = conn
+                && !conn.is_closed()
+                && (conn.is_answering() || !self.has_answering_conn_besides(&conn_id, false))
+            {
+                if let Some(binding) = self.flow_bindings.lock().buckets.get_mut(&bucket) {
+                    binding.last_active = Instant::now();
+                }
+                return Some(conn);
+            }
+        }
+
+        let conn = self.select_conn().await?;
+        // A collision joins the bucket's active binding rather than evicting an existing flow
+        // (see above), so memory stays bounded without moving flows under load.
+        let mut flows = self.flow_bindings.lock();
+        let bucket = flows.bucket(key);
+        flows.bind(bucket, conn.get_conn_id(), Instant::now());
+        Some(conn)
+    }
+
     #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "Peer"))]
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
-        let Some(conn) = self.select_conn().await else {
-            return Err(Error::PeerNoConnectionError(self.peer_node_id));
+        match self.try_send_msg(msg).await? {
+            None => Ok(()),
+            Some(_) => Err(Error::PeerNoConnectionError(self.peer_node_id)),
+        }
+    }
+
+    /// Returns the unsent packet only when no usable connection can be selected, so the caller
+    /// can route it another way. An error from an actual send attempt is returned as is: the
+    /// packet may be on the wire by then and is never retried.
+    pub(crate) async fn try_send_msg(&self, msg: ZCPacket) -> Result<Option<ZCPacket>, Error> {
+        let conn = match msg.flow_key() {
+            Some(key) => self.select_flow_conn(key).await,
+            None => self.select_conn().await,
+        };
+        let Some(conn) = conn else {
+            return Ok(Some(msg));
         };
         conn.send_msg(msg).await?;
 
-        Ok(())
+        Ok(None)
     }
 
     pub(crate) async fn send_msg_non_mpquic(&self, msg: ZCPacket) -> Result<(), Error> {
@@ -957,5 +1017,175 @@ mod tests {
         assert_eq!(peer.get_peer_public_key(), Some(pubkey_1));
         let ret = peer.add_peer_conn(client_conn_2).await;
         assert!(ret.is_err());
+    }
+
+    // --- flows stay on the connection they started on (upstream #2753) ---
+
+    fn flow(port: u16) -> crate::tunnel::flow::FlowKey {
+        crate::tunnel::flow::FlowKey {
+            src: ([10, 0, 0, 1], port).into(),
+            dst: ([10, 0, 0, 2], 5000).into(),
+            protocol: 17,
+        }
+    }
+
+    /// One connection of a `Peer` under test, and what its far end receives.
+    struct FlowTestConn {
+        id: PeerConnId,
+        // kept alive: dropping the far end closes the connection
+        _far_end: PeerConn,
+        received: crate::peers::PacketRecvChanReceiver,
+    }
+
+    async fn add_flow_test_conn(
+        peer: &Peer,
+        local_ctx: &Arc<GlobalCtx>,
+        tunnel_type: &str,
+        latency_us: u32,
+    ) -> FlowTestConn {
+        let (local, remote) = create_typed_ring_tunnel_pair(tunnel_type);
+        let (local_conn, mut far_end) = handshake_pair(
+            new_peer_id(),
+            peer.peer_node_id,
+            local_ctx.clone(),
+            get_mock_global_ctx(),
+            local,
+            remote,
+        )
+        .await;
+        let (sender, received) = create_packet_recv_chan();
+        far_end.start_recv_loop(sender).await;
+        local_conn.set_latency_for_test(latency_us);
+        let id = local_conn.get_conn_id();
+        peer.add_peer_conn(local_conn).await.unwrap();
+        FlowTestConn {
+            id,
+            _far_end: far_end,
+            received,
+        }
+    }
+
+    /// Sends one packet of `key` and says which of `conns` its far end received it on.
+    async fn send_flow_packet(
+        peer: &Peer,
+        key: crate::tunnel::flow::FlowKey,
+        conns: &mut [&mut FlowTestConn],
+    ) -> PeerConnId {
+        let mut packet = ZCPacket::new_with_payload(b"business data");
+        packet.fill_peer_manager_hdr(
+            1,
+            peer.peer_node_id,
+            crate::tunnel::packet_def::PacketType::Data as u8,
+        );
+        packet.set_flow_key(Some(key));
+        peer.send_msg(packet).await.unwrap();
+        timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                for conn in conns.iter_mut() {
+                    if conn.received.try_recv().is_ok() {
+                        return conn.id;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the packet was delivered on none of the connections")
+    }
+
+    fn flow_test_peer() -> (Peer, Arc<GlobalCtx>) {
+        let (packet_send, _packet_recv) = create_packet_recv_chan();
+        let local_ctx = get_mock_global_ctx();
+        (
+            Peer::new(new_peer_id(), packet_send, local_ctx.clone()),
+            local_ctx,
+        )
+    }
+
+    #[tokio::test]
+    async fn active_flow_survives_new_connection_and_periodic_reselection() {
+        let (peer, ctx) = flow_test_peer();
+        let mut old = add_flow_test_conn(&peer, &ctx, "tcp", 20_000).await;
+        let key = flow(1234);
+        assert_eq!(send_flow_packet(&peer, key, &mut [&mut old]).await, old.id);
+
+        let mut new = add_flow_test_conn(&peer, &ctx, "udp", 1_000).await;
+        // A slow but open connection keeps its existing flow, however the latencies move and
+        // however often the periodic 5 s reset clears the default.
+        peer.conns.get(&old.id).unwrap().set_latency_for_test(500_000);
+        peer.default_conn_id.store(PeerConnId::default());
+        assert_eq!(
+            send_flow_packet(&peer, key, &mut [&mut old, &mut new]).await,
+            old.id
+        );
+
+        // New flows take the better connection. A flow can share the active one's bucket, so
+        // look at several.
+        let mut on_new = 0;
+        for port in 2000..2020 {
+            if send_flow_packet(&peer, flow(port), &mut [&mut old, &mut new]).await == new.id {
+                on_new += 1;
+            }
+        }
+        assert!(on_new >= 15, "only {on_new} of 20 new flows used the new connection");
+        assert_eq!(
+            send_flow_packet(&peer, key, &mut [&mut old, &mut new]).await,
+            old.id
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bound_flow_moves_when_its_connection_closes() {
+        let (peer, ctx) = flow_test_peer();
+        let mut old = add_flow_test_conn(&peer, &ctx, "tcp", 20_000).await;
+        let key = flow(1234);
+        assert_eq!(send_flow_packet(&peer, key, &mut [&mut old]).await, old.id);
+        let mut new = add_flow_test_conn(&peer, &ctx, "udp", 1_000).await;
+
+        peer.close_peer_conn(&old.id).await.unwrap();
+        timeout(std::time::Duration::from_secs(2), async {
+            while peer.conns.contains_key(&old.id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(send_flow_packet(&peer, key, &mut [&mut new]).await, new.id);
+    }
+
+    #[tokio::test]
+    async fn a_bound_flow_moves_when_its_connection_stops_answering() {
+        let (peer, ctx) = flow_test_peer();
+        let mut old = add_flow_test_conn(&peer, &ctx, "tcp", 20_000).await;
+        let key = flow(1234);
+        assert_eq!(send_flow_packet(&peer, key, &mut [&mut old]).await, old.id);
+        let mut new = add_flow_test_conn(&peer, &ctx, "udp", 30_000).await;
+
+        peer.conns.get(&old.id).unwrap().set_unanswered_pings_for_test(3);
+        assert_eq!(
+            send_flow_packet(&peer, key, &mut [&mut old, &mut new]).await,
+            new.id
+        );
+    }
+
+    /// A live mpquic connection carries everything: a native one that held flows before it
+    /// came up gives them up at once.
+    #[cfg(feature = "mpquic")]
+    #[tokio::test]
+    async fn a_bound_flow_moves_to_a_live_mpquic_connection() {
+        let (peer, ctx) = flow_test_peer();
+        let mut native = add_flow_test_conn(&peer, &ctx, "tcp", 20_000).await;
+        let key = flow(1234);
+        assert_eq!(send_flow_packet(&peer, key, &mut [&mut native]).await, native.id);
+
+        let mut mp = add_flow_test_conn(&peer, &ctx, "mpquic_udp_punch", 50_000).await;
+        assert_eq!(
+            send_flow_packet(&peer, key, &mut [&mut native, &mut mp]).await,
+            mp.id
+        );
+        assert_eq!(
+            send_flow_packet(&peer, flow(4321), &mut [&mut native, &mut mp]).await,
+            mp.id
+        );
     }
 }

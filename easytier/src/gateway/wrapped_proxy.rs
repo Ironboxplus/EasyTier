@@ -133,13 +133,16 @@ impl<C: NatDstConnector, T: TcpProxyForWrappedSrcTrait<Connector = C>> NicPacket
             }
         } else {
             // if not syn packet, only allow established connection
-            if !self
-                .get_tcp_proxy()
-                .is_tcp_proxy_connection(SocketAddr::new(
+            if !self.get_tcp_proxy().is_tcp_proxy_flow(
+                SocketAddr::new(
                     IpAddr::V4(ip_packet.get_source()),
                     tcp_packet.get_source(),
-                ))
-            {
+                ),
+                SocketAddr::new(
+                    IpAddr::V4(ip_packet.get_destination()),
+                    tcp_packet.get_destination(),
+                ),
+            ) {
                 return false;
             }
         }

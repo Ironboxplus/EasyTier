@@ -38,9 +38,10 @@ use snow::{HandshakeState, params::NoiseParams};
 
 use super::{
     PacketRecvChan,
+    peer_conn_liveness::{FEATURE as LIVENESS_ECHO_FEATURE, PeerConnLiveness},
     peer_conn_ping::PeerConnPinger,
     peer_session::{PeerSession, PeerSessionAction},
-    traffic_metrics::AggregateTrafficMetrics,
+    traffic_metrics::{AggregateTrafficMetrics, is_relay_data_packet_type},
 };
 use crate::{
     common::{
@@ -101,6 +102,8 @@ struct NoiseHandshakeResult {
 
     my_encrypt_algo: String,
     remote_encrypt_algo: String,
+
+    remote_features: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -323,6 +326,7 @@ pub struct PeerConn {
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
     unanswered_pings: Arc<AtomicU32>,
+    liveness: PeerConnLiveness,
 
     peer_session_store: Arc<PeerSessionStore>,
     my_encrypt_algo: String,
@@ -392,7 +396,9 @@ impl PeerConn {
 
         let peer_conn_tunnel_filter = StatsRecorderTunnelFilter::new();
         let throughput = peer_conn_tunnel_filter.filter_output();
-        let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter);
+        let liveness = PeerConnLiveness::new();
+        let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter)
+            .chain(liveness.clone());
         let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
 
         let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
@@ -436,6 +442,7 @@ impl PeerConn {
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
             unanswered_pings: Arc::new(AtomicU32::new(0)),
+            liveness,
 
             peer_session_store,
             my_encrypt_algo,
@@ -480,6 +487,16 @@ impl PeerConn {
 
     pub fn is_hole_punched(&self) -> bool {
         self.is_hole_punched
+    }
+
+    /// The longest the idle ping interval may back off to. A hole-punched TCP connection needs
+    /// traffic every second to keep its NAT mapping from being reclaimed.
+    fn max_ping_interval(&self) -> Duration {
+        if self.is_hole_punched && self.tunnel_type() == Some("tcp") {
+            Duration::from_secs(1)
+        } else {
+            super::peer_conn_ping::DEFAULT_MAX_PING_INTERVAL
+        }
     }
 
     pub fn is_closed(&self) -> bool {
@@ -567,7 +584,7 @@ impl PeerConn {
             magic: MAGIC,
             my_peer_id: self.my_peer_id,
             version: VERSION,
-            features: Vec::new(),
+            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
             network_name: network.network_name.clone(),
             ..Default::default()
         };
@@ -861,6 +878,7 @@ impl PeerConn {
             a_session_generation,
             a_conn_id: Some(a_conn_id.into()),
             client_encryption_algorithm: self.my_encrypt_algo.clone(),
+            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
         };
 
         let mut hs = builder
@@ -1019,6 +1037,7 @@ impl PeerConn {
 
             my_encrypt_algo: self.my_encrypt_algo.clone(),
             remote_encrypt_algo: msg2_pb.server_encryption_algorithm.clone(),
+            remote_features: msg2_pb.features.clone(),
         })
     }
 
@@ -1161,6 +1180,7 @@ impl PeerConn {
             a_conn_id_echo: msg1_pb.a_conn_id,
             secret_proof_32,
             server_encryption_algorithm: algo,
+            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
         };
         self.send_noise_msg(
             msg2_pb,
@@ -1254,6 +1274,7 @@ impl PeerConn {
 
             my_encrypt_algo: self.my_encrypt_algo.clone(),
             remote_encrypt_algo: msg1_pb.client_encryption_algorithm.clone(),
+            remote_features: msg1_pb.features.clone(),
         })
     }
 
@@ -1265,7 +1286,7 @@ impl PeerConn {
             version: VERSION,
             network_name: noise.remote_network_name.clone(),
 
-            features: Vec::new(),
+            features: noise.remote_features.clone(),
             network_secret_digest: noise.secret_digest.clone(),
         }
     }
@@ -1320,6 +1341,9 @@ impl PeerConn {
             )));
         }
 
+        self.liveness
+            .set_remote_features(&self.info.as_ref().unwrap().features);
+
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError("peer id conflict".to_owned()))
         } else {
@@ -1352,6 +1376,9 @@ impl PeerConn {
             self.info = Some(rsp);
             self.is_client = Some(true);
         }
+
+        self.liveness
+            .set_remote_features(&self.info.as_ref().unwrap().features);
 
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError(
@@ -1433,6 +1460,17 @@ impl PeerConn {
 
                     let mut zc_packet = ret.unwrap();
                     let buf_len = zc_packet.buf_len() as u64;
+                    // Over-limit data is dropped on arrival, never waited for: waiting here
+                    // would hold back the ping/pong queued behind it and get a healthy
+                    // connection declared dead.
+                    if let Some(limiter) = recv_limiter.as_ref()
+                        && zc_packet
+                            .peer_manager_header()
+                            .is_some_and(|hdr| is_relay_data_packet_type(hdr.packet_type))
+                        && !limiter.try_consume(buf_len)
+                    {
+                        continue;
+                    }
                     let Some(peer_mgr_hdr) = zc_packet.mut_peer_manager_header() else {
                         tracing::error!(
                             "unexpected packet: {:?}, cannot decode peer manager hdr",
@@ -1456,10 +1494,6 @@ impl PeerConn {
                         }
                     } else if sender.send(zc_packet).await.is_err() {
                         break;
-                    }
-
-                    if let Some(limiter) = recv_limiter.as_ref() {
-                        limiter.consume(buf_len).await;
                     }
                 }
 
@@ -1487,6 +1521,8 @@ impl PeerConn {
             self.throughput.clone(),
             self.control_metrics(&self.get_conn_info().network_name),
             self.unanswered_pings.clone(),
+            self.max_ping_interval(),
+            self.liveness.clone(),
         );
 
         let close_event_notifier = self.close_event_notifier.clone();
@@ -1647,6 +1683,14 @@ impl PeerConn {
     #[cfg(test)]
     pub(crate) fn set_unanswered_pings_for_test(&self, unanswered: u32) {
         self.unanswered_pings.store(unanswered, Ordering::Relaxed);
+    }
+
+    /// Fills the latency window, so the few real pings of a test hardly move the average.
+    #[cfg(test)]
+    pub(crate) fn set_latency_for_test(&self, latency_us: u32) {
+        for _ in 0..15 {
+            self.latency_stats.record_latency(latency_us);
+        }
     }
 
     pub fn get_conn_info(&self) -> PeerConnInfo {
@@ -2080,6 +2124,112 @@ pub mod tests {
 
         assert_eq!(c_peer.get_conn_info().network_name, "shared".to_string());
         assert_eq!(s_peer.get_conn_info().network_name, "user".to_string());
+    }
+
+    #[tokio::test]
+    async fn peer_conn_handshake_advertises_liveness_echo() {
+        let (c, s) = create_ring_tunnel_pair();
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(new_peer_id(), get_mock_global_ctx(), c, ps.clone());
+        let mut s_peer = PeerConn::new(new_peer_id(), get_mock_global_ctx(), s, ps);
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        assert_eq!(c_peer.get_conn_info().features, ["liveness-echo-v1"]);
+        assert_eq!(s_peer.get_conn_info().features, ["liveness-echo-v1"]);
+    }
+
+    #[tokio::test]
+    async fn peer_conn_noise_handshake_advertises_liveness_echo() {
+        let (c, s) = create_ring_tunnel_pair();
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+        set_secure_mode_cfg(&c_ctx, true);
+        set_secure_mode_cfg(&s_ctx, true);
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(new_peer_id(), c_ctx, c, ps.clone());
+        let mut s_peer = PeerConn::new(new_peer_id(), s_ctx, s, ps);
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        assert_eq!(c_peer.get_conn_info().features, ["liveness-echo-v1"]);
+        assert_eq!(s_peer.get_conn_info().features, ["liveness-echo-v1"]);
+    }
+
+    /// Drops the pongs a connection sends, as a congested link starves them.
+    struct DropPongFilter;
+
+    impl TunnelFilter for DropPongFilter {
+        type FilterOutput = ();
+
+        fn before_send(&self, data: crate::tunnel::SinkItem) -> Option<crate::tunnel::SinkItem> {
+            let is_pong = data
+                .peer_manager_header()
+                .is_some_and(|hdr| hdr.packet_type == PacketType::Pong as u8);
+            (!is_pong).then_some(data)
+        }
+
+        fn filter_output(&self) {}
+    }
+
+    /// The far end never gets a pong through, but data it receives flows both ways: the echo
+    /// riding on that data is the round trip, so the connection stays open past the close rule
+    /// (15 s of silence under test) that ends it without.
+    #[tokio::test]
+    async fn echoed_business_traffic_keeps_a_conn_alive_when_pongs_are_lost() {
+        let (c, s) = create_ring_tunnel_pair();
+        let s = TunnelWithFilter::new(s, Arc::new(DropPongFilter));
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), c, ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s), ps);
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        let (c_send, mut c_recv) = create_packet_recv_chan();
+        let (s_send, mut s_recv) = create_packet_recv_chan();
+        c_peer.start_recv_loop(c_send).await;
+        s_peer.start_recv_loop(s_send).await;
+        c_peer.start_pingpong();
+        s_peer.start_pingpong();
+        let _drain = [
+            AbortOnDropHandle::new(tokio::spawn(async move { while c_recv.recv().await.is_some() {} })),
+            AbortOnDropHandle::new(tokio::spawn(async move { while s_recv.recv().await.is_some() {} })),
+        ];
+
+        let s_peer = Arc::new(s_peer);
+        let traffic_peer = s_peer.clone();
+        let _traffic = AbortOnDropHandle::new(tokio::spawn(async move {
+            loop {
+                let mut pkt = ZCPacket::new_with_payload(b"business traffic");
+                pkt.fill_peer_manager_hdr(s_peer_id, c_peer_id, PacketType::Data as u8);
+                if traffic_peer.send_msg(pkt).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }));
+
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        assert!(
+            !c_peer.is_closed(),
+            "matching echoes of business traffic did not keep the connection alive"
+        );
     }
 
     /// S-I13: a peer that takes nothing must not hold a sender that marked its

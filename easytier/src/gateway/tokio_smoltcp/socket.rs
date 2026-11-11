@@ -340,3 +340,214 @@ impl UdpSocket {
         Ok(self.local_addr)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{io, time::Duration};
+
+    use smoltcp::{
+        iface::Config,
+        phy::{DeviceCapabilities, Medium},
+        wire::{HardwareAddress, Ipv4Packet, TcpPacket},
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        sync::mpsc,
+        time::timeout,
+    };
+    use tokio_util::task::AbortOnDropHandle;
+
+    use super::super::{Net, NetConfig, channel_device::ChannelDevice};
+    use super::{TcpListener, TcpStream};
+
+    const A_ADDR: &str = "10.126.126.1";
+    const B_ADDR: &str = "10.126.126.2";
+    const PORT: u16 = 34569;
+
+    fn is_fin(packet: &[u8]) -> bool {
+        Ipv4Packet::new_checked(packet)
+            .ok()
+            .and_then(|ip| TcpPacket::new_checked(ip.payload()).ok().map(|tcp| tcp.fin()))
+            .unwrap_or(false)
+    }
+
+    /// Carries what one stack sends to the other; `drop_first_fin` loses the first FIN on the way.
+    fn pump(
+        mut from: mpsc::Receiver<Vec<u8>>,
+        to: mpsc::Sender<io::Result<Vec<u8>>>,
+        mut drop_first_fin: bool,
+    ) -> AbortOnDropHandle<()> {
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            while let Some(packet) = from.recv().await {
+                if drop_first_fin && is_fin(&packet) {
+                    drop_first_fin = false;
+                    continue;
+                }
+                if to.send(Ok(packet)).await.is_err() {
+                    break;
+                }
+            }
+        }))
+    }
+
+    struct Pair {
+        a: Net,
+        b: Net,
+        _pumps: [AbortOnDropHandle<()>; 2],
+    }
+
+    /// Two stacks wired back to back; what `a` sends can lose its first FIN.
+    fn pair(lose_first_fin_from_a: bool) -> Pair {
+        let net = |addr: &str| {
+            let mut caps = DeviceCapabilities::default();
+            caps.max_transmission_unit = 1280;
+            caps.medium = Medium::Ip;
+            let (device, to_stack, from_stack) = ChannelDevice::new(caps);
+            let config = NetConfig::new(
+                Config::new(HardwareAddress::Ip),
+                format!("{addr}/24").parse().unwrap(),
+                vec![],
+                None,
+            );
+            (Net::new(device, config), to_stack, from_stack)
+        };
+        let (a, a_in, a_out) = net(A_ADDR);
+        let (b, b_in, b_out) = net(B_ADDR);
+        Pair {
+            a,
+            b,
+            _pumps: [
+                pump(a_out, b_in, lose_first_fin_from_a),
+                pump(b_out, a_in, false),
+            ],
+        }
+    }
+
+    /// `b` connects to a listener of `a`; returns the stream `a` accepted and the one `b` holds.
+    async fn connect(pair: &Pair) -> (TcpStream, TcpStream, TcpListener) {
+        let mut listener = pair
+            .a
+            .tcp_bind(format!("{A_ADDR}:{PORT}").parse().unwrap())
+            .await
+            .unwrap();
+        let (accepted, connected) = timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                listener.accept(),
+                pair.b
+                    .tcp_connect(format!("{A_ADDR}:{PORT}").parse().unwrap(), 40000)
+            )
+        })
+        .await
+        .expect("the connection was not established");
+        (accepted.unwrap().0, connected.unwrap(), listener)
+    }
+
+    async fn read_to_end(mut stream: TcpStream) -> io::Result<usize> {
+        let mut buf = vec![0; 4096];
+        let mut total = 0;
+        loop {
+            match stream.read(&mut buf).await? {
+                0 => return Ok(total),
+                n => total += n,
+            }
+        }
+    }
+
+    /// Dropping a stream used to remove its socket silently: the peer was never told, and read
+    /// on until its keepalive got a reset ten seconds later.
+    #[tokio::test]
+    async fn dropped_stream_sends_fin_so_the_peer_reads_eof() {
+        let pair = pair(false);
+        let (accepted, connected, _listener) = connect(&pair).await;
+
+        drop(accepted);
+
+        let read = timeout(Duration::from_secs(5), read_to_end(connected))
+            .await
+            .expect("the peer never saw the FIN of the dropped stream");
+        assert_eq!(read.unwrap(), 0);
+    }
+
+    /// What the application wrote before the drop is still queued in the socket; it must reach
+    /// the peer ahead of the FIN.
+    #[tokio::test]
+    async fn data_written_before_the_drop_reaches_the_peer_ahead_of_the_fin() {
+        let pair = pair(false);
+        let (mut accepted, connected, _listener) = connect(&pair).await;
+        let reader = tokio::spawn(timeout(Duration::from_secs(10), read_to_end(connected)));
+
+        // Far more than the 8 KiB send buffer, so the tail is still queued when write_all returns.
+        accepted.write_all(&vec![7; 64 * 1024]).await.unwrap();
+        drop(accepted);
+
+        let total = reader
+            .await
+            .unwrap()
+            .expect("the peer never saw the end of the stream")
+            .unwrap();
+        assert_eq!(total, 64 * 1024);
+    }
+
+    /// With the application handle gone, the stack itself must keep retransmitting a lost FIN.
+    #[tokio::test]
+    async fn lost_fin_of_a_dropped_stream_is_retransmitted() {
+        let pair = pair(true);
+        let (accepted, connected, _listener) = connect(&pair).await;
+
+        drop(accepted);
+
+        let read = timeout(Duration::from_secs(8), read_to_end(connected))
+            .await
+            .expect("the lost FIN was never retransmitted");
+        assert_eq!(read.unwrap(), 0);
+    }
+
+    /// A peer that ACKs our FIN but never closes its own half would leave the socket in
+    /// FIN-WAIT-2 for good; the absolute deadline (2 s under test) resets and releases it.
+    #[tokio::test]
+    async fn a_peer_that_never_closes_is_reset_at_the_deadline() {
+        let pair = pair(false);
+        let (accepted, mut connected, listener) = connect(&pair).await;
+        let reactor = pair.a.reactor.clone();
+        drop(listener);
+
+        drop(accepted);
+        let mut buf = [0; 16];
+        let read = timeout(Duration::from_secs(1), connected.read(&mut buf))
+            .await
+            .expect("the peer never saw the FIN");
+        assert_eq!(read.unwrap(), 0);
+
+        // `connected` keeps its half open: the socket stays for its teardown, not removed at once.
+        assert_eq!(reactor.socket_allocator().sockets().lock().iter().count(), 1);
+        timeout(Duration::from_secs(6), async {
+            while reactor.socket_allocator().sockets().lock().iter().count() != 0 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the closing socket was never released at its deadline");
+    }
+
+    /// Stopping the stack releases every socket, closing ones included.
+    #[tokio::test]
+    async fn stopping_the_stack_releases_closing_sockets() {
+        let pair = pair(false);
+        let (accepted, _connected, listener) = connect(&pair).await;
+        let reactor = pair.a.reactor.clone();
+
+        drop(accepted);
+        drop(listener);
+        let Pair { a, b, _pumps } = pair;
+        drop(a);
+        drop(b);
+
+        timeout(Duration::from_secs(2), async {
+            while reactor.socket_allocator().sockets().lock().iter().count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("sockets outlived the stopped stack");
+    }
+}

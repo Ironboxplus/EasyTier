@@ -1082,7 +1082,7 @@ mod tests {
     use super::*;
     use quinn::EndpointConfig;
 
-    use crate::tunnel::quic::endpoint_config_with_versions;
+    use crate::tunnel::quic::{connect_with_etq1, endpoint_config_with_versions};
     use bytes::Buf;
     use hotpath::instant::Instant;
 
@@ -1639,6 +1639,24 @@ mod tests {
         let connection = client_endpoint
             .connect_with(client_config(), server_addr, "localhost")?
             .await?;
+        assert_stream_roundtrip(&connection).await?;
+
+        connection.close(0u32.into(), b"done");
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn connect_with_etq1_falls_back_for_legacy_server() -> anyhow::Result<()> {
+        // The shared ETQ1-first dial helper used by the quic:// tunnel: a
+        // legacy server rejects ETQ1 via version negotiation and the helper
+        // must transparently fall back to version 1.
+        let (client_endpoint, server_endpoint) =
+            endpoint_pair_with_configs(endpoint_config(), endpoint_config_with_versions(vec![1]));
+        let server_addr = server_endpoint.local_addr()?;
+        let server = spawn_echo_server(server_endpoint);
+
+        let connection = connect_with_etq1(&client_endpoint, server_addr, "localhost").await?;
         assert_stream_roundtrip(&connection).await?;
 
         connection.close(0u32.into(), b"done");

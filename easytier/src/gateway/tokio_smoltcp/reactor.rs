@@ -1,16 +1,20 @@
 use super::{
     device::{BufferDevice, Packet},
-    socket_allocator::{BufferSize, SocketAlloctor},
+    socket_allocator::{BufferSize, ClosingTcpSocket, SocketAlloctor},
 };
 use futures::{FutureExt, SinkExt, StreamExt, stream::iter};
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 use smoltcp::{
-    iface::{Context, Interface, SocketHandle},
-    socket::{AnySocket, Socket},
+    iface::{Context, Interface, SocketHandle, SocketSet},
+    socket::{AnySocket, Socket, tcp},
     time::{Duration, Instant},
 };
 use std::{collections::VecDeque, future::Future, io, sync::Arc};
-use tokio::{pin, select, sync::Notify, time::sleep};
+use tokio::{
+    pin, select,
+    sync::{Notify, mpsc},
+    time::sleep,
+};
 
 pub(crate) type BufferInterface = Arc<Mutex<Interface>>;
 const MAX_BURST_SIZE: usize = 100;
@@ -36,6 +40,7 @@ async fn run(
     iface: BufferInterface,
     mut device: BufferDevice,
     socket_allocator: SocketAlloctor,
+    mut closing_tcp: mpsc::UnboundedReceiver<ClosingTcpSocket>,
     notify: Arc<Notify>,
     stopper: Arc<Notify>,
 ) -> io::Result<()> {
@@ -46,21 +51,38 @@ async fn run(
         .max_burst_size
         .unwrap_or(MAX_BURST_SIZE);
     let mut recv_buf = VecDeque::with_capacity(max_burst_size);
+    // Sockets whose application is gone. Dropping an entry removes its socket from the set,
+    // which locks it, so entries are only dropped while it is not locked; the future being
+    // dropped (the stack stopping) drops them too.
+    let mut closing = Vec::<ClosingTcpSocket>::new();
+    let mut closed = Vec::new();
     pin!(timer);
 
     loop {
         let packets = device.take_send_queue();
 
         async_iface.send_all(&mut iter(packets).map(Ok)).await?;
+        // The routing of the last protocol output has left the device queue now.
+        closed.clear();
+        while let Ok(socket) = closing_tcp.try_recv() {
+            closing.push(socket);
+        }
 
         if recv_buf.is_empty() && device.need_wait() {
             let start = Instant::now();
-            let deadline = {
+            let mut deadline = {
                 iface
                     .lock()
                     .poll_delay(start, &socket_allocator.sockets().lock())
                     .unwrap_or(default_timeout)
             };
+            for socket in &closing {
+                deadline = deadline.min(if socket.deadline <= start {
+                    Duration::ZERO
+                } else {
+                    socket.deadline - start
+                });
+            }
 
             timer
                 .as_mut()
@@ -69,6 +91,7 @@ async fn run(
                 _ = &mut timer => {},
                 _ = receive(&mut async_iface,&mut recv_buf) => {}
                 _ = notify.notified() => {}
+                Some(socket) = closing_tcp.recv() => closing.push(socket),
                 _ = stopper.notified() => break,
             };
 
@@ -84,14 +107,27 @@ async fn run(
 
         device.push_recv_queue(recv_buf.drain(..device.avaliable_recv_queue().min(recv_buf.len())));
 
-        iface.poll(
-            Instant::now(),
-            &mut device,
-            &mut socket_allocator.sockets().lock(),
-        );
+        let now = Instant::now();
+        let mut sockets = socket_allocator.sockets().lock();
+        iface.poll(now, &mut device, &mut sockets);
+
+        if prepare_tcp_close(now, &closing, &mut sockets) {
+            iface.poll(now, &mut device, &mut sockets);
+        }
+        let mut index = 0;
+        while index < closing.len() {
+            let socket = sockets.get::<tcp::Socket>(*closing[index].handle);
+            // Closed can still have an RST to dispatch. TIME-WAIT must also remain available
+            // to acknowledge a retransmitted peer FIN.
+            if socket.state() == tcp::State::Closed && socket.remote_endpoint().is_none() {
+                closed.push(closing.swap_remove(index));
+            } else {
+                index += 1;
+            }
+        }
 
         // wake up all closed sockets (smoltcp seems have a bug that it doesn't wake up closed sockets)
-        for (_, socket) in socket_allocator.sockets().lock().iter_mut() {
+        for (_, socket) in sockets.iter_mut() {
             if let Socket::Tcp(tcp) = socket
                 && tcp.state() == smoltcp::socket::tcp::State::Closed
             {
@@ -101,6 +137,30 @@ async fn run(
     }
 
     Ok(())
+}
+
+fn prepare_tcp_close(
+    now: Instant,
+    closing: &[ClosingTcpSocket],
+    sockets: &mut SocketSet<'static>,
+) -> bool {
+    let mut changed = false;
+    for entry in closing {
+        let socket = sockets.get_mut::<tcp::Socket>(*entry.handle);
+        // There is no application reader anymore. Keep the receive window open so queued peer
+        // data cannot keep its FIN from reaching us.
+        if socket.can_recv() {
+            let _ = socket.recv(|data| (data.len(), ()));
+            changed = true;
+        }
+        // The ordinary TCP timeout measures inactivity, so ACKs can extend it. A socket whose
+        // application is gone has an absolute deadline for its teardown.
+        if now >= entry.deadline && socket.state() != tcp::State::Closed {
+            socket.abort();
+            changed = true;
+        }
+    }
+    changed
 }
 
 impl Reactor {
@@ -113,12 +173,14 @@ impl Reactor {
     ) -> (Self, impl Future<Output = io::Result<()>> + Send) {
         let iface = Arc::new(Mutex::new(iface));
         let notify = Arc::new(Notify::new());
-        let socket_allocator = SocketAlloctor::new(buffer_size);
+        let (closing_tx, closing_rx) = mpsc::unbounded_channel();
+        let socket_allocator = SocketAlloctor::new(buffer_size).with_closing_tcp(closing_tx);
         let fut = run(
             async_device,
             iface.clone(),
             device,
             socket_allocator.clone(),
+            closing_rx,
             notify.clone(),
             stopper,
         );

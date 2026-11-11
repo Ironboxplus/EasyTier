@@ -1,3 +1,4 @@
+use super::flow::FlowKey;
 use bytes::Bytes;
 use bytes::BytesMut;
 use zerocopy::AsBytes;
@@ -103,10 +104,11 @@ bitflags::bitflags! {
         const EXIT_NODE = 0b0000_0100;
         const NO_PROXY = 0b0000_1000;
         const COMPRESSED = 0b0001_0000;
-        // deprecated flags, can be reused.
-        // const KCP_SRC_MODIFIED = 0b0010_0000;
-        // const QUIC_SRC_MODIFIED = 0b1000_0000;
+        // formerly KCP_SRC_MODIFIED / QUIC_SRC_MODIFIED (deprecated, reusable); upstream
+        // reuses them for the liveness probe and its echo (#2497).
+        const LIVENESS_PROBE = 0b0010_0000;
         const NOT_SEND_TO_TUN = 0b0100_0000;
+        const LIVENESS_ECHO = 0b1000_0000;
 
         const _ = !0;
     }
@@ -208,6 +210,46 @@ impl PeerManagerHeader {
         }
         self.flags = flags.bits();
         self
+    }
+
+    /// The token of the liveness probe this packet carries, if it carries one. A probe and an
+    /// echo share the `reserved` byte, so a packet has at most one of them.
+    pub(crate) fn liveness_probe_token(&self) -> Option<u8> {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::LIVENESS_PROBE)
+            .then_some(self.reserved)
+    }
+
+    pub(crate) fn liveness_echo_token(&self) -> Option<u8> {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::LIVENESS_ECHO)
+            .then_some(self.reserved)
+    }
+
+    pub(crate) fn set_liveness_probe(&mut self, token: u8) {
+        self.set_liveness_marker(PeerManagerHeaderFlags::LIVENESS_PROBE, token);
+    }
+
+    pub(crate) fn set_liveness_echo(&mut self, token: u8) {
+        self.set_liveness_marker(PeerManagerHeaderFlags::LIVENESS_ECHO, token);
+    }
+
+    pub(crate) fn clear_liveness_marker(&mut self) {
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        flags
+            .remove(PeerManagerHeaderFlags::LIVENESS_PROBE | PeerManagerHeaderFlags::LIVENESS_ECHO);
+        self.flags = flags.bits();
+        self.reserved = 0;
+    }
+
+    fn set_liveness_marker(&mut self, marker: PeerManagerHeaderFlags, token: u8) {
+        self.clear_liveness_marker();
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        flags.insert(marker);
+        self.flags = flags.bits();
+        self.reserved = token;
     }
 
     pub fn mark_kcp_src_modified(&mut self) -> &mut Self {
@@ -469,6 +511,11 @@ pub struct ZCPacket {
     /// peer's traffic) until there is. Linux's `IFF_BACKPRESSURE` for a TUN
     /// stops the whole queue; ET asks the one session's queue to say no.
     drop_when_congested: bool,
+    /// In-memory only, like the tag: the TCP/UDP flow of a plaintext data packet, set by the
+    /// sender before compression and encryption hide it, so the peer can keep an active flow
+    /// on the connection it started on. Kept across local type conversions and foreign
+    /// network wrapping, never serialized, `None` in every constructor.
+    flow_key: Option<FlowKey>,
 }
 
 impl ZCPacket {
@@ -486,6 +533,7 @@ impl ZCPacket {
             packet_type: ZCPacketType::NIC,
             mp_dataplane_tag: None,
             drop_when_congested: false,
+            flow_key: None,
         }
     }
 
@@ -495,7 +543,17 @@ impl ZCPacket {
             packet_type,
             mp_dataplane_tag: None,
             drop_when_congested: false,
+            flow_key: None,
         }
+    }
+
+    /// See the field.
+    pub fn set_flow_key(&mut self, key: Option<FlowKey>) {
+        self.flow_key = key;
+    }
+
+    pub fn flow_key(&self) -> Option<FlowKey> {
+        self.flow_key
     }
 
     /// `(class tag, inner flow hash)`; see the field.
@@ -564,6 +622,7 @@ impl ZCPacket {
         hdr.to_peer_id = 0.into();
         hdr.packet_type = PacketType::ForeignNetworkPacket as u8;
         hdr.len.set(total_payload_len as u32);
+        ret.flow_key = foreign_zc_packet.flow_key;
 
         ret
     }
@@ -735,10 +794,15 @@ impl ZCPacket {
             let mut buf = BytesMut::with_capacity(new_pm_offset + tunnel_payload.len());
             unsafe { buf.set_len(new_pm_offset) };
             buf.extend_from_slice(tunnel_payload);
-            return Self::new_from_buf(buf, target_packet_type);
+            let mut packet = Self::new_from_buf(buf, target_packet_type);
+            packet.flow_key = self.flow_key;
+            return packet;
         }
 
-        Self::new_from_buf(self.inner.split_off(new_offset), target_packet_type)
+        let flow_key = self.flow_key;
+        let mut packet = Self::new_from_buf(self.inner.split_off(new_offset), target_packet_type);
+        packet.flow_key = flow_key;
+        packet
     }
 
     pub fn into_bytes(self) -> Bytes {
@@ -783,11 +847,14 @@ impl ZCPacket {
         let hdr = self.foreign_network_hdr().unwrap();
         let foreign_hdr_len = hdr.get_header_len();
 
-        Self::new_from_buf(
+        let flow_key = self.flow_key;
+        let mut packet = Self::new_from_buf(
             self.inner
                 .split_off(foreign_hdr_len + self.payload_offset()),
             ZCPacketType::DummyTunnel,
-        )
+        );
+        packet.flow_key = flow_key;
+        packet
     }
 
     pub fn get_src_peer_id(&self) -> Option<u32> {

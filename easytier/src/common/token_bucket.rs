@@ -134,13 +134,16 @@ impl TokenBucket {
 
     /// Attempt to consume tokens without blocking
     ///
+    /// Requests larger than the bucket capacity are charged one full
+    /// bucket instead of being rejected, so oversized packets can still
+    /// pass whenever the bucket holds a full burst; traffic consisting
+    /// only of oversized packets can therefore sustain up to
+    /// packet-size/capacity times the nominal rate.
+    ///
     /// # Returns
     /// `true` if tokens were consumed, `false` if insufficient tokens
     pub fn try_consume(&self, tokens: u64) -> bool {
-        // Fast path for oversized packets
-        if tokens > self.config.capacity {
-            return false;
-        }
+        let tokens = tokens.min(self.config.capacity);
 
         let mut current = self.available_tokens.load(Ordering::Relaxed);
         loop {
@@ -328,13 +331,24 @@ mod tests {
     /// Test behavior when packet size exceeds capacity
     #[tokio::test]
     async fn test_oversized_packet() {
-        let bucket = TokenBucket::new(1500, 1000, Duration::from_millis(10));
+        // Fill rate of 1 token/s keeps the test independent of timing:
+        // even a long scheduling stall cannot refill a meaningful amount.
+        let bucket = TokenBucket::new(1500, 1, Duration::from_millis(10));
 
-        // Packet larger than capacity should be rejected
-        assert!(!bucket.try_consume(1600));
+        // Oversized packets are charged one full bucket instead of
+        // being rejected, so a full bucket always admits them.
+        assert!(bucket.try_consume(1600));
+        assert_eq!(
+            bucket
+                .available_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
 
-        // Regular packets should still work
+        // A partially drained bucket still rejects them.
+        let bucket = TokenBucket::new(1500, 1, Duration::from_millis(10));
         assert!(bucket.try_consume(1000));
+        assert!(!bucket.try_consume(1600));
     }
 
     /// Test refill precision with small intervals

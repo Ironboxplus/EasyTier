@@ -533,4 +533,101 @@ mod tests {
             }
         }
     }
+
+    /// A bound UDP socket takes datagrams from a peer it has never sent to (a server socket
+    /// does nothing else): the route is the bound endpoint, not a flow created by `send_to`.
+    #[tokio::test]
+    async fn data_plane_udp_receives_from_a_new_peer_before_its_first_send() {
+        let (ep_a, ep_b) = setup_pair().await;
+        let (server_a, a_ip, server_b, b_ip) = (ep_a.server, ep_a.ip, ep_b.server, ep_b.ip);
+        let timeout = Duration::from_secs(10);
+
+        let sock_a = server_a.data_plane_udp_bind(0, timeout).await.unwrap();
+        let sock_b = server_b.data_plane_udp_bind(0, timeout).await.unwrap();
+        let addr_a = std::net::SocketAddr::new(a_ip.address().into(), sock_a.local_addr().port());
+        let addr_b = std::net::SocketAddr::new(b_ip.address().into(), sock_b.local_addr().port());
+
+        sock_a.send_to(b"hello", addr_b).await.unwrap();
+        let mut buf = [0u8; 16];
+        let (n, from) = tokio::time::timeout(Duration::from_secs(5), sock_b.recv_from(&mut buf))
+            .await
+            .expect("a bound socket never saw a datagram from a peer it had not sent to")
+            .unwrap();
+        assert_eq!(&buf[..n], b"hello");
+        assert_eq!(from, addr_a);
+    }
+
+    /// Tails of datagrams whose first fragment never comes (a first fragment lost, or sent
+    /// before the route existed) must not take the stack's 16 reassembly slots away from the
+    /// next real datagram.
+    #[tokio::test]
+    async fn data_plane_udp_large_datagram_survives_orphan_fragment_tails() {
+        use std::cell::RefCell;
+
+        use pnet::packet::ip::IpNextHeaderProtocols;
+
+        use crate::gateway::ip_reassembler::{ComposeIpv4PacketArgs, compose_ipv4_packet};
+        use crate::tunnel::packet_def::ZCPacket;
+
+        let (ep_a, ep_b) = setup_pair().await;
+        let (peer_a, server_a, a_ip, server_b, b_ip) =
+            (ep_a._peer, ep_a.server, ep_a.ip, ep_b.server, ep_b.ip);
+        let timeout = Duration::from_secs(10);
+
+        let sock_a = server_a.data_plane_udp_bind(0, timeout).await.unwrap();
+        let sock_b = server_b.data_plane_udp_bind(0, timeout).await.unwrap();
+        let addr_a = std::net::SocketAddr::new(a_ip.address().into(), sock_a.local_addr().port());
+        let addr_b = std::net::SocketAddr::new(b_ip.address().into(), sock_b.local_addr().port());
+        // b has a route toward a, so a's fragments are handed to its stack.
+        sock_b.send_to(b"warmup", addr_a).await.unwrap();
+
+        // 20 datagrams' second fragments, each under its own IP id, from a's address to b's.
+        for ip_id in 1..=20u16 {
+            let payload_len = 2960;
+            let mut buf = vec![0u8; 20 + payload_len];
+            let pieces = RefCell::new(Vec::new());
+            compose_ipv4_packet(
+                ComposeIpv4PacketArgs {
+                    buf: &mut buf,
+                    src_v4: &a_ip.address(),
+                    dst_v4: &b_ip.address(),
+                    next_protocol: IpNextHeaderProtocols::Udp,
+                    payload_len,
+                    payload_mtu: 1480,
+                    ip_id,
+                },
+                |piece| {
+                    pieces.borrow_mut().push(piece.to_vec());
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let tail = pieces.into_inner().pop().unwrap();
+            peer_a
+                .send_msg_by_ip(
+                    ZCPacket::new_with_payload(&tail),
+                    std::net::IpAddr::V4(b_ip.address()),
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let big = vec![9u8; 3000];
+        sock_a.send_to(&big, addr_b).await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let (n, from) = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (n, from) = sock_b.recv_from(&mut buf).await.unwrap();
+                if n == big.len() {
+                    return (n, from);
+                }
+            }
+        })
+        .await
+        .expect("the large datagram was lost behind orphan fragment tails");
+        assert_eq!(&buf[..n], big.as_slice());
+        assert_eq!(from, addr_a);
+    }
 }
