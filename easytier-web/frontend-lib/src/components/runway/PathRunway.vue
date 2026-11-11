@@ -318,7 +318,8 @@ const kindTier = (p: RunwayPath) => kindRuleValues(savedSelection.value, p.kind)
           :class="cn('relative grid min-h-[6.5rem]', narrow ? 'grid-cols-[22px_1fr]' : 'grid-cols-[40px_1fr]', ti > 0 && 'mt-1.5')">
           <!-- lane name and the handle of the send count -->
           <div class="relative">
-            <span :class="cn('absolute left-0 top-2 text-[11px] font-medium tracking-widest [writing-mode:vertical-rl]',
+            <span data-testid="runway-lane-name"
+              :class="cn('absolute left-0 top-2 whitespace-nowrap text-[11px] font-medium tracking-widest [writing-mode:vertical-rl]',
                              dimLane(tier) ? 'text-zinc-400' : 'text-zinc-700')">{{ laneName(tier) }}</span>
             <Tooltip v-if="view.activeTier === tier && sendingIn(tier) > 0">
               <TooltipTrigger as-child>

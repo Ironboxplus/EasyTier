@@ -257,6 +257,11 @@ def shoot_status(pg, lang, width):
             target.screenshot(path=str(SHOTS / f"status-{lang}-{width}-{name}.png"))
         else:
             check(f"{lang} {width} px: {name} is on the page", False)
+    # A lane name is one vertical column; wrapped, its characters were drawn over each other.
+    names = pg.locator('[data-testid="runway-lane-name"]')
+    boxes = [names.nth(i).bounding_box() for i in range(names.count())]
+    check(f"{lang} {width} px: each runway lane name is one vertical column",
+          bool(boxes) and all(b and b["height"] >= 1.5 * b["width"] for b in boxes), boxes=boxes)
 
 
 def peer_row(page):
