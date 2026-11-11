@@ -137,7 +137,7 @@ const row = { initial: { opacity: 0, y: -4 }, animate: { opacity: 1, y: 0 }, exi
 </script>
 
 <template>
-  <fieldset class="flex flex-col gap-3 border rounded p-3" data-testid="mp-dataplane">
+  <fieldset class="flex flex-col gap-3 min-w-0 border rounded p-3" data-testid="mp-dataplane">
     <legend class="px-1 font-medium">{{ t('mp_dp.section') }}
       <MpEffectBadge field="mp.data_plane.enabled" /></legend>
     <small class="text-color-secondary">{{ t('mp_dp.help') }}</small>
