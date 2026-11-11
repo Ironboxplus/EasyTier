@@ -208,7 +208,21 @@ def effect_badges_fit(page, label):
     wide = [b for b in boxes["badges"] if b["visible"] and b["width"] >= 120]
     outside = [b for b in boxes["badges"] + boxes["fields"] if b["visible"] and (b["right"] > inner + 1 or b["left"] < -1)]
     check(f"{label}: every effect badge is under 120 px wide", not wide, wide=wide[:3], badges=len(boxes["badges"]))
-    check(f"{label}: no badge or field sticks out of the window", not outside, outside=outside[:3])
+    chain = []
+    if outside:
+        # Which box is wider than the window, from the first field outwards: where the width comes from.
+        chain = page.evaluate("""() => {
+            const inner = window.innerWidth
+            const el = [...document.querySelectorAll('.p-select, .p-slider, .p-inputtext, .mp-effect')]
+                .find(e => e.getBoundingClientRect().right > inner + 1)
+            const out = []
+            for (let n = el; n && n !== document.body; n = n.parentElement) {
+                const r = n.getBoundingClientRect()
+                out.push(`${n.tagName.toLowerCase()}.${String(n.className).slice(0, 60)} w=${Math.round(r.width)} sw=${n.scrollWidth}`)
+            }
+            return out
+        }""")
+    check(f"{label}: no badge or field sticks out of the window", not outside, outside=outside[:3], chain=chain)
 
 
 def nothing_cut(page, label):
@@ -402,6 +416,8 @@ def run() -> None:
 
         # ---- the same pages in Chinese, the language the owner reads
         cn = browser.new_context(viewport={"width": 1040, "height": 900}, locale="zh-CN")
+        # The page takes its language from localStorage, not from the browser's.
+        cn.add_init_script("localStorage.setItem('lang', 'cn')")
         cpage = cn.new_page()
         cpage.on("pageerror", lambda e: errors.append(str(e)))
         login(cpage)
