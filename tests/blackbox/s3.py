@@ -33,7 +33,9 @@ import threading
 import time
 import traceback
 
-NS = ["s3w", "s3ra", "s3a", "s3rb", "s3b"]
+NS = ["s3w", "s3ra", "s3a", "s3rb", "s3b", "s3p"]
+# s3p is a plain host behind A (10.90.0.0/24), the target of the subnet proxy scenarios.
+P_NET = "10.90.0"
 A_VIP, B_VIP, C_VIP = "10.150.0.1", "10.150.0.2", "10.150.0.3"
 RELAY = "198.18.0.1"
 B_WAN = "198.18.0.21"
@@ -133,6 +135,34 @@ class Net:
             if ip:
                 sh("ip", "addr", "add", ip, "dev", dev, ns=ns)
             sh("ip", "link", "set", dev, "up", ns=ns)
+
+    def proxy_subnet(self):
+        """s3p: two hosts (.2 and .3) behind A on 10.90.0.0/24, default route through A."""
+        self._veth("s3a", "pa", "s3p", "pb", f"{P_NET}.1/24", f"{P_NET}.2/24")
+        sh("ip", "addr", "add", f"{P_NET}.3/24", "dev", "pb", ns="s3p")
+        sh("ip", "route", "add", "default", "via", f"{P_NET}.1", ns="s3p")
+
+    def sym_nat(self, which, kind):
+        """Make the NAT of A (`which` "a") or of B ("b") symmetric for UDP, with nftables: a new port per
+        destination. `inc` hands out consecutive ports (an easily predicted symmetric NAT), `random` a
+        random one. TCP and ICMP keep their plain SNAT."""
+        ns, wan, lan, to = (("s3ra", "raw", "10.80.0.0/16", "198.18.0.11") if which == "a"
+                            else ("s3rb", "rbw", "10.81.1.0/24", B_WAN))
+        sh("iptables", "-t", "nat", "-F", "POSTROUTING", ns=ns)
+        for proto in ("tcp", "icmp"):
+            sh("iptables", "-t", "nat", "-A", "POSTROUTING", "-o", wan, "-s", lan, "-p", proto,
+               "-j", "SNAT", "--to-source", to, ns=ns)
+        if kind == "inc":
+            ports = ", ".join(f"{i} : {30000 + i}" for i in range(1024))
+            action = f"snat to {to} : numgen inc mod 1024 map {{ {ports} }}"
+        else:
+            action = f"snat to {to}:30000-60000 fully-random"
+        script = (f"add table ip symnat\n"
+                  f"add chain ip symnat post {{ type nat hook postrouting priority 100 ; }}\n"
+                  f"add rule ip symnat post ip protocol udp oifname \"{wan}\" ip saddr {lan} {action}\n")
+        path = pathlib.Path(f"/tmp/symnat_{which}.nft")
+        path.write_text(script)
+        sh("nft", "-f", str(path), ns=ns)
 
     def snat(self, src, to):
         sh("iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "raw", "-s", src,
@@ -389,7 +419,7 @@ def serve():
 
     def echo():
         while True:
-            data, addr = udp.recvfrom(2048)
+            data, addr = udp.recvfrom(1 << 16)
             udp.sendto(data, addr)
 
     threading.Thread(target=echo, daemon=True).start()
@@ -492,6 +522,78 @@ def client_main(argv):
         print(json.dumps({"sent": n, "sha_sent": h.hexdigest(), "sha_recv": reply[0] if reply else "",
                           "recv": int(reply[1]) if len(reply) > 1 else -1, "secs": dt,
                           "bps": n * 8 / dt, "bps_samples": samples}))
+    elif mode == "dual":
+        # `--client dual HOST1,HOST2 SRC_PORT BYTES HOLD_SECS`: one TCP connection to each host, both
+        # from the same source port, interleaved; each is half-closed after its data and answered
+        # with the SHA of what it received. The connections stay open HOLD_SECS before that.
+        hosts, src_port, total, hold = host.split(","), int(argv[2]), int(argv[3]), float(argv[4])
+        conns = []
+        for h in hosts:
+            c = socket.socket()
+            c.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            c.bind(("0.0.0.0", src_port))
+            c.settimeout(120)
+            c.connect((h, SINK_PORT))
+            conns.append({"host": h, "sock": c, "sha": hashlib.sha256(), "sent": 0,
+                          "rng": random.Random(src_port + len(conns))})
+        while any(c["sent"] < total for c in conns):
+            for c in conns:
+                if c["sent"] < total:
+                    chunk = c["rng"].randbytes(min(1 << 14, total - c["sent"]))
+                    c["sock"].sendall(chunk)
+                    c["sha"].update(chunk)
+                    c["sent"] += len(chunk)
+        time.sleep(hold)
+        out = []
+        for c in conns:
+            c["sock"].shutdown(socket.SHUT_WR)
+            reply = c["sock"].makefile().readline().split()
+            out.append({"host": c["host"], "sent": c["sent"], "sha_sent": c["sha"].hexdigest(),
+                        "sha_recv": reply[0] if reply else "", "recv": int(reply[1]) if len(reply) > 1 else -1})
+            c["sock"].close()
+        print(json.dumps(out))
+    elif mode == "udpdual":
+        # `--client udpdual HOST1,HOST2 SRC_PORT COUNT SIZE`: datagrams from one source port to the echo
+        # server on each host; counts the echoes that came back byte for byte from the right host.
+        hosts, src_port, count, size = host.split(","), int(argv[2]), int(argv[3]), int(argv[4])
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", src_port))
+        s.settimeout(0.05)
+        sent, got = {}, {h: 0 for h in hosts}
+        for seq in range(count):
+            for h in hosts:
+                payload = random.Random(hash((h, seq)) & 0xffff).randbytes(size - 4)
+                data = seq.to_bytes(4, "little") + payload
+                sent[(h, seq)] = data
+                s.sendto(data, (h, ECHO_PORT))
+            time.sleep(0.02)
+        end = time.monotonic() + 3
+        while time.monotonic() < end:
+            try:
+                data, addr = s.recvfrom(4096)
+            except socket.timeout:
+                continue
+            key = (addr[0], int.from_bytes(data[:4], "little"))
+            if sent.get(key) == data:
+                got[addr[0]] += 1
+                sent.pop(key)
+        print(json.dumps({"count": count, "echoed": got}))
+    elif mode == "udpbig":
+        # `--client udpbig HOST COUNT SIZE`: datagrams larger than the overlay MTU, echoed back whole.
+        count, size = int(argv[2]), int(argv[3])
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(3)
+        ok = 0
+        for seq in range(count):
+            data = random.Random(seq).randbytes(size)
+            s.sendto(data, (host, ECHO_PORT))
+            try:
+                reply, _ = s.recvfrom(1 << 16)
+                ok += reply == data
+            except socket.timeout:
+                pass
+        print(json.dumps({"count": count, "ok": ok}))
     else:
         interval, count, size = float(argv[2]) / 1000, int(argv[3]), int(argv[4])
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1905,11 +2007,455 @@ def s34_hot_selection(run, args):
     grey("end")
 
 
+# ---------------------------------------------------------------- upstream tiers (s40-s48)
+#
+# Plain EasyTier behaviour (MP off) ported from upstream: connection selection and failover, the
+# recv-limit liveness probe, the ETQ1 QUIC version, subnet proxy flows, flow pinning, TCP punch
+# keep-alive. The grey-box checks read `easytier-cli -o json peer` (its `conns` column lists every
+# connection with id, tunnel, features, loss and packet counters), `route` and `proxy`.
+
+
+def peer_rows(core):
+    return json.loads(core.cli("-o", "json", "peer"))
+
+
+def peer_row(core, hostname):
+    return next((r for r in peer_rows(core) if r.get("hostname") == hostname), None)
+
+
+def live_conns(core, hostname, tunnel=None):
+    """Open connections of this node to `hostname`; `tunnel` keeps those whose type contains it."""
+    row = peer_row(core, hostname) or {}
+    return [c for c in row.get("conns") or []
+            if not c.get("is_closed") and (tunnel is None or tunnel in str(c.get("tunnel")).lower())]
+
+
+def route_row(core, hostname):
+    rows = json.loads(core.cli("-o", "json", "route"))
+    return next((r for r in rows if r.get("hostname") == hostname), None)
+
+
+def wait_until(pred, secs, what, every=0.5):
+    end, last = time.time() + secs, None
+    while time.time() < end:
+        try:
+            last = pred()
+            if last:
+                return last
+        except Exception as e:  # the core is still starting
+            last = {"error": str(e)}
+        time.sleep(every)
+    raise Fail(f"timed out after {secs}s waiting for {what}: {last}")
+
+
+class PingLog:
+    """`ping -D` inside a namespace; every reply keeps its wall-clock time, so outages can be placed
+    against events the scenario timed itself."""
+    _REPLY = re.compile(r"^\[(\d+\.\d+)\] .*icmp_seq=(\d+)")
+
+    def __init__(self, run, ns, dst, secs, interval=0.2):
+        self.path = run.out / f"ping_{ns}_{dst}_{int(time.time())}.txt"
+        self.start = time.time()
+        self.proc = subprocess.Popen(
+            ["ip", "netns", "exec", ns, "ping", "-D", "-n", "-i", str(interval), "-W", "1",
+             "-c", str(int(secs / interval)), dst],
+            stdout=open(self.path, "w"), stderr=subprocess.STDOUT)
+
+    def replies(self):
+        out = []
+        for line in self.path.read_text().splitlines():
+            m = self._REPLY.match(line)
+            if m:
+                out.append((float(m.group(1)), int(m.group(2))))
+        return out
+
+    def longest_gap(self, since, until=None):
+        """The longest stretch without a reply that begins at or after `since` (the stretch from
+        `since` to the first reply counts), up to the last reply before `until`."""
+        times = [t for t, _ in self.replies() if t >= since and (until is None or t <= until)]
+        if not times:
+            return float("inf")
+        marks = [since] + times
+        return max(b - a for a, b in zip(marks, marks[1:]))
+
+    def stop(self):
+        self.proc.terminate()
+        self.proc.wait()
+
+
+def block_direct(a_wan="198.18.0.11", b_lan="10.81.1.2", both=True):
+    """Black-hole the direct path between A and B at B's router. The relay path through C does not
+    cross these rules (C's address is not A's)."""
+    sh("iptables", "-I", "FORWARD", "-s", a_wan, "-d", b_lan, "-j", "DROP", ns="s3rb")
+    if both:
+        sh("iptables", "-I", "FORWARD", "-s", b_lan, "-d", a_wan, "-j", "DROP", ns="s3rb")
+
+
+def direct_pair(run, a_listeners=(), b_listeners=("tcp://0.0.0.0:11010",), a_peers=None, flags=None,
+                flags_b=None):
+    """A and B behind their NATs, B reachable through its router's DMZ rules, C the relay. MP off.
+    UDP hole punching is off unless asked, so the only direct connections are the dialled ones."""
+    run.topo(dnat=True)
+    run.relay()
+    common = {"disable_udp_hole_punching": True, **(flags or {})}
+    b = run.core("b", "s3b", B_VIP, listeners=list(b_listeners), peers=[f"tcp://{RELAY}:11010"],
+                 flags={**common, **(flags_b or {})}, bin_dir=run.b_bin)
+    a = run.core("a", "s3a", A_VIP, listeners=list(a_listeners),
+                 peers=a_peers or [f"tcp://{RELAY}:11010", f"tcp://{B_WAN}:11010"], flags=common)
+    run.wait_ping("s3a", B_VIP, secs=60)
+    return a, b
+
+
+def s40_relay_failover_empty_peer(run, args):
+    """T1-2: A has a direct connection to B and a relay route through C. When the direct path dies the
+    connection is closed and B's entry in A's peer map is left without connections; traffic must
+    take the relay route at once, not wait for the periodic cleanup of the empty entry."""
+    a, b = direct_pair(run)
+    first = wait_until(lambda: live_conns(a, "b", "tcp"), 60, "A's direct tcp connection to B")
+    wait_until(lambda: "p2p" in str((peer_row(a, "b") or {}).get("cost")).lower(), 30, "p2p cost")
+    run.evidence["direct_conns"] = first
+    log = PingLog(run, "s3a", B_VIP, secs=150)
+    time.sleep(5)
+    t_cut = time.time()
+    block_direct()
+    # The connection closes when its pings fail; that is the first moment the entry has no connection.
+    t_dead = wait_until(lambda: (not live_conns(a, "b")) and time.time(), 90,
+                        "A to drop the dead direct connection")
+    run.evidence["detect_secs"] = round(t_dead - t_cut, 1)
+    row = peer_row(a, "b")
+    route = route_row(a, "b")
+    run.evidence["after_cut"] = {"peer": row, "route": route}
+    # Grey box: the peer is still listed, and its route's next hop is the relay.
+    run.check("B is still in A's peer list after the connection closed", row is not None, row=row)
+    run.check("A's route to B goes through C", route is not None and route.get("next_hop_hostname") == "c",
+              route=route)
+    time.sleep(8)
+    gap = log.longest_gap(t_dead + 2)
+    log.stop()
+    run.evidence["longest_gap_after_dead_secs"] = round(gap, 2)
+    run.check("traffic uses the relay right after the direct connection is gone", gap <= 3.0, gap=gap,
+              detect_secs=run.evidence["detect_secs"])
+    run.payload("over the relay after failover", 4 << 20)
+
+
+def s41_recv_limit_liveness(run, args):
+    """T1-4/T1-5: with `instance_recv_bps_limit` on B, a saturating flood from A must not make either
+    end call the connection dead (the limiter drops pongs too); and a real outage (nothing comes back
+    from B) is still detected while A keeps sending."""
+    a, b = direct_pair(run, flags_b={"instance_recv_bps_limit": 1_000_000})
+    ca = wait_until(lambda: live_conns(a, "b", "tcp"), 60, "A's direct tcp connection to B")
+    cb = wait_until(lambda: live_conns(b, "a", "tcp"), 60, "B's direct tcp connection to A")
+    ids = {"a": {c["conn_id"] for c in ca}, "b": {c["conn_id"] for c in cb}}
+    run.evidence["conn_ids"] = {k: sorted(v) for k, v in ids.items()}
+    flood_secs = 120
+    flood = background(run, "flood", "s3a", "tcp", B_VIP, f"s{flood_secs}")
+    samples = []
+    t0 = time.time()
+    while time.time() - t0 < flood_secs - 5:
+        time.sleep(5)
+        now = {"a": live_conns(a, "b", "tcp"), "b": live_conns(b, "a", "tcp")}
+        samples.append({"t": round(time.time() - t0), **{k: [(c["conn_id"], c["loss_rate"]) for c in v]
+                                                          for k, v in now.items()}})
+        for end, conns in now.items():
+            run.check(f"flood t={round(time.time() - t0)}s: {end}'s connection is the one it started with",
+                      {c["conn_id"] for c in conns} == ids[end], conns=conns)
+    flood.join(timeout=60)
+    run.evidence["flood_samples"] = samples
+    run.check("the flood moved data", (run.evidence.get("flood") or {}).get("sent", 0) > 0)
+    # A real outage: B's answers no longer reach A, while A's packets keep arriving at B.
+    keep = background(run, "keep_sending", "s3a", "tcp", B_VIP, "s100")
+    time.sleep(3)
+    sh("iptables", "-I", "FORWARD", "-s", "10.81.1.2", "-d", "198.18.0.11", "-j", "DROP", ns="s3rb")
+    t_cut = time.time()
+    for end, core, host in (("a", a, "b"), ("b", b, "a")):
+        wait_until(lambda core=core, host=host, end=end: not ({c["conn_id"] for c in live_conns(core, host)}
+                                                              & ids[end]),
+                   120, f"{end} to drop the connection that no longer works")
+        run.evidence[f"detected_{end}_secs"] = round(time.time() - t_cut, 1)
+    keep.join(timeout=150)
+
+
+def pcap_udp_payloads(path, port):
+    """[(direction, payload)] of the UDP datagrams to or from `port` in a classic Ethernet pcap;
+    direction is "to" for datagrams addressed to the port."""
+    data = pathlib.Path(path).read_bytes()
+    if len(data) < 24:
+        return []
+    endian = "<" if data[:4] == b"\xd4\xc3\xb2\xa1" else ">"
+    off, out = 24, []
+    while off + 16 <= len(data):
+        incl = struct.unpack(endian + "I", data[off + 8:off + 12])[0]
+        frame = data[off + 16:off + 16 + incl]
+        off += 16 + incl
+        if len(frame) < 42 or frame[12:14] != b"\x08\x00" or frame[23] != 17:
+            continue
+        ihl = (frame[14] & 0x0f) * 4
+        udp = 14 + ihl
+        sport, dport = struct.unpack("!HH", frame[udp:udp + 4])
+        if port in (sport, dport):
+            out.append(("to" if dport == port else "from", frame[udp + 8:]))
+    return out
+
+
+def quic_versions(path, port):
+    """Versions of the QUIC long-header packets seen on `port`, in order, as (direction, version)."""
+    seen = []
+    for direction, payload in pcap_udp_payloads(path, port):
+        if len(payload) >= 5 and payload[0] & 0x80:
+            seen.append((direction, struct.unpack("!I", payload[1:5])[0]))
+    return seen
+
+
+ETQ1 = 0x45545131
+
+
+def s42_quic_tunnel_etq1(run, args):
+    """T1-1: the quic:// tunnel dials ETQ1 first. New to new negotiates ETQ1 directly; against a peer
+    that only speaks QUIC version 1 (the reference release, either way round) the connection is made
+    all the same, after a version negotiation when this build dials."""
+    run.check("a distinct reference binary is supplied (--b-bin)",
+              bool(args.b_bin) and pathlib.Path(args.b_bin).resolve() != pathlib.Path(args.bin).resolve())
+    cases = [("new_to_new", None, None), ("new_dials_old", "old", None), ("old_dials_new", None, "old")]
+    for name, b_kind, a_kind in cases:
+        run.topo(dnat=True)
+        cap = Capture(run, "s3rb", "rbw")
+        run.helpers.append(cap)
+        run.relay()
+        port = 11012
+        b = run.core("b", "s3b", B_VIP, listeners=[f"quic://0.0.0.0:{port}"], peers=[f"tcp://{RELAY}:11010"],
+                     flags={"disable_udp_hole_punching": True},
+                     bin_dir=run.b_bin if b_kind else run.bin)
+        a = run.core("a", "s3a", A_VIP, peers=[f"quic://{B_WAN}:{port}"],
+                     flags={"disable_udp_hole_punching": True}, bin_dir=run.b_bin if a_kind else run.bin)
+        run.wait_ping("s3a", B_VIP, secs=60)
+        wait_until(lambda: "quic" in str((peer_row(a, "b") or {}).get("tunnel_proto")).lower(), 60,
+                   f"{name}: A's connection to B over quic")
+        run.payload(f"{name} over quic", 4 << 20)
+        cap.stop()
+        versions = quic_versions(run.out / "s3rb_rbw.pcap", port)
+        run.evidence[f"versions/{name}"] = [(d, hex(v)) for d, v in versions[:12]]
+        client = [v for d, v in versions if d == "to"]
+        server = [v for d, v in versions if d == "from"]
+        if name == "new_to_new":
+            run.check("new to new: the first packet offers ETQ1", client[:1] == [ETQ1], versions=client[:5])
+            run.check("new to new: no version negotiation and no fallback",
+                      0 not in server and 1 not in client, server=server[:5], client=client[:5])
+        elif name == "new_dials_old":
+            run.check("new dials old: the first packet offers ETQ1", client[:1] == [ETQ1], versions=client[:5])
+            run.check("new dials old: the old server answers with version negotiation", 0 in server,
+                      server=server[:5])
+            run.check("new dials old: the dialer falls back to version 1", 1 in client, client=client[:8])
+        else:
+            run.check("old dials new: version 1 is accepted without negotiation",
+                      client[:1] == [1] and 0 not in server, client=client[:5], server=server[:5])
+        run.reset()
+
+
+def s43_proxy_flows(run, args):
+    """T2-1: subnet proxy through A to a host behind it, in every proxy mode. Two connections that
+    share a source port reach different hosts; half-closed request/response works; UDP from one
+    source port to two hosts and datagrams above the MTU come back whole; once the clients are gone
+    the proxy table is empty."""
+    modes = {"nat": ({}, {}), "smoltcp": ({}, {"use_smoltcp": True}), "quic": ({"enable_quic_proxy": True}, {}),
+             "kcp": ({"enable_kcp_proxy": True}, {})}
+    only = args.modes.split(",") if args.modes else list(modes)
+    results = {}
+    for mode in only:
+        flags_b, flags_a = modes[mode]
+        net = run.topo(dnat=True)
+        net.proxy_subnet()
+        run.helpers.append(Helper(run, "s3p"))
+        run.relay()
+        common = {"disable_udp_hole_punching": True}
+        b = run.core("b", "s3b", B_VIP, peers=[f"tcp://{RELAY}:11010"], flags={**common, **flags_b})
+        a = run.core("a", "s3a", A_VIP, peers=[f"tcp://{RELAY}:11010"], flags={**common, **flags_a},
+                     extra=["[[proxy_network]]", f'cidr = "{P_NET}.0/24"'])
+        run.wait_ping("s3b", f"{P_NET}.2", secs=90)
+        hosts = f"{P_NET}.2,{P_NET}.3"
+        res = {}
+
+        def clients(a=a, hosts=hosts):
+            return json.loads(a.cli("-o", "json", "proxy") or "[]")
+
+        t = threading.Thread(target=lambda: res.__setitem__(
+            "dual", run.client("s3b", "dual", hosts, 40000, 2 << 20, 10)))
+        t.start()
+        time.sleep(6)
+        entries = clients()
+        run.evidence[f"{mode}/entries_while_open"] = entries
+        mine = [e for e in entries if str(e.get("dst", "")).split(":")[0] in hosts.split(",")]
+        run.check(f"{mode}: both flows from one source port are listed", len({e["dst"] for e in mine}) >= 2,
+                  entries=mine)
+        t.join(timeout=180)
+        for r in res["dual"]:
+            run.check(f"{mode}: flow to {r['host']} delivered its bytes intact",
+                      r["sha_sent"] == r["sha_recv"] and r["recv"] == r["sent"], result=r)
+        udp = run.client("s3b", "udpdual", hosts, 41000, 50, 512)
+        run.evidence[f"{mode}/udpdual"] = udp
+        run.check(f"{mode}: UDP from one source port reaches both hosts",
+                  all(n >= 45 for n in udp["echoed"].values()), udp=udp)
+        big = run.client("s3b", "udpbig", f"{P_NET}.2", 5, 8000)
+        run.evidence[f"{mode}/udpbig"] = big
+        run.check(f"{mode}: datagrams above the MTU come back whole", big["ok"] >= 4, big=big)
+        wait_until(lambda: not clients(), 120, f"{mode}: the proxy table to empty", every=3)
+        results[mode] = "ok"
+        run.reset()
+    run.evidence["modes"] = results
+
+
+def proto_delay(net, tcp_ms, udp_ms, first):
+    """Delay only TCP and only UDP on A's WAN egress: the two connections of one peer then differ in
+    latency, and swapping the delays swaps which one the connection selection prefers."""
+    if first:
+        sh("tc", "qdisc", "del", "dev", "raw", "root", ns="s3ra", check=False)
+        sh("tc", "qdisc", "add", "dev", "raw", "root", "handle", "1:", "prio", "bands", "3",
+           "priomap", *["2"] * 16, ns="s3ra")
+        for band, proto in (("1", 6), ("2", 17)):
+            sh("tc", "qdisc", "add", "dev", "raw", "parent", f"1:{band}", "handle", f"1{band}:", "netem",
+               "delay", "0ms", ns="s3ra")
+            sh("tc", "filter", "add", "dev", "raw", "parent", "1:", "protocol", "ip", "prio", band, "u32",
+               "match", "ip", "protocol", str(proto), "0xff", "flowid", f"1:{band}", ns="s3ra")
+    for band, ms in (("1", tcp_ms), ("2", udp_ms)):
+        sh("tc", "qdisc", "change", "dev", "raw", "parent", f"1:{band}", "handle", f"1{band}:", "netem",
+           "delay", f"{ms}ms", ns="s3ra")
+
+
+def s44_flow_pinning(run, args):
+    """T2-6: a peer with a TCP and a UDP connection. A busy UDP flow stays on the connection it started
+    on while the connections' latencies swap twice; without pinning it follows the better one."""
+    a, b = direct_pair(run, b_listeners=["tcp://0.0.0.0:11010", "udp://0.0.0.0:11011"],
+                       a_peers=[f"tcp://{RELAY}:11010", f"tcp://{B_WAN}:11010", f"udp://{B_WAN}:11011"])
+    both = wait_until(lambda: len(live_conns(a, "b")) >= 2 and live_conns(a, "b"), 90,
+                      "a TCP and a UDP connection from A to B")
+    run.check("A has one tcp and one udp connection to B",
+              {str(c["tunnel"]).lower() for c in both} >= {"tcp", "udp"}, conns=both)
+    net = run.net
+    proto_delay(net, 0, 40, first=True)
+    time.sleep(15)
+
+    def tx():
+        return {str(c["tunnel"]).lower(): c["tx_packets"] for c in live_conns(a, "b")}
+
+    secs = 60
+    echo = background(run, "echo", "s3a", "ping", B_VIP, 20, secs * 50, 200)
+    time.sleep(3)
+    before, t0 = tx(), time.time()
+    for step, (tcp_ms, udp_ms) in enumerate([(40, 0), (0, 40)], start=1):
+        time.sleep(secs / 3 - 1)
+        proto_delay(net, tcp_ms, udp_ms, first=False)
+        run.evidence.setdefault("swaps", []).append({"t": round(time.time() - t0, 1), "tcp_ms": tcp_ms,
+                                                    "udp_ms": udp_ms})
+    time.sleep(max(0, secs - 5 - (time.time() - t0)))
+    after = tx()
+    echo.join(timeout=60)
+    grew = {k: after.get(k, 0) - before.get(k, 0) for k in after}
+    run.evidence["tx_growth"] = grew
+    sent = (run.evidence.get("echo") or {}).get("count", 0)
+    top = max(grew.values())
+    other = sum(grew.values()) - top
+    run.check("the echo flow was carried", top >= sent * 0.8, grew=grew, sent=sent)
+    run.check("the flow stayed on one connection while the latencies swapped", other <= max(60, top * 0.05),
+              grew=grew)
+
+
+def s45_tcp_punch_keepalive(run, args):
+    """T3-1: a hole-punched TCP connection between two NATed hosts is pinged every second and is kept
+    for as long as the link works; its identity does not change over an idle two minutes."""
+    run.topo()
+    run.relay()
+    flags = {"disable_udp_hole_punching": True}
+    b = run.core("b", "s3b", B_VIP, peers=[f"tcp://{RELAY}:11010"], flags=flags, bin_dir=run.b_bin)
+    a = run.core("a", "s3a", A_VIP, peers=[f"tcp://{RELAY}:11010"], flags=flags)
+    run.wait_ping("s3a", B_VIP, secs=60)
+    punched = wait_until(lambda: live_conns(a, "b", "tcp"), 240, "a punched tcp connection from A to B",
+                         every=2)
+    run.evidence["punched"] = punched
+    ids = {c["conn_id"] for c in punched}
+    time.sleep(20)
+
+    def counters():
+        return ({c["conn_id"]: c["tx_packets"] for c in live_conns(a, "b", "tcp")},
+                {c["conn_id"]: c["tx_packets"] for c in live_conns(a, "c")})
+
+    (p0, c0), t0 = counters(), time.time()
+    time.sleep(120)
+    (p1, c1) = counters()
+    secs = time.time() - t0
+    run.check("the punched connection is the same one after two idle minutes", set(p1) == ids, ids=sorted(ids),
+              now=sorted(p1))
+    grown = {k: p1[k] - p0.get(k, 0) for k in p1}
+    relay_grown = {k: c1[k] - c0.get(k, 0) for k in c1}
+    run.evidence["idle"] = {"secs": round(secs), "punched_tx": grown, "relay_tx": relay_grown}
+    run.check("the punched connection sends a packet at least every second", all(v >= secs * 0.9 for v in grown.values()),
+              grown=grown, secs=secs)
+    run.payload("over the punched connection", 4 << 20)
+
+
+def s46_sym_punch(run, args):
+    """T3-2: UDP hole punching through symmetric NATs, MP off: both ends easily predicted symmetric
+    (consecutive ports), an easily predicted symmetric end against a cone end, and a randomly mapped
+    symmetric end against a cone end. A direct UDP connection must come up, however many attempts
+    that takes, and carry a payload."""
+    cases = [("easy_easy", "inc", "inc"), ("easy_cone", "inc", None), ("hard_cone", "random", None)]
+    only = args.modes.split(",") if args.modes else [c[0] for c in cases]
+    for name, a_kind, b_kind in cases:
+        if name not in only:
+            continue
+        net = run.topo()
+        net.sym_nat("a", a_kind)
+        if b_kind:
+            net.sym_nat("b", b_kind)
+        run.relay()
+        b = run.core("b", "s3b", B_VIP, peers=[f"tcp://{RELAY}:11010"])
+        a = run.core("a", "s3a", A_VIP, peers=[f"tcp://{RELAY}:11010"])
+        run.wait_ping("s3a", B_VIP, secs=60)
+        t0 = time.time()
+        try:
+            row = wait_native_p2p(run, a, secs=420)
+        finally:
+            run.evidence[f"{name}/nat_type"] = {n: json.loads(c.cli("-o", "json", "node")) for n, c in
+                                                (("a", a), ("b", b))}
+        run.evidence[f"{name}/punch_secs"] = round(time.time() - t0, 1)
+        run.evidence[f"{name}/peer_row"] = row
+        run.check(f"{name}: direct UDP connection", True, seconds=run.evidence[f"{name}/punch_secs"])
+        run.payload(f"{name} over the punched connection", 4 << 20)
+        run.reset()
+
+
+def s47_mixed_fork_versions(run, args):
+    """G1: this build and the build before the proto renumbering (--b-bin) in one network. The native
+    UDP punch succeeds and business traffic flows; no multipath session forms, because the two ends
+    read each other's multipath fields differently. When the old end is restarted with this build,
+    the session comes up and carries the payload."""
+    reference_binary(run, args)
+    _, a, b = pair(run, "udp")
+    row = wait_native_p2p(run, a, secs=300)
+    run.evidence["mixed_peer_row"] = row
+    run.check("mixed: a direct UDP connection by native punching", True)
+    run.payload("mixed versions")
+    time.sleep(30)
+    st = a.stats()
+    run.evidence["mixed_stats"] = st
+    run.check("mixed: no multipath path is validated", not validated(st, 1), paths=paths_of(st))
+    run.payload("mixed versions, later")
+    for core in (a, b):
+        run.check(f"mixed: {core.name} is still running", core.proc.poll() is None)
+    # Upgrade the old end: the same node, restarted with this build.
+    b.stop()
+    b.bin = run.bin
+    b.start()
+    run.wait_ping("s3a", B_VIP, secs=120)
+    established(run, a, "udp")
+    run.mp_payload(a, "after the upgrade", 8 << 20)
+
+
 SCENARIOS = {f.__name__: f for f in [
     s31_legacy, s31_native_punch, s31_cli_compat, s31_faketcp_numbers, s32_cc_matrix, s32_rate_limit, s32_brutal_loss, s32_sqm,
     s32_relay_then_punch, s32_relay_beside_punch, s32_multi_egress, s32_punch_rate,
     s32_path_policy, s32_dataplane, s32_reliable_class, s32_oversize, s32_split_proxy, s32_mwan3,
-    s33_churn, s33_soak, s33_route_loop, s3x_vs_official, s3x_harsh, s34_hot_selection]}
+    s33_churn, s33_soak, s33_route_loop, s3x_vs_official, s3x_harsh, s34_hot_selection,
+    s40_relay_failover_empty_peer, s41_recv_limit_liveness, s42_quic_tunnel_etq1, s43_proxy_flows,
+    s44_flow_pinning, s45_tcp_punch_keepalive, s46_sym_punch, s47_mixed_fork_versions]}
 
 
 def main():

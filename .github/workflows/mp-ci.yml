@@ -509,6 +509,64 @@ jobs:
             -E "(${{ needs.plan.outputs.filter }}) and not ($skip)" \
             --test-threads 1 --no-fail-fast --no-tests pass
 
+  # Windows TUN identity black-box test (tests/windows-tun): this build's
+  # easytier-core, started and stopped five times (two by force) with no
+  # device name, then two at once, on the runner's administrator account. The
+  # adapter must be et_1 with an unchanged GUID and no new network profiles;
+  # two cores get et_1 and et_2. The same setup as the `windows` job.
+  windows-tun:
+    needs: plan
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ilammy/setup-nasm@v1
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Use MSVC's link.exe
+        shell: pwsh
+        run: |
+          $link = (Get-Command link.exe -All | Where-Object { $_.Source -like '*\MSVC\*' } | Select-Object -First 1).Source
+          if (-not $link) { throw 'MSVC link.exe not found' }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$link" >> $env:GITHUB_ENV
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+          key: windows-tun
+      - name: Build easytier-core
+        working-directory: et
+        run: cargo build --locked --release -p easytier --features mpquic,faketcp,mimalloc --bin easytier-core
+      - name: Run tun_restart
+        run: |
+          cp et/easytier/third_party/x86_64/*.dll et/target/release/
+          python et/tests/windows-tun/tun_restart.py "$(cygpath -w "$PWD/et/target/release/easytier-core.exe")" out
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: windows-tun
+          path: out
+          retention-days: 1
+
   # Linux binaries: easytier-core and easytier-cli, static musl builds with
   # the features of the Windows CLI, for x86_64 and aarch64. Zig is the C and
   # C++ cross compiler (TQUIC builds BoringSSL with CMake, which needs a musl
@@ -523,10 +581,14 @@ jobs:
         include:
           - { arch: x86_64, target: x86_64-unknown-linux-musl }
           - { arch: aarch64, target: aarch64-unknown-linux-musl }
+          # The tree before the proto renumbering (G1), pushed once to a branch that
+          # does not run CI: the other end of the mixed-version black-box test.
+          - { arch: x86_64-baseline, target: x86_64-unknown-linux-musl, ref: baseline/e02a19e0 }
     steps:
       - uses: actions/checkout@v5
         with:
           path: et
+          ref: ${{ matrix.ref }}
       - uses: actions/checkout@v5
         with:
           repository: Ironboxplus/tquic
@@ -654,7 +716,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [s31_legacy, s31_native_punch, s31_cli_compat, s31_faketcp_numbers, s32_cc_matrix, s32_rate_limit, s32_brutal_loss, s32_sqm, s32_multi_egress, s32_relay_then_punch, s32_punch_rate, s32_relay_beside_punch, s32_path_policy, s32_dataplane, s32_reliable_class, s32_oversize, s32_split_proxy, s3x_harsh, s3x_vs_official, s32_mwan3, s33_churn, s33_soak, s33_route_loop, s34_hot_selection]
+        scenario: [s31_legacy, s31_native_punch, s31_cli_compat, s31_faketcp_numbers, s32_cc_matrix, s32_rate_limit, s32_brutal_loss, s32_sqm, s32_multi_egress, s32_relay_then_punch, s32_punch_rate, s32_relay_beside_punch, s32_path_policy, s32_dataplane, s32_reliable_class, s32_oversize, s32_split_proxy, s3x_harsh, s3x_vs_official, s32_mwan3, s33_churn, s33_soak, s33_route_loop, s34_hot_selection, s40_relay_failover_empty_peer, s41_recv_limit_liveness, s42_quic_tunnel_etq1, s43_proxy_flows, s44_flow_pinning, s45_tcp_punch_keepalive, s46_sym_punch, s47_mixed_fork_versions]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -663,15 +725,22 @@ jobs:
         with:
           name: linux-x86_64
           path: bin
+      - uses: actions/download-artifact@v5
+        if: matrix.scenario == 's47_mixed_fork_versions'
+        with:
+          name: linux-x86_64-baseline
+          path: baseline
       - name: Prepare system
         run: |
           sudo apt-get update
-          sudo apt-get install -qqy iproute2 iptables tcpdump ethtool iputils-ping python3 unzip             "linux-modules-extra-$(uname -r)" || true
-          for m in sch_netem sch_htb sch_cake ifb nf_conntrack nf_nat; do sudo modprobe "$m" || echo "no $m"; done
-          chmod +x bin/*
+          sudo apt-get install -qqy iproute2 iptables tcpdump ethtool iputils-ping python3 unzip            "linux-modules-extra-$(uname -r)" || true
+          # nft: the symmetric NAT of s46_sym_punch.
+          sudo apt-get install -qqy nftables
+          for m in sch_netem sch_htb sch_cake ifb nf_conntrack nf_nat nf_tables nft_nat nft_numgen nft_masq; do sudo modprobe "$m" || echo "no $m"; done
+          chmod +x bin/* baseline/* 2>/dev/null || true
           bin/easytier-core --version
       - name: Reference core
-        if: contains(fromJSON('["s31_legacy","s31_native_punch","s3x_harsh","s3x_vs_official"]'), matrix.scenario)
+        if: contains(fromJSON('["s31_legacy","s31_native_punch","s3x_harsh","s3x_vs_official","s42_quic_tunnel_etq1"]'), matrix.scenario)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -685,6 +754,7 @@ jobs:
         run: |
           extra=""
           [ -n "$UPSTREAM" ] && extra="--b-bin $UPSTREAM"
+          [ "${{ matrix.scenario }}" = s47_mixed_fork_versions ] && extra="--b-bin $PWD/baseline"
           [ "${{ matrix.scenario }}" = s33_soak ] && extra="--hours 0.08"
           # A 20 s run still has the inner TCP's slow start in it, which costs the reliable class a few % on
           # the hosted runners; a minute shows the steady state the check is about.
@@ -796,7 +866,7 @@ jobs:
           retention-days: 1
 
   result:
-    needs: [build, test, tquic, frontend, android, windows, windows-test-build, windows-test, linux, linux-gui, blackbox, ui-e2e]
+    needs: [build, test, tquic, frontend, android, windows, windows-test-build, windows-test, windows-tun, linux, linux-gui, blackbox, ui-e2e]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:

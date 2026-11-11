@@ -34,7 +34,8 @@ use crate::{common::error::Error, gateway::fast_socks5::server::AsyncTcpConnecto
 
 use super::{
     Socks5AutoConnector, Socks5Entry, Socks5EntryData, Socks5EntrySet, Socks5Server,
-    SocksTcpStream, SocksUdpSocket, TCP_ENTRY, TCP_LISTEN_ENTRY, UDP_ENTRY, UdpClientKey,
+    SocksTcpStream, SocksUdpSocket, TCP_ENTRY, TCP_LISTEN_ENTRY, UDP_BIND_ENTRY, UDP_ENTRY,
+    UdpClientKey,
 };
 use crate::gateway::tokio_smoltcp::{Net, TcpListener};
 
@@ -138,6 +139,9 @@ pub struct DataPlaneUdpSocket {
     entries: Socks5EntrySet,
     entry_count: Arc<AtomicUsize>,
     local_addr: SocketAddr,
+    // The bound endpoint is the route: datagrams from peers this socket has not sent to
+    // reach it too. Removed when the socket goes.
+    _bound_route: OwnedRouteEntry,
     _data_plane_ref: DataPlaneRef,
 }
 
@@ -382,12 +386,23 @@ impl Socks5Server {
         let smol = smoltcp_net.udp_bind(bind_addr).await?;
         let local_addr = smol.local_addr()?;
         let socket = Arc::new(SocksUdpSocket::SmolUdpSocket(smol));
+        let bound_route = OwnedRouteEntry::try_register(
+            self.entries.clone(),
+            self.entry_count.clone(),
+            Socks5Entry {
+                src: local_addr,
+                dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                entry_type: UDP_BIND_ENTRY,
+            },
+        )
+        .ok_or_else(|| anyhow::anyhow!("data plane udp endpoint is already bound"))?;
 
         Ok(DataPlaneUdpSocket {
             socket,
             entries: self.entries.clone(),
             entry_count: self.entry_count.clone(),
             local_addr,
+            _bound_route: bound_route,
             _data_plane_ref: data_plane_ref,
         })
     }

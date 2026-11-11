@@ -55,6 +55,7 @@ use crate::{
 
 #[cfg(feature = "ffi-dataplane")]
 mod dataplane;
+mod udp_fragments;
 
 #[cfg(feature = "ffi-dataplane")]
 pub use dataplane::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
@@ -154,6 +155,10 @@ const UDP_ENTRY: u8 = 1;
 const TCP_ENTRY: u8 = 2;
 #[cfg(feature = "ffi-dataplane")]
 const TCP_LISTEN_ENTRY: u8 = 3;
+// A bound data-plane UDP endpoint: it takes datagrams from any peer, not only from those it sent to.
+// The key's `src` is the endpoint, its `dst` is unspecified.
+#[cfg(feature = "ffi-dataplane")]
+const UDP_BIND_ENTRY: u8 = 4;
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 struct Socks5Entry {
@@ -399,7 +404,11 @@ impl Socks5ServerNet {
             tracing::warn!("smoltcp stack stream exited");
         });
 
-        let interface_config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ip);
+        let mut interface_config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ip);
+        // The IP ids of the datagrams this stack fragments come from this seed. A rebuilt stack
+        // must not repeat the ids of the one before, or its fragments would meet routing
+        // decisions made for the old datagrams.
+        interface_config.random_seed = rand::random();
         let net = Net::new(
             dev,
             NetConfig::new(
@@ -485,6 +494,8 @@ pub struct Socks5Server {
 
     udp_client_map: Arc<DashMap<UdpClientKey, Arc<UdpClientInfo>>>,
     udp_forward_task: Arc<DashMap<UdpClientKey, AbortOnDropHandle<()>>>,
+    // Which side takes the fragments of each local UDP datagram: the stack or the kernel.
+    udp_fragments: Arc<std::sync::Mutex<udp_fragments::UdpFragments>>,
 
     #[cfg(feature = "kcp")]
     kcp_endpoint: Mutex<Option<Weak<KcpEndpoint>>>,
@@ -498,6 +509,93 @@ pub struct Socks5Server {
     cancel_tokens: Arc<DashMap<PortForwardConfig, DropGuard>>,
     port_forward_list_change_notifier: Arc<Notify>,
     entry_count: Arc<AtomicUsize>,
+}
+
+impl Socks5Server {
+    /// Whether the stack takes packets of this flow: an exact route, or for UDP a bound data-plane
+    /// endpoint, which takes datagrams from any peer.
+    fn has_route(&self, entry: &Socks5Entry) -> bool {
+        if self.entries.contains_key(entry) {
+            return true;
+        }
+        #[cfg(feature = "ffi-dataplane")]
+        {
+            if entry.entry_type == UDP_ENTRY {
+                return self.entries.contains_key(&Socks5Entry {
+                    src: entry.src,
+                    dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                    entry_type: UDP_BIND_ENTRY,
+                });
+            }
+        }
+        false
+    }
+
+    /// A fragment of a UDP datagram, from the first fragment's decision (see `udp_fragments`).
+    /// `first` is `Some` for a first fragment, with its UDP ports if it carries a UDP header.
+    fn process_udp_fragment(
+        &self,
+        packet: ZCPacket,
+        fragment: udp_fragments::FragmentKey,
+        first: Option<Option<(u16, u16)>>,
+    ) -> Option<ZCPacket> {
+        use udp_fragments::FragmentRoute;
+
+        let now = std::time::Instant::now();
+        if let Some(ports) = first {
+            let Some((src_port, dst_port)) = ports else {
+                return Some(packet);
+            };
+            let entry = Socks5Entry {
+                dst: SocketAddr::new(fragment.src.into(), src_port),
+                src: SocketAddr::new(fragment.dst.into(), dst_port),
+                entry_type: UDP_ENTRY,
+            };
+            let route = if self.has_route(&entry) {
+                FragmentRoute::Stack
+            } else {
+                FragmentRoute::Kernel
+            };
+            let tails = self.udp_fragments.lock().unwrap().decide(fragment, route, now);
+            if route == FragmentRoute::Kernel {
+                return Some(packet);
+            }
+            for tail in tails {
+                let _ = self.packet_sender.try_send(tail);
+            }
+            let _ = self.packet_sender.try_send(packet);
+            return None;
+        }
+
+        let route = {
+            let mut fragments = self.udp_fragments.lock().unwrap();
+            let route = fragments.route(&fragment, now);
+            if route.is_none() && self.entries.iter().any(|e| Self::is_udp_route(e.key())) {
+                // Its first fragment may still come, and may belong to the stack. The kernel gets
+                // the tail now, as it always did; the stack gets a copy only once the first
+                // fragment says so.
+                fragments.buffer_tail(fragment, &packet, now);
+            }
+            route
+        };
+        match route {
+            Some(FragmentRoute::Stack) => {
+                let _ = self.packet_sender.try_send(packet);
+                None
+            }
+            Some(FragmentRoute::Kernel) | None => Some(packet),
+        }
+    }
+
+    fn is_udp_route(entry: &Socks5Entry) -> bool {
+        #[cfg(feature = "ffi-dataplane")]
+        {
+            if entry.entry_type == UDP_BIND_ENTRY {
+                return true;
+            }
+        }
+        entry.entry_type == UDP_ENTRY
+    }
 }
 
 #[async_trait::async_trait]
@@ -550,21 +648,21 @@ impl PeerPacketFilter for Socks5Server {
             }
 
             IpNextHeaderProtocols::Udp => {
-                if IpReassembler::is_packet_fragmented(&ipv4) && !self.entries.is_empty() {
-                    let ipv4_src: IpAddr = ipv4.get_source().into();
-                    // only send to smoltcp if the ipv4 src is in the entries
-                    let is_in_entries = self.entries.iter().any(|x| x.key().dst.ip() == ipv4_src);
-                    tracing::trace!(
-                        ?is_in_entries,
-                        "ipv4 src = {:?}, check need send both smoltcp and kernel tun",
-                        ipv4_src
-                    );
-                    if is_in_entries {
-                        // if the packet is fragmented, no matther what the payload is, need send it to both smoltcp and kernel tun. because
-                        // we cannot determine the udp port of the packet.
-                        let _ = self.packet_sender.try_send(packet.clone()).ok();
+                if IpReassembler::is_packet_fragmented(&ipv4) {
+                    if self.entries.is_empty() {
+                        return Some(packet);
                     }
-                    return Some(packet);
+                    let fragment = udp_fragments::FragmentKey {
+                        src: ipv4.get_source(),
+                        dst: ipv4.get_destination(),
+                        id: ipv4.get_identification(),
+                    };
+                    // Only the first fragment has the UDP header.
+                    let first = (ipv4.get_fragment_offset() == 0).then(|| {
+                        UdpPacket::new(ipv4.payload())
+                            .map(|udp| (udp.get_source(), udp.get_destination()))
+                    });
+                    return self.process_udp_fragment(packet, fragment, first);
                 }
 
                 let Some(udp_packet) = UdpPacket::new(ipv4.payload()) else {
@@ -584,7 +682,7 @@ impl PeerPacketFilter for Socks5Server {
             }
         };
 
-        if !self.entries.contains_key(&entry_key) {
+        if !self.has_route(&entry_key) {
             return Some(packet);
         }
 
@@ -617,6 +715,7 @@ impl Socks5Server {
 
             udp_client_map: Arc::new(DashMap::new()),
             udp_forward_task: Arc::new(DashMap::new()),
+            udp_fragments: Arc::new(std::sync::Mutex::new(Default::default())),
 
             #[cfg(feature = "kcp")]
             kcp_endpoint: Mutex::new(None),
@@ -640,6 +739,7 @@ impl Socks5Server {
         let entries = self.entries.clone();
         let entry_count = self.entry_count.clone();
         let udp_client_map = self.udp_client_map.clone();
+        let udp_fragments = self.udp_fragments.clone();
         let cancel_tokens = self.cancel_tokens.clone();
         let port_forward_list_change_notifier = self.port_forward_list_change_notifier.clone();
         let socks5_enabled = self.socks5_enabled.clone();
@@ -660,6 +760,7 @@ impl Socks5Server {
                     && !data_plane_active
                 {
                     let _ = net.lock().await.take();
+                    udp_fragments.lock().unwrap().clear();
                     #[cfg(feature = "ffi-dataplane")]
                     let _ = data_plane_net_ready.send_replace(false);
                     port_forward_list_change_notifier.notified().await;
@@ -677,6 +778,8 @@ impl Socks5Server {
                         false
                     });
                     udp_client_map.clear();
+                    // Decisions were made for the stack that is being replaced.
+                    udp_fragments.lock().unwrap().clear();
 
                     if let Some(cur_ipv4) = cur_ipv4 {
                         net.lock().await.replace(Socks5ServerNet::new(

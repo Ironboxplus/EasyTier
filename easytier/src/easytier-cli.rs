@@ -1435,8 +1435,24 @@ impl<'a> CommandHandler<'a> {
     }
 
     async fn handle_peer_list(&self) -> Result<(), Error> {
+        // One connection of a peer, for the JSON output only: the table shows the peer.
+        #[derive(Clone, serde::Serialize)]
+        struct PeerConnItem {
+            conn_id: String,
+            tunnel: String,
+            remote: String,
+            features: Vec<String>,
+            loss_rate: f64,
+            tx_packets: u64,
+            rx_packets: u64,
+            is_client: bool,
+            is_closed: bool,
+        }
+
         #[derive(tabled::Tabled, serde::Serialize)]
         struct PeerTableItem {
+            #[tabled(skip)]
+            conns: Vec<PeerConnItem>,
             #[tabled(rename = "ipv4")]
             cidr: String,
             #[tabled(skip)]
@@ -1468,7 +1484,33 @@ impl<'a> CommandHandler<'a> {
                 } else {
                     route.path_latency_latency_first() as f64
                 };
+                let conns = p
+                    .peer
+                    .iter()
+                    .flat_map(|peer| peer.conns.iter())
+                    .map(|conn| PeerConnItem {
+                        conn_id: conn.conn_id.clone(),
+                        tunnel: conn
+                            .tunnel
+                            .as_ref()
+                            .map(|t| t.display_tunnel_type())
+                            .unwrap_or_default(),
+                        remote: conn
+                            .tunnel
+                            .as_ref()
+                            .and_then(|t| t.remote_addr.as_ref())
+                            .map(|url| url.url.clone())
+                            .unwrap_or_default(),
+                        features: conn.features.clone(),
+                        loss_rate: conn.loss_rate as f64,
+                        tx_packets: conn.stats.as_ref().map(|s| s.tx_packets).unwrap_or(0),
+                        rx_packets: conn.stats.as_ref().map(|s| s.rx_packets).unwrap_or(0),
+                        is_client: conn.is_client,
+                        is_closed: conn.is_closed,
+                    })
+                    .collect();
                 PeerTableItem {
+                    conns,
                     cidr: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
                     ipv4: route
                         .ipv4_addr
@@ -1496,6 +1538,7 @@ impl<'a> CommandHandler<'a> {
         impl From<NodeInfo> for PeerTableItem {
             fn from(p: NodeInfo) -> Self {
                 PeerTableItem {
+                    conns: Vec::new(),
                     cidr: p.ipv4_addr.clone(),
                     ipv4: Ipv4Inet::from_str(&p.ipv4_addr)
                         .map(|ip| ip.address().to_string())
