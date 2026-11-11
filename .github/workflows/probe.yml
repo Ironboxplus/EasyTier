@@ -1,0 +1,77 @@
+name: nft probe
+on:
+  push:
+    branches: ["probe/**"]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: probe
+        run: |
+          sudo apt-get install -qqy nftables python3 >/dev/null || true
+          nft --version
+          cat > probe.py <<'PY'
+          import subprocess, socket, sys, time, threading, json
+          def sh(*c, ns=None, check=True):
+              a = list(c)
+              if ns: a = ["ip","netns","exec",ns]+a
+              r = subprocess.run(a, capture_output=True, text=True)
+              if check and r.returncode: raise RuntimeError(f"{' '.join(a)}: {r.stderr.strip()}")
+              return r.stdout
+          def setup():
+              for ns in ("pc","pr","ps"):
+                  subprocess.run(["ip","netns","del",ns],capture_output=True)
+                  sh("ip","netns","add",ns)
+              sh("ip","link","add","c0","netns","pc","type","veth","peer","name","r0","netns","pr")
+              sh("ip","link","add","r1","netns","pr","type","veth","peer","name","s0","netns","ps")
+              sh("ip","addr","add","10.0.0.2/24","dev","c0",ns="pc"); sh("ip","link","set","c0","up",ns="pc"); sh("ip","link","set","lo","up",ns="pc")
+              sh("ip","route","add","default","via","10.0.0.1",ns="pc")
+              sh("ip","addr","add","10.0.0.1/24","dev","r0",ns="pr"); sh("ip","link","set","r0","up",ns="pr")
+              sh("ip","addr","add","198.18.0.11/24","dev","r1",ns="pr"); sh("ip","link","set","r1","up",ns="pr")
+              sh("sysctl","-qw","net.ipv4.ip_forward=1",ns="pr")
+              sh("ip","addr","add","198.18.0.1/24","dev","s0",ns="ps"); sh("ip","addr","add","198.18.0.2/24","dev","s0",ns="ps"); sh("ip","link","set","s0","up",ns="ps")
+          def server_script():
+              return """
+          import socket,sys,json,time
+          ports=[]
+          s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+          s.bind(('0.0.0.0',9000)); s.settimeout(6)
+          seen=[]
+          try:
+              while True:
+                  d,a=s.recvfrom(100); seen.append((d.decode(),a[1]))
+          except Exception: pass
+          print(json.dumps(seen))
+          """
+          def client_script():
+              return """
+          import socket,time
+          s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+          s.bind(('0.0.0.0',5000))
+          for i,dst in enumerate(['198.18.0.1','198.18.0.2','198.18.0.1','198.18.0.2']):
+              for k in range(3):
+                  s.sendto(f'{dst}-{k}'.encode(),(dst,9000)); time.sleep(0.05)
+          """
+          def trial(name, rule):
+              setup()
+              sh("nft","flush","ruleset",ns="pr",check=False)
+              try:
+                  sh("nft","add","table","ip","symnat",ns="pr")
+                  sh("nft","add chain ip symnat post { type nat hook postrouting priority 100 ; }".replace("add chain","add chain"),ns="pr") if False else sh("nft","add","chain","ip","symnat","post","{ type nat hook postrouting priority 100 ; }",ns="pr")
+                  sh("nft","add","rule","ip","symnat","post",*rule.split(),ns="pr")
+              except Exception as e:
+                  print(f"=== {name}: nft rejected: {e}"); return
+              srv = subprocess.Popen(["ip","netns","exec","ps","python3","-c",server_script()],stdout=subprocess.PIPE,text=True)
+              time.sleep(1)
+              sh("python3","-c",client_script(),ns="pc")
+              out,_ = srv.communicate()
+              print(f"=== {name}: {out.strip()}")
+          trial("snat plain", 'oifname r1 snat to 198.18.0.11')
+          trial("snat numgen inc", 'oifname r1 snat to 198.18.0.11:numgen inc mod 1000 offset 30000')
+          trial("snat numgen inc spaced", 'oifname r1 snat to 198.18.0.11 : numgen inc mod 1000 offset 30000')
+          trial("snat fully-random", 'oifname r1 snat to 198.18.0.11:30000-60000 fully-random')
+          trial("snat random", 'oifname r1 snat to 198.18.0.11:30000-60000 random')
+          trial("snat range", 'oifname r1 snat to 198.18.0.11:30000-60000')
+          trial("snat persistent", 'oifname r1 snat to 198.18.0.11:30000-60000 persistent')
+          PY
+          sudo python3 probe.py
