@@ -315,7 +315,7 @@ const kindTier = (p: RunwayPath) => kindRuleValues(savedSelection.value, p.kind)
 
       <div class="relative px-2 pt-3 sm:px-3">
         <div v-for="(tier, ti) in tiers" ref="lane" :key="tier" :data-testid="`runway-lane-${tier}`"
-          :class="cn('relative grid', narrow ? 'grid-cols-[22px_1fr]' : 'grid-cols-[40px_1fr]', ti > 0 && 'mt-1.5')">
+          :class="cn('relative grid min-h-[6.5rem]', narrow ? 'grid-cols-[22px_1fr]' : 'grid-cols-[40px_1fr]', ti > 0 && 'mt-1.5')">
           <!-- lane name and the handle of the send count -->
           <div class="relative">
             <span :class="cn('absolute left-0 top-2 text-[11px] font-medium tracking-widest [writing-mode:vertical-rl]',
