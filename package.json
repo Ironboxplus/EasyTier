@@ -1,0 +1,11 @@
+{
+  "name": "easytier-monorepo",
+  "private": true,
+  "packageManager": "pnpm@9.12.1",
+  "pnpm": {
+    "overrides": {
+      "happy-dom": "16.8.1",
+      "minimatch": "10.2.4"
+    }
+  }
+}
