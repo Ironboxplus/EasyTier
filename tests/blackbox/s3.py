@@ -1424,16 +1424,23 @@ def s32_split_proxy(run, args):
     res = {}
     for proxy in ["enable_quic_proxy"]:
         for dp in [False, True]:
-            net, a, b = pair(run, "udp", mp_extra={"data_plane": {"enabled": dp}}, flags_extra={proxy: True})
+            flags = {proxy: True}
+            # S3_SPLIT_MTU pins the NIC MTU, to tell the automatic MTU's effect from noise.
+            if os.environ.get("S3_SPLIT_MTU"):
+                flags["mtu"] = int(os.environ["S3_SPLIT_MTU"])
+            net, a, b = pair(run, "udp", mp_extra={"data_plane": {"enabled": dp}}, flags_extra=flags)
             established(run, a, "udp")
             run.payload(f"{proxy}/dp={dp}", 8 << 20)
             net.netem("delay 10ms loss 10%")
             # One 20 s TCP run at 10% loss swings by +-30%: judge the median of three.
-            res[f"{proxy}/{dp}"] = statistics.median(run.client("s3a", "tcp", B_VIP, "s20")["bps"] for _ in range(3))
+            bps = [run.client("s3a", "tcp", B_VIP, "s20")["bps"] for _ in range(3)]
+            res[f"{proxy}/{dp}"] = statistics.median(bps)
+            print(f"s32_split_proxy {proxy}/dp={dp} runs {[round(x) for x in bps]} median {res[f'{proxy}/{dp}']:.0f}", flush=True)
             # Which class carried what, on both ends: where the loss-hit frames went.
             run.evidence[f"classes/{proxy}/{dp}"] = {n: ((c.mp_peer() or {}).get("data_plane") or {}).get("classes")
                                                      for n, c in (("a", a), ("b", b))}
             run.reset()
+        print(f"s32_split_proxy {proxy} ratio {res[f'{proxy}/True'] / res[f'{proxy}/False']:.4f}", flush=True)
         run.check(f"{proxy}: classified proxy goodput >= single stream", res[f"{proxy}/True"] >= res[f"{proxy}/False"] * 0.95, res=res)
     run.evidence["proxy"] = res
 
