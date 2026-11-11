@@ -388,10 +388,22 @@ def run() -> None:
         page.get_by_role("button", name="Save and restart").click()
         wait_for(lambda s: len(direct_addrs(s)) >= 2 and direct_addrs(s).isdisjoint(base_direct), secs=240,
                  what="the instance running again on new direct paths")
-        after = identity(stats())
+        st_after = stats()
+        after = identity(st_after)
         time.sleep(20)
-        # A direct path may still come up in those 20 s; a second restart would replace every path.
-        check("restart-only field: restarted exactly once", after <= identity(stats()))
+        st_later = stats()
+        later = identity(st_later)
+        # A direct path may still come up in those 20 s, and a relay path may retire once the direct
+        # ones carry the route; a second restart would give every direct path a new local port.
+        def validated_direct(st):
+            return {((pa.get("path") or {}).get("local_addr"), (pa.get("path") or {}).get("remote_addr"))
+                    for pa in s3.paths_of(st) if s3.kind_is(pa, "udp", "direct") and s3.is_validated(pa)}
+
+        direct_after, direct_later = validated_direct(st_after), validated_direct(st_later)
+        EVIDENCE["restart"] = {"after": sorted(map(str, after)), "later": sorted(map(str, later)),
+                               "direct_after": sorted(map(str, direct_after)), "direct_later": sorted(map(str, direct_later))}
+        check("restart-only field: restarted exactly once", direct_after <= direct_later,
+              lost=sorted(map(str, direct_after - direct_later)), lost_any_kind=sorted(map(str, after - later)))
         check("restart-only field: the process lives", start_ticks() == base_ticks)
 
         # ---- narrow screens: screenshots and no sideways scroll
@@ -417,7 +429,8 @@ def run() -> None:
         # ---- the same pages in Chinese, the language the owner reads
         cn = browser.new_context(viewport={"width": 1040, "height": 900}, locale="zh-CN")
         # The page takes its language from localStorage, not from the browser's.
-        cn.add_init_script("localStorage.setItem('lang', 'cn')")
+        # about:blank, which the run passes through, has no storage: the script must not fail there.
+        cn.add_init_script("try { localStorage.setItem('lang', 'cn') } catch (e) {}")
         cpage = cn.new_page()
         cpage.on("pageerror", lambda e: errors.append(str(e)))
         login(cpage)

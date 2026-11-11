@@ -250,7 +250,7 @@ const sqmRangeInvalid = computed(() =>
 </script>
 
 <template>
-  <div class="mp-config-panel flex flex-col gap-4" data-testid="mp-config-panel">
+  <div class="mp-config-panel flex flex-col gap-4 w-full min-w-0" data-testid="mp-config-panel">
     <!-- ================= basic ================= -->
     <div class="flex flex-row flex-wrap gap-4 items-center">
       <div class="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
