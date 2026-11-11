@@ -1570,8 +1570,11 @@ def s32_mwan3(run, args):
     net, a, b = pair(run, "udp", mp_extra={"punch_attempts": 4, "sqm": {"enabled": True, "target_ms": 5, "interval_ms": 100}})
     net.mwan3()
     run.wait_ping("s3a", B_VIP)
+    # Validated, not just observed: a path that has only been opened carries nothing yet, and the payload
+    # below would run before the second WAN's path can take part.
     st = run.wait_mp(a, lambda s: len({pa.get("observed_public_addr", "").rsplit(":", 1)[0] for pa in paths_of(s)
-                                       if pa.get("observed_public_addr")}) >= 2, what="2 observed WANs", secs=150)
+                                       if pa.get("observed_public_addr") and is_validated(pa)}) >= 2,
+                     what="2 validated paths on distinct WANs", secs=150)
     before = path_bytes(st)
     # A path that answers faster takes most of a payload; the claim is that each path is a sending path
     # that carries data, so keep sending (up to four payloads) until two of them have each moved 1 MiB.

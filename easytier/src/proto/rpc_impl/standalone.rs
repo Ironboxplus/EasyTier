@@ -211,7 +211,14 @@ mod tests {
 
     #[tokio::test]
     async fn standalone_exit_on_drop() {
-        let addr: url::Url = "tcp://0.0.0.0:53884".parse().unwrap();
+        // A free port asked of the system: a fixed one can fall in a range Windows reserves for
+        // itself (WSAEACCES, os error 10013, on the CI runners).
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr: url::Url = format!("tcp://127.0.0.1:{port}").parse().unwrap();
         let tunnel = TcpTunnelListener::new(addr.clone());
         let mut server = StandAloneServer::new(tunnel);
         server.serve().await.unwrap();
