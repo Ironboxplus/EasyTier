@@ -311,7 +311,8 @@ def run() -> None:
         open_config()
         open_panel(page, "Core switches", "input#multi_thread_count, #multi_thread_count input")
         threads = page.locator("#multi_thread_count input, input#multi_thread_count").first
-        threads.fill("2")
+        threads.fill("3")
+        threads.press("Tab")
         page.get_by_role("button", name="Run Network").click()
         page.locator(".p-confirmdialog").first.wait_for(state="visible", timeout=15000)
         check("restart-only field: asks once and names the field",
@@ -321,12 +322,15 @@ def run() -> None:
                  what="the instance running again on new direct paths")
         after = identity(stats())
         time.sleep(20)
-        check("restart-only field: restarted exactly once", identity(stats()) == after)
+        # A direct path may still come up in those 20 s; a second restart would replace every path.
+        check("restart-only field: restarted exactly once", after <= identity(stats()))
         check("restart-only field: the process lives", start_ticks() == base_ticks)
 
         # ---- narrow screens: screenshots and no sideways scroll
         for width in (360, 390, 1040):
             page.set_viewport_size({"width": width, "height": 900})
+            # The edit dialog of the step before is still open: a hash-only goto would keep it.
+            page.goto("about:blank")
             page.goto(device_url(INSTANCE))
             peer_row(page).wait_for(state="visible", timeout=60000)
             open_runway(page)
