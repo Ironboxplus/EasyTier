@@ -1,0 +1,963 @@
+network: Network
+networking_method: Networking Method
+public_server: Public Server
+manual: Manual
+standalone: Standalone
+initial_nodes: Initial Nodes
+initial_nodes_help: |
+  EasyTier does not distinguish between server and client roles.
+  • Filling in Initial Nodes = plugging in the cable and joining an existing network.
+  • Leaving it empty = the node starts alone until others connect to it, or you connect it later yourself.
+  • Direct or indirect connectivity, including through relay nodes, can form one network.
+  Initial nodes can be your own nodes or ones shared by others.
+initial_node_placeholder: "Example: node.example.com"
+virtual_ipv4: Virtual IPv4
+virtual_ipv4_dhcp: DHCP
+network_name: Network Name
+network_secret: Network Secret
+public_server_url: Public Server URL
+peer_urls: Peer URLs
+proxy_cidrs: Subnet Proxy CIDRs
+enable_vpn_portal: Enable VPN Portal
+vpn_portal_listen_port: VPN Portal Listen Port
+vpn_portal_client_network: Client Sub Network
+dev_name: TUN interface name
+advanced_settings: Advanced Settings
+basic_settings: Basic Settings
+listener_urls: Listener URLs
+rpc_port: RPC Port
+port: Port
+rpc_portal_whitelists: RPC Whitelist
+config_network: Config Network
+running: Running
+error_msg: Error Message
+detail: Detail
+add_new_network: New Network
+add_peer_url: Add Peer
+add_initial_node: Add Initial Node
+add_listener_url: Add Listener
+add_mapped_listener: Add Mapped Listener
+del_cur_network: Delete Current Network
+select_network: Select Network
+network_instances: Network Instances
+instance_id: Instance ID
+network_infos: Network Infos
+parse_network_config: Parse Network Config
+retain_network_instance: Retain Network Instance
+collect_network_infos: Collect Network Infos
+settings: Settings
+exchange_language: 切换中文
+logging: Logging
+logging_level_info: Info
+logging_level_debug: Debug
+logging_level_warn: Warn
+logging_level_trace: Trace
+logging_level_off: Off
+logging_open_dir: Open Log Directory
+logging_copy_dir: Copy Log Path
+disable_auto_launch: Disable Launch on Reboot
+enable_auto_launch: Enable Launch on Reboot
+hide_dock_icon: Hide Dock Icon
+show_dock_icon: Show Dock Icon
+exit: Exit
+use_latency_first: Latency First Mode
+show_node_details: Show Node Details
+hide_node_details: Hide Node Details
+chips_placeholder: 'e.g: {0}, select from the dropdown after input'
+hostname_placeholder: 'Leave blank and default to host name: {0}'
+dev_name_placeholder: 'Note: When multiple networks use the same TUN interface name at the same time, there will be a conflict when setting the TUN''s IP. Leave blank to automatically generate a random name.'
+off_text: Press to disable
+on_text: Press to enable
+show_config: Show Config
+edit_config: Edit Config File
+config_file: Config File
+close: Close
+save: Save
+config_saved: Configuration saved
+my_node_info: My Node Info
+peer_count: Connected
+upload: Upload
+download: Download
+show_vpn_portal_config: Show VPN Portal Config
+vpn_portal_config: VPN Portal Config
+show_event_log: Show Event Log
+event_log: Event Log
+peer_info: Peer Info
+route_cost: Route Cost
+tunnel_proto: Protocol
+hostname: Hostname
+latency: Latency
+upload_bytes: Upload
+download_bytes: Download
+loss_rate: Loss Rate
+nat_type: NAT Type
+
+flags_switch: Feature Switch
+
+latency_first: Enable Latency-First Mode
+latency_first_help: Ignore hop count and select the path with the lowest total latency
+
+use_smoltcp: Use User-Space Protocol Stack
+use_smoltcp_help: Use a user-space TCP/IP stack to avoid issues with operating system firewalls blocking subnet or KCP proxy functionality.
+
+disable_ipv6: Disable IPv6
+disable_ipv6_help: Disable IPv6 functionality for this node, only use IPv4 for network communication.
+
+ipv6_public_addr_auto: Auto Public IPv6
+ipv6_public_addr_auto_help: Auto-obtain a public IPv6 address from a peer that shares its IPv6 subnet.
+
+enable_kcp_proxy: Enable KCP Proxy
+enable_kcp_proxy_help: Convert TCP traffic to KCP traffic to reduce latency and boost transmission speed.
+
+disable_kcp_input: Disable KCP Input
+disable_kcp_input_help: Disable inbound KCP traffic, while nodes with KCP proxy enabled continue to connect using TCP.
+
+enable_quic_proxy: Enable QUIC Proxy
+enable_quic_proxy_help: Convert TCP traffic to QUIC traffic to reduce latency and boost transmission speed.
+
+disable_quic_input: Disable QUIC Input
+disable_quic_input_help: Disable inbound QUIC traffic, while nodes with QUIC proxy enabled continue to connect using TCP.
+
+disable_p2p: Disable P2P
+disable_p2p_help: Disable ordinary automatic P2P. Nodes with need-p2p enabled can still establish P2P with this node.
+
+p2p_only: P2P Only
+p2p_only_help: Only communicate with peers that have already established P2P connections, do not relay through other nodes.
+
+lazy_p2p: Lazy P2P
+lazy_p2p_help: Only try to establish P2P when traffic actually targets a peer. Peers with need-p2p enabled are still connected proactively.
+
+bind_device: Bind to Physical Device Only
+bind_device_help: Use only the physical network interface to prevent EasyTier from connecting via virtual networks.
+
+no_tun: No TUN Mode
+no_tun_help: Do not use a TUN interface, suitable for environments without administrator privileges. This node is only accessible; accessing other nodes requires SOCKS5.
+
+enable_exit_node: Enable Exit Node
+enable_exit_node_help: Allow this node to be an exit node
+
+relay_all_peer_rpc: Relay RPC Packets
+relay_all_peer_rpc_help: |
+  Relay all peer rpc packets, even if the peer is not in the relay network whitelist.
+  This can help peers not in relay network whitelist to establish p2p connection.
+
+need_p2p: Need P2P
+need_p2p_help: Ask other peers to proactively establish P2P connections to this node even when they enable lazy P2P.
+
+multi_thread: Multi Thread
+multi_thread_help: Use multi-thread runtime
+
+proxy_forward_by_system: System Forward
+proxy_forward_by_system_help: Forward packet to proxy networks via system kernel, disable internal nat for network proxy
+
+disable_encryption: Disable Encryption
+disable_encryption_help: Disable encryption for peers communication. Encryption is enabled by default, this option must be same with peers.
+
+disable_tcp_hole_punching: Disable TCP Hole Punching
+disable_tcp_hole_punching_help: Disable tcp hole punching
+
+mp_settings: Multipath (MP / SQM)
+mp_enabled: Enable multipath
+mp_disable_overlay_weighted_routing: Disable overlay weighted routing when endpoint MP is active
+tcp_hole_punch_mode: TCP hole-punch mode
+mp_control_interval_ms: Control interval (ms)
+mp_establishment_timeout_ms: Session establishment timeout (ms)
+mp_providers: Path providers
+mp_egress_devices: SQM egress devices
+mp_punch_attempts: Hole punches per peer
+mp_punch_attempts_help: With several uplinks behind the router (e.g. mwan3) each punch may leave through a different one. More punches spread one peer's paths over several uplinks; punching stops once no new public address shows up. 1 is the previous behavior.
+mp_egress_devices_placeholder: e.g. eth0,Ethernet
+mp_manual_paths: Manual path URLs (one per line)
+mp_manual_paths_placeholder: mp+udp://...
+mp_resource_groups: Resource groups (shared bottlenecks)
+mp_resource_groups_help: Paths leaving the listed NICs toward the listed remotes share one capacity; the optimizer never plans more than it.
+mp_group_col:
+  name: Name
+  devices: NICs (comma separated)
+  capacity: Capacity
+  remotes: Remote endpoints
+mp_group_name_placeholder: New group name
+mp_group_add: Add group
+mp_config_help: Saved with the network config. While the network runs, "hot" fields apply immediately without a restart, "new paths" fields apply to paths created afterwards, and "reconnect" fields need the reconnect button on the status page.
+mp_runtime_title: Multipath / SQM live status
+mp_runtime_empty: No multipath peers/paths reported yet.
+mp_sqm_enabled: Enable SQM
+mp_sqm_enabled_help: Datagrams skip the QUIC congestion window; the egress send queue (CAKE) and congestion protection keep them in check. The send queue always shapes to the autorate estimate.
+mp_egress_wire_limit: MPQUIC send limit
+mp_egress_wire_limit_help: Caps total MPQUIC wire bytes sent per egress NIC, including QUIC/UDP/FakeTCP overhead. Empty means unlimited. Per-NIC limits in the advanced section override it.
+mp_unlimited: Unlimited
+mp_auto: Auto
+mp_packet_scheduler: Packet scheduler
+mp_congestion_control: Congestion control
+mp_cc_required: 'Required parameter missing: {0}'
+mp_show_advanced: Show advanced settings
+mp_hide_advanced: Hide advanced settings
+mp_active_paths_section: "Paths carrying data"
+mp_kmax: "Paths carrying data at once"
+mp_kmax_help: "This many paths, the ones with the lowest round-trip time, carry data; the other validated paths stand by and take over at once when a sending path fails."
+mp_paths_section: Path sources
+mp_policies_section: Path policies
+mp_policies_help: "Match paths by egress NIC, carrier kind and remote endpoint (empty = any). Pin sends data on this path only, exclude never uses it, pause stops data but keeps it validated, prefer counts its round-trip time as shorter by the weight (weight 2 = twice as fast) when choosing paths."
+mp_policy_col:
+  egress: Egress NIC
+  carrier: Carrier
+  remote: Remote endpoint
+  action: Action
+  weight: Weight
+  enabled: Enabled
+  note: Note
+mp_policy_wildcard: Matches every path
+mp_policy_add: Add policy
+mp_limits_section: Per-NIC send limits
+mp_limits_help: Overrides the global MPQUIC send limit for one egress NIC.
+mp_limit_device_placeholder: NIC name, e.g. eth0
+mp_limit_add: Add limit
+mp_punch_rate_section: Hole-punch send rate
+mp_punch_rate_help: Caps how many hole-punch packets each NIC sends per second; packets over the cap are dropped. 0 means no cap. Lower it on a poor link or when punching saturates it; too low a value makes punching fail more often. Applies only with MP on.
+mp_punch_pps: Default cap per NIC
+mp_pps_unit: pkt/s
+mp_punch_rate_add: Set for this NIC
+mp_sqm_section: SQM details
+mp_sqm_target_ms: Send queue target delay (ms)
+mp_sqm_interval_ms: Send queue interval (ms)
+mp_sqm_autorate_min: Autorate minimum
+mp_sqm_autorate_max: Autorate maximum
+mp_sqm_range_invalid: Autorate minimum must not exceed the maximum.
+mp_effect:
+  hot: hot
+  new_path: new paths
+  reconnect: reconnect
+  restart: instance restart
+mp_hot_applied: Applied to the running network without restarting it.
+mp_patch_failed: Failed to apply to the running network
+mp_policy:
+  pin: pinned
+  exclude: excluded
+  pause: paused
+  prefer: preferred
+  pin_help: Pin - always keep this path active
+  prefer_help: Prefer - double the score of this path
+  pause_help: Pause - stop data on this path, keep it validated
+  exclude_help: Exclude - never use this path
+  clear_help: Remove the policy for this path
+mp_live:
+  title: Multipath settings
+  hint: Edited here, applied to the running network at once; each field says when it takes effect.
+  applied: Multipath settings applied
+  egress_limit: Send rate limit of the network cards
+  sqm_enabled: Smart queue management
+  sqm_target: Queue delay target
+  data_plane: Datagram data plane
+  hole_mode: TCP hole punch mode
+  punch_attempts: Hole punch attempts
+  punch_pps: Hole punch packets per second (0 = unlimited)
+  apply: Apply
+  discard: Discard
+mp_restart:
+  title: Restart needed
+  message: "Changes to {0} only take effect when the network restarts. Save and restart now?"
+  accept: Save and restart
+  reject: Cancel
+security_settings:
+  title: Encryption and security
+  secure_mode: Secure mode
+  ipv6_provider: Offer a public IPv6 prefix to peers
+  disable_relay_data: Do not relay data for other nodes
+  encryption_algorithm: Encryption algorithm
+  compression: Compression algorithm
+  default: Default
+  credential_file: Credential file
+  ipv6_prefix: Public IPv6 prefix
+  socket_mark: Socket mark
+core_switches:
+  title: Core switches
+  default_protocol: Default protocol
+  default_protocol_auto: Automatic
+  multi_thread_count: Thread count
+  multi_thread_count_placeholder: Automatic
+  disable_relay_kcp: Do not relay KCP through this node
+  disable_relay_quic: Do not relay QUIC through this node
+  relay_foreign_kcp: Relay KCP for other networks
+  relay_foreign_quic: Relay QUIC for other networks
+  foreign_relay_limit: Limit for relaying other networks
+  unlimited: Unlimited
+  tld_dns_zone: Magic DNS zone
+  ipv6: Static IPv6 address
+  netns: Network namespace
+  tcp_whitelist: TCP port whitelist
+  udp_whitelist: UDP port whitelist
+  stun_servers: STUN servers
+  tcp_stun_servers: TCP STUN servers
+  stun_servers_v6: IPv6 STUN servers
+mp_runway:
+  details: Path details
+  undo: Undo
+  rtt: Round-trip time
+  loss: Packet loss
+  bias: Added to the round-trip time before ranking
+  all_of_kind: "All {0}"
+  drop_here: Drop a path here
+  kind_v6: "{0} (IPv6)"
+  lane:
+    primary: Primary
+    backup: Backup
+  state:
+    sending: Sending
+    held: Held back
+    standby: Standby
+    lossy: Too much loss
+    silent: Peer not answering
+    paused: Paused
+    excluded: Excluded
+  policy:
+    pin: Only this
+    pause: Pause
+    exclude: Exclude
+  tip:
+    kmax: Number of paths sending at once; drag up or down
+    switch: "A path replaces a sending one only if it is faster by at least {0} ms and {1} %"
+    unmeasured: "Paths without a measurement are ranked as {0} ms"
+  edit:
+    kind: "All {0}: {1}, bias {2} ms"
+    kmax: "Sending on {0} paths at once"
+    switch: "Switch only if faster by {0} ms and {1} %"
+    unmeasured: "Paths without a measurement rank as {0} ms"
+    lossy: "Paths losing more than {0} % stay out"
+mp_rt:
+  cc_name:
+    engine_default: Default (BBR)
+    bbr: BBR v1
+    bbr3: BBR v3
+    cubic: CUBIC
+    copa: COPA
+    brutal: Brutal (Hysteria)
+  recovery_kind:
+    tquic_rfc9002: RFC 9002 loss detection and retransmission
+  mp_on: 'on'
+  mp_off: 'off'
+  mp_unknown: unknown
+  sqm_on: 'on'
+  sqm_off: 'off'
+  sqm_unknown: unknown
+  unknown: unknown
+  stat:
+    mp: Multipath (MP)
+    peers: Peers
+    paths: Paths in use / all
+    paths_help: Paths currently carrying data, and all established paths.
+    send: Send rate
+    recv: Receive rate
+    cc: Congestion control
+    sqm: SQM
+    sqm_help: The egress send queue (CAKE) shapes to the autorate estimate, serves each flow in turn and drops packets that wait too long, so bulk traffic does not inflate latency.
+  global_limit: Send limit
+  global_limit_help: The total send limit from the config; "unlimited" means none is set and only the autorate estimate and congestion control limit the rate.
+  unlimited: unlimited
+  peer_not_active: This peer has no MP session.
+  reconnect_required: 'Some settings take effect only after the MP sessions are re-established (peers: {0}).'
+  apply_reconnect: Reconnect now
+  cc:
+    title: Congestion control
+    hint: Decides how fast each path sends. Changing it re-establishes every MP session (about 1–3 s interruption) and applies to all peers.
+    running: Running
+    algorithm: Algorithm
+    apply: Apply and reconnect
+    discard: Discard changes
+    apply_note: Changes the running instance only; to keep it, make the same change in the network config.
+    pending_help: The config already uses this algorithm; it takes effect when the session reconnects.
+    switch_to: Switch to
+    apply_help: Changes the running config and re-establishes every MP session (about 1–3 s interruption), for all peers; to keep it, make the same change in the network config.
+    standalone_note: A standalone mpquic:// connection uses the algorithm given in its URL and cannot be switched here.
+  session_mp: MP session with peer {0}
+  session_standalone: Standalone mpquic:// connection with peer {0}
+  pipe:
+    classify: Traffic classification
+    cc: Congestion control
+    paths: Paths (in use / all)
+    egress: Egress NIC
+    egress_note: Send limits, autorate and SQM are in "Egress NICs and SQM" above
+  packets: '{0} packets'
+  paths_title: Paths
+  paths_hint: All paths to this peer. The green bar marks paths carrying data; the tag at the top right is the scheduler's latest path selection.
+  standalone: standalone mpquic:// connection
+  recovery: Loss recovery
+  brutal_local_tx: Brutal starting rate
+  brutal_peer_rx: Receive limit announced by the peer
+  brutal_allocated: "Given to paths in use by Autorate"
+  brutal_allocated_help: "The Autorate bandwidth of a NIC is split evenly among the paths on it that carry data (summed). It goes down on its own when the link queues."
+  brutal_actual: Effective target bandwidth
+  brutal_target_note: "These are bandwidth targets, not current traffic. Current QUIC send/receive rates are shown at the top of the session."
+  brutal_actual_help: The rate Brutal sends at whenever there is data. Each path carrying data takes the rate it was given, under the peer's receive limit (the starting rate until it is given one), and these are summed. A target, not measured throughput; with loss, up to 25% more goes out to make up for it.
+  faketcp_upgrade_failures: FakeTCP upgrade failed {0} times
+  faketcp_plain_tcp_fallback: using plain TCP for now
+  carrier:
+    udp_direct: UDP direct
+    udp_punch: UDP hole punch
+    fake_tcp_punch: FakeTCP hole punch
+    relay_next_hop: Via relay
+    manual: Manual
+  state:
+    available: "In use"
+    standby: "Standby"
+    validating: Validating
+    dead: Dead
+    failed: Validation failed
+    unknown: Not validated
+    validating_m_t_u: Address validated, MTU being validated
+    validated: Validated
+  col:
+    carrier: Transport
+    egress: Egress NIC
+    route: Route
+    route_help: A relayed path shows its first relay node; hover for both addresses.
+    state: State
+    rtt: RTT / minimum
+    rtt_help: Smoothed round-trip time and the minimum observed.
+    loss: Loss
+    rates: QUIC send / receive rate
+    cwnd: Congestion window / unacknowledged
+    cwnd_help: The congestion window is the most data allowed in flight; unacknowledged is data sent but not yet acknowledged.
+    pacing: Pacing rate
+    pacing_help: The even send rate the congestion controller asks for.
+    target: Scheduler-assigned rate
+    target_help: The rate the multipath scheduler assigned to this path; 0 means it carries no data for now.
+    btlbw: Bottleneck bandwidth estimate
+    btlbw_help: BBR's bottleneck bandwidth (BtlBw) of this path. An idle link only shows its actual traffic, so the value reads low.
+    ack_rate: Brutal ACK rate
+    ack_rate_help: Share of sent packets the peer acknowledged; Brutal resends the lost share based on it.
+    policy: User policy
+    actions: Actions
+  active: in use
+  paused: paused
+  egress_title: Egress NICs and send queues
+  egress_hint: Every MP path leaves through one of these NICs. Each NIC (or uplink) has its own send limit, autorate estimate and queue delay, and one send queue (Linux CAKE) that every session leaving through it shares.
+  egress_empty: No MP path goes through any NIC yet.
+  route_tip: Local {0} → remote {1}
+  via_node: via {0}
+  lowest_rtt: Lowest RTT {0}
+  lowest_rtt_help: The smallest round trip time measured in the last 300 seconds, without queueing; paths are ranked by it.
+  first_hop_loss: First hop loss {0}
+  backed_off: Repeated timeouts, no data for now
+  not_selected:
+    not-established: Not established yet
+    policy: Excluded or paused by a user setting
+    lossy-path: This path loses a lot; a better path is used
+    lossy-first-hop: The first hop loses pings or does not answer; a better path is used
+    unacked: Data sent on this path gets no acknowledgement; a better path is used
+  send_rate: Send rate
+  autorate_estimate: Autorate bandwidth estimate
+  autorate_estimate_help: 'Estimated usable uplink bandwidth of this NIC, adjusted by the cake-autorate rules: when 3 of the last 6 delay samples are more than 30 ms above the baseline (plus one packet''s transmission time at low rates), a queue is building and the estimate is cut whatever the load, by more the longer the queue; after a cut, 3 new delayed samples are needed before the next one. A load above 75% of the estimate without a queue raises it. Otherwise it slowly returns to its start value (the Brutal rate, or 50 Mbps). Brutal sends at it.'
+  autorate_unmeasured: Not measured yet
+  autorate_unmeasured_help: 'This NIC has not shown a queue yet and its sending has not exceeded 75% of the estimate, so the estimate is still its start value {0}, not a measurement.'
+  ceiling: Current send limit
+  ceiling_help: 'The send limit in effect: the autorate estimate, never above a configured limit. Unlimited only before the first estimate when no limit is configured.'
+  queue_delay: Queue delay
+  queue_delay_help: How long packets wait in the local send queue.
+  ceiling_source:
+    none: no limit
+    static: global limit
+    per_device: per-NIC limit
+    autorate: limited to autorate
+  fallback_scope: NIC not identified
+  fallback_scope_help: The NIC of these paths could not be identified; they share one send budget.
+  paths: Paths
+  cake_title: Send queue (Linux CAKE)
+  cake_hint: One queue per NIC (or per uplink), shared by every session leaving through it. It shapes to the autorate estimate, serves flows in turn so a bulk transfer does not delay a small one, and drops packets of a flow that waits longer than the target so its sender slows down.
+  cake_rate: Shaped to
+  cake_rate_help: 'The rate the queue lets packets out at: the autorate estimate, never above a configured limit.'
+  cake_backlog: Queued
+  cake_backlog_help: Bytes and packets waiting in the queue right now.
+  cake_packets: '{0} packets'
+  cake_memory: Packet memory
+  cake_memory_help: Memory the queued packets use / the limit. Beyond the limit the packet at the head of the longest flow is dropped, so small flows are not hit.
+  cake_target: Target / interval
+  cake_target_help: A flow whose packets wait longer than the target for a whole interval gets packets dropped (CoDel and BLUE, as in Linux CAKE).
+  cake_drops_aqm: Dropped to keep delay low
+  cake_drops_aqm_help: Packets the queue dropped on purpose because they waited too long.
+  cake_drops_overlimit: Dropped, memory full
+  cake_drops_overlimit_help: Packets dropped because the packet memory was full.
+  cake_stream_drops_aqm: Stream frames dropped to keep delay low
+  cake_stream_drops_aqm_help: 'TCP and proxy traffic travels on reliable QUIC streams. Their waiting queue is controlled the same way: a frame that waited too long is dropped and the inner TCP slows down.'
+  cake_stream_drops_overlimit: Stream frames dropped, queue full
+  cake_stream_drops_overlimit_help: Frames dropped because one stream's waiting queue was over its size limit.
+  cake_delay_peak: Longest wait
+  cake_delay_help: 'How long packets waited in the queue: recent peak, average and the lowest (base) value.'
+  cake_delay_avg: Average wait
+  cake_delay_base: Base wait
+  cake_flows: Flows
+  cake_flows_help: 'Flows in the queue: sparse (short, served first) / bulk (long transfers) / unresponsive (do not slow down after drops).'
+  sqm_off_note: 'SQM is off: the send queue below still shapes the NIC to its autorate estimate. Turning SQM on also makes datagrams skip the QUIC congestion window by default.'
+  decision: Path selection
+  decision_hint: "Every 0.5 s the scheduler picks up to kmax paths with the lowest round-trip time to carry data; the other validated paths stand by."
+  decision_details: "Show send rate per NIC and path"
+  selection: "{0} paths carry data, {1} on standby"
+  sankey:
+    help: "Left: egress NICs (QUIC send rate / Autorate allocation). Right: paths and their status. Links follow QUIC counters, including control packets such as keepalives. Extra traffic from the underlying TCP stack and other applications is excluded; this is not total NIC traffic."
+    no_nic: "Unknown NIC"
+    idle: "No outgoing traffic to display"
+
+disable_udp_hole_punching: Disable UDP Hole Punching
+disable_udp_hole_punching_help: Disable udp hole punching
+
+enable_udp_broadcast_relay: UDP Broadcast Relay
+enable_udp_broadcast_relay_help: "Windows only: capture local UDP broadcast packets from physical interfaces and forward them to EasyTier peers. Helps games to find rooms in local network. Requires administrator privileges."
+
+disable_upnp: Disable UPnP
+disable_upnp_help: Disable runtime UPnP/NAT-PMP port mapping for eligible listeners; automatic port mapping is enabled by default.
+
+disable_sym_hole_punching: Disable Symmetric NAT Hole Punching
+disable_sym_hole_punching_help: Disable special hole punching handling for symmetric NAT (based on birthday attack), treat symmetric NAT as cone NAT
+
+enable_magic_dns: Enable Magic DNS
+enable_magic_dns_help: |
+  Enable magic dns, all nodes in the network can access each other by domain name, e.g.: node1.et.net.
+
+enable_private_mode: Enable Private Mode
+enable_private_mode_help: |
+  Enable private mode, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node.
+
+relay_network_whitelist: Network Whitelist
+relay_network_whitelist_help: |
+  Only forward traffic from the whitelist networks, supporting wildcard strings, multiple network names can be separated by spaces.
+  If this parameter is empty, forwarding is disabled. By default, all networks are allowed.
+  e.g.: '*' (all networks), 'def*' (networks with the prefix 'def'), 'net1 net2' (only allow net1 and net2)
+
+manual_routes: Manual Route
+manual_routes_help: |
+  Assign routes cidr manually, will disable subnet proxy and wireguard routes propagated from peers. e.g.:192.168.0.0/16
+
+socks5: Socks5 Server
+socks5_help: |
+  Enable socks5 server, allow socks5 client to access virtual network. format: <port>, e.g.: 1080
+
+exit_nodes: Exit Nodes
+exit_nodes_help: Exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list
+
+port_forwards: Port Forward
+port_forwards_help: "forward local port to remote port in virtual network. e.g.: udp://0.0.0.0:12345/10.126.126.1:23456, means forward local udp port 12345 to 10.126.126.1:23456 in the virtual network. can specify multiple."
+port_forwards_bind_addr: "Bind address, e.g.: 0.0.0.0"
+port_forwards_dst_addr: "Destination address, e.g.: 10.126.126.1"
+port_forwards_add_btn: "Add"
+edit_port_forward: "Edit Port Forward"
+
+mtu: MTU
+mtu_help: |
+  MTU of the TUN device, default is 1380 for non-encryption, 1360 for encryption. Range:400-1380
+mtu_placeholder: Leave blank as default value 1380
+
+instance_recv_bps_limit: Instance Receive Limit
+instance_recv_bps_limit_help: |
+  Limit the total receive bandwidth for the whole instance. Unit: bytes per second.
+  Leave blank for no limit.
+instance_recv_bps_limit_placeholder: Leave blank for no limit
+
+mapped_listeners: Map Listeners
+mapped_listeners_help: |
+  Manually specify the public address of the listener, other nodes can use this address to connect to this node.
+  e.g.: tcp://123.123.123.123:11223, can specify multiple.
+
+status:
+  version: Version
+  local: Local
+  server: Server
+  relay: Relay
+  conn_data: carries data
+  conn_standby: standby
+
+run_network: Run Network
+stop_network: Stop Network
+network_running: running
+network_stopped: stopped
+dhcp_experimental_warning: Experimental warning! if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.
+
+tray:
+  show: Show / Hide
+  exit: Exit
+
+about:
+  title: About
+  version: Version
+  author: Author
+  homepage: Homepage
+  license: License
+  description: 'EasyTier is a simple, safe and decentralized VPN networking solution implemented with the Rust language and Tokio framework.'
+  check_update: Check Update
+
+event:
+  Unknown: Unknown
+  TunDeviceReady: TunDeviceReady
+  TunDeviceError: TunDeviceError
+  PeerAdded: PeerAdded
+  PeerRemoved: PeerRemoved
+  PeerConnAdded: PeerConnAdded
+  PeerConnRemoved: PeerConnRemoved
+  ListenerAdded: ListenerAdded
+  ListenerAddFailed: ListenerAddFailed
+  ListenerAcceptFailed: ListenerAcceptFailed
+  ConnectionAccepted: ConnectionAccepted
+  ConnectionError: ConnectionError
+  Connecting: Connecting
+  ConnectError: ConnectError
+  VpnPortalStarted: VpnPortalStarted
+  VpnPortalClientConnected: VpnPortalClientConnected
+  VpnPortalClientDisconnected: VpnPortalClientDisconnected
+  DhcpIpv4Changed: DhcpIpv4Changed
+  DhcpIpv4Conflicted: DhcpIpv4Conflicted
+  PortForwardAdded: PortForwardAdded
+  ProxyCidrsUpdated: ProxyCidrsUpdated
+  UdpBroadcastRelayStartResult: UDP Broadcast Relay Start Result
+
+web:
+  login:
+    title: Login
+    username: Username
+    password: Password
+    submit: Login
+    register: Register
+    remember_me: Remember Me
+    api_host: API Host
+    captcha: Captcha
+    back_to_login: Back to Login
+    login: Login
+    sso_login: "SSO Login"
+
+  register:
+    title: Register
+    username: Username
+    password: Password
+    confirm_password: Confirm Password
+    submit: Register
+    login: Back to Login
+  
+  main:
+    dashboard: Dashboard
+    device_list: Device List
+    device_management: Device Management
+    login_page: Login Page
+    settings: Settings
+    logout: Logout
+    language: Language
+    change_password: Change Password
+
+  device:
+    list: Device List
+    management: Device Management
+    add: Add Device
+    delete: Delete Device
+    refresh: Refresh
+    status: Status
+    online: Online
+    offline: Offline
+    last_seen: Last Seen
+    no_devices: No Devices Found
+    sort_by: Sort By
+    sort_direction: Sort Direction
+    show_detailed_view: Show Details
+    hide_detailed_view: Hide Details
+    sort_by_hostname: Hostname
+    sort_by_public_ip: Public IP
+    sort_by_version: Version
+    sort_by_networks: Network Count
+    sort_direction_asc: Currently ascending, click to switch to descending
+    sort_direction_desc: Currently descending, click to switch to ascending
+    hostname: Hostname
+    public_ip: Public IP
+    networks: Network Count
+    last_report: Last Seen
+    version: Version
+    machine_id: Machine ID
+    unknown_location: Unknown Location
+    
+  device_management:
+    edit_network: Edit Network
+    export_config: Export Config
+    delete_network: Delete Network
+    network: Network
+    select_network: Select Network
+    create_network: Create Network
+    cancel_edit: Cancel Edit
+    more_actions: More Actions
+    edit_as_file: Edit as File
+    save_config: Save Config
+    config_saved: Config Saved
+    import_config: Import Config
+    create_new: Create New Network
+    network_status: Network Status
+    network_configuration: Network Configuration
+    loading_network_configuration: Loading Network Configuration
+    no_network_selected: No Network Selected
+    select_existing_network_or_create_new: Select an existing network instance or create a new one to manage network settings
+    disable_network: Disable Network
+
+  network:
+    title: Network
+    create: Create Network
+    delete: Delete Network
+    start: Start Network
+    stop: Stop Network
+    config: Network Config
+    status: Network Status
+    import: Import Config
+    export: Export Config
+
+  common:
+    confirm: Confirm
+    cancel: Cancel
+    save: Save
+    delete: Delete
+    edit: Edit
+    refresh: Refresh
+    add: Add
+    loading: Loading...
+    error: Error
+    success: Success
+    warning: Warning
+    info: Info
+    enable: Enable
+    disable: Disable
+    address: Address
+
+  settings:
+    title: Settings
+    change_password: Change Password
+    old_password: Old Password
+    new_password: New Password
+    confirm_password: Confirm New Password
+    language: Language
+    theme: Theme
+    logout: Logout
+
+mode:
+  title: Mode
+  switch_mode: Switch Mode
+  config_dir: Config Dir
+  rpc_portal: RPC Portal
+  enable_rpc_tcp_listen: Enable RPC port listening (TCP)
+  rpc_listen_port: RPC Listen Port
+  log_level: Log Level
+  log_dir: Log Dir
+  remote_rpc_address: Remote RPC Address
+  normal: Normal
+  service: Service
+  remote: Remote
+  normal_description: Run EasyTier directly, suitable for local use.
+  service_description: Run as a system service, supporting auto-startup and background operation. The service continues to run in the background after exiting the GUI.
+  remote_description: Connect to a remote RPC service to manage and control remote nodes.
+  service_status: Service Status
+  service_status_running: Running
+  service_status_stopped: Stopped
+  service_status_notinstalled: Not Installed
+  uninstall_service: Uninstall Service
+  stop_service: Stop Service
+  uninstall_service_confirm: Are you sure you want to uninstall the service?
+  uninstall_service_success: Service uninstalled successfully, switched back to normal mode
+  stop_service_success: Service stopped successfully
+  remote_rpc_address_empty: Remote RPC Address cannot be empty
+  service_config_empty: Service Config cannot be empty
+  rpc_connection_failed: "RPC connection failed: {error}"
+
+config-server:
+  title: Config Server
+  address: Config Server Address
+  address_placeholder: "e.g.: udp://127.0.0.1:22020/admin or admin"
+  description: |
+    Config server address, allowed formats:
+    Full URL: udp://127.0.0.1:22020/admin
+    Username only: admin (uses official server)
+    Leave blank: Don't connect to a config server
+  connection_status: Connection Status
+  connected: ": Connected"
+  disconnected: ": Disconnected"
+  connecting: ": Connecting..."
+  unknown: ""
+  update_service_confirm: The service will be restarted to apply changes, do you want to continue?
+
+client:
+  not_running: Unable to connect to remote client.
+  retry: Retry
+
+acl:
+  title: Access Control (ACL)
+  help: Access control list to restrict communication between nodes.
+  enabled: Enable ACL
+  default_action: Default Action
+  chains: Rule Chains
+  inbound: Inbound
+  outbound: Outbound
+  forward: Forward
+  rules: Rules
+  add_rule: Add Rule
+  edit_rule: Edit Rule
+  rule:
+    name: Rule Name
+    description: Description
+    enabled: Enabled
+    protocol: Protocol
+    action: Action
+    src_ips: Source IPs
+    dst_ips: Destination IPs
+    src_ports: Source Ports
+    dst_ports: Destination Ports
+    rate_limit: Rate Limit (pps)
+    burst_limit: Burst Limit
+    stateful: Stateful
+    src_groups: Source Groups
+    dst_groups: Destination Groups
+  groups: Groups
+  group:
+    declares: Declared Groups
+    members: Node Memberships
+    name: Group Name
+    secret: Group Secret
+    help: Define group identities in the network to use them in rules.
+  any: Any
+  allow: Allow
+  drop: Drop
+  delete_chain_confirm: Are you sure you want to delete this rule chain and all its rules?
+  chain:
+    name: Name
+    type: Type
+  match: Match
+mp_dp:
+  section: QUIC send method per traffic class (datagrams / reliable streams)
+  help: How traffic is carried inside the MPQUIC session. Default follows RFC 9484 — every packet as an unreliable QUIC DATAGRAM, no tunnel-level retransmission and no head-of-line blocking; the inner TCP/QUIC recovers its own losses.
+  enabled: Choose the QUIC send method per class
+  enabled_help: Needs support on both peers; otherwise the session falls back to the single reliable stream. Toggling it reconnects the MP session.
+  preset_label: Scenario
+  preset:
+    default: Default (TCP and proxy on reliable streams, rest datagrams)
+    rfc: RFC (all datagrams)
+    custom: Custom
+  preset_help:
+    default: Each TCP connection gets its own reliable stream (QUIC recovers losses so TCP keeps its speed, and connections never block each other), and so does QUIC/KCP proxy traffic; UDP and ICMP ride datagrams.
+    rfc: Everything as datagrams. Lowest latency, no head-of-line blocking, but losses go straight to the applications; TCP slows down markedly on a lossy link.
+    custom: Per-class modes edited by hand below.
+  proxy_note: The QUIC/KCP proxy terminates each TCP connection locally and carries it on its own reliable stream (RFC 3135 split proxy); its packets follow the "proxy" class mode below (reliable stream by default).
+  oversize_label: Packets larger than one datagram
+  oversize:
+    icmp_ptb: Drop + ICMP Packet Too Big
+    fragment: Fragment
+  oversize_help:
+    icmp_ptb: RFC 9484 behaviour; the sender's TCP lowers its packet size via PMTU discovery. Packets that cannot be answered (non-IP) are dropped.
+    fragment: Split into up to 4 datagrams; losing any fragment loses the whole packet.
+  stream_max: Max reliable streams
+  stream_idle_s: Close a stream after idle for
+  classes_label: Per-class mode
+  class:
+    et_control: ET control
+    tcp: TCP
+    udp: UDP
+    icmp: ICMP
+    proxy: QUIC/KCP proxy
+    other: Other
+  mode:
+    datagram: Datagram
+    reliable_stream: Reliable stream per flow
+  mode_help:
+    datagram: RFC default. Lost packets are not resent by the tunnel.
+    reliable_stream: One QUIC stream per flow; no loss, per-flow order, flows never block each other.
+  rules_label: Classification rules
+  rules_help: First enabled match wins and puts the packet in the named class, which then gets its own mode above.
+  rule_name_placeholder: Class name, e.g. ssh
+  rule_ports_placeholder: Ports, e.g. 22 or 27015-27030
+  rule_dst_placeholder: Destination CIDR (optional)
+  rule_add: Add rule
+  rule_name_invalid: Name is empty or already used.
+  rule_port_invalid: Port must be N or N-M within 1-65535.
+  col:
+    class: Class
+    mode: Mode
+    name: Name
+    protocol: Protocol
+    ports: Ports
+    dst: Destination
+    enabled: Enabled
+  rt:
+    title: Traffic classification and QUIC send method
+    hint: Each packet is classified by protocol (TCP, UDP, ICMP, ...), and its class decides how QUIC sends it — as a QUIC datagram (not retransmitted when lost) or on a reliable QUIC stream per connection (QUIC retransmits losses).
+    negotiated:
+      datagram: using datagrams
+      stream_fallback: peer lacks support, single reliable stream
+      disabled: off (single reliable stream)
+    fallback_reason: Reason
+    reason:
+      not_built: 'Off: every packet goes over one reliable stream. Turn on "choose the QUIC send method per class" in the network config and reconnect.'
+    size_title: Packet size
+    max_datagram: Largest datagram
+    max_datagram_help: The most bytes one QUIC datagram can carry, from the current path MTU.
+    recommended_mtu: Recommended virtual NIC MTU
+    recommended_mtu_help: Largest datagram minus the datagram header, EasyTier tunnel header, EasyTier packet header and encryption tag. With the virtual NIC MTU at or below it every packet fits in one datagram, with no fragmenting and no detour over a stream.
+    current_mtu: Current virtual NIC MTU
+    mtu_ok: The current MTU is not above the recommendation; every packet fits in one datagram. Nothing to change.
+    mtu_too_large: The current MTU is above the recommendation; larger packets are fragmented or sent on a reliable stream.
+    apply_mtu: Change to {0}
+    apply_mtu_note: Saved to the config; takes effect after the instance restarts.
+    events_title: Exception counters (cumulative)
+    oversize: 'Too large for a datagram: dropped unanswered / answered with ICMP'
+    oversize_help: Packets that did not fit one datagram. The first were dropped with no way to tell the sender (not IP, or the limit is not known yet); the second were dropped with an ICMP "packet too big" so the sender uses smaller packets.
+    frag: 'Fragments: sent / reassembled / timed out'
+    frag_help: With the "fragment" policy, oversize packets are split into several datagrams. Fragments sent, packets reassembled, and packets given up because a fragment was lost.
+    queue_dropped: Datagram send queue drops
+    queue_dropped_help: Datagrams dropped because they arrived faster than QUIC could send them.
+    breaker: Congestion protection trips
+    breaker_help: With "datagrams ignore the congestion window" on, sustained heavy loss switches congestion control back on automatically; this counts how often.
+    classes_title: Sending per traffic class
+    total: total {0}
+    recycled_help: Streams closed and recycled after going idle.
+    rx_all: Received (all classes)
+    rx_help: Received packets cannot be classified before decryption, so only the total is counted.
+    overhead: Tunnel overhead
+    overhead_help: Datagram header + EasyTier tunnel header + EasyTier packet header + encryption tag.
+    rx_note: 'Received traffic cannot be split by class (packets are still encrypted on arrival): {0} now, {1} in total.'
+    col:
+      class: Class
+      mode: Send method
+      rate: Rate
+      tx: Send rate
+      streams: Reliable streams
+
+mp_plugin:
+  congestion_control:
+    engine_default:
+      name: Default (BBR)
+      description: TQUIC's default congestion control, which is BBR.
+    bbr:
+      name: BBR v1
+      description: Paces by the measured bandwidth and RTT; keeps queues short on stable links.
+    bbr3:
+      name: BBR v3
+      description: BBR that also reacts to loss and ECN while probing for bandwidth.
+    cubic:
+      name: CUBIC
+      description: Loss-based, the classic TCP default.
+    copa:
+      name: COPA
+      description: Delay-based, aims for low queueing delay.
+    brutal:
+      name: Brutal (Hysteria)
+      description: Does not slow down on loss; sends at a rate and makes up for lost packets. The rate is what Autorate measures the link can take, never above the peer's download.
+      up_mbps:
+        label: Upload (Mbps)
+        help: Autorate's starting point. Autorate raises the rate while the link carries more without queueing, lowers it when the link queues, and returns to this value when idle. A limit on the rate is the egress limit, not this.
+      down_mbps:
+        label: Download (Mbps)
+        help: This machine's download bandwidth, telling the peer to send to it no faster than this; 0 means no limit.
+      disable_loss_compensation:
+        label: No loss compensation
+        help: By default the rate is raised by the loss rate (about 11% more at 10% loss, at most 25% more) so the delivered rate reaches the target; when on, it is not raised.
+  scheduler:
+    min_rtt:
+      name: Lowest RTT first
+      description: Always sends on the path with the lowest RTT.
+    round_robin:
+      name: Round robin
+      description: Takes turns across all paths.
+    redundant:
+      name: Redundant
+      description: Sends a copy on every path; lowest loss and delay, but bandwidth does not add up.
+    sqm_weighted:
+      name: By spare bandwidth
+      description: Splits traffic by each link's spare SQM bandwidth, tunable between delay and bandwidth.
+      latency_bandwidth:
+        label: Delay ↔ bandwidth
+        help: 0 = concentrate on the lowest-delay path; 1 = spread over all paths for maximum total bandwidth.

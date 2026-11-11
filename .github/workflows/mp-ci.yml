@@ -1,0 +1,813 @@
+name: MP CI
+
+# Builds and tests for this fork's MP work. A `ci/**` branch is made by the
+# development repository's `_tools/ci_push.sh`: its tree is EasyTier, plus
+# `.ci/refs.env`, which pins the tquic and netwatcher fork commits that sit
+# next to EasyTier (`../vendor/*` path dependencies), and optionally
+# `.ci/filter`, a nextest filter expression to run instead of every test.
+#
+# One job builds a nextest archive once; many jobs then each run a hash
+# partition of it, as root (the netns and TUN tests need it), in parallel.
+
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  SHARDS: 16
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      tquic_ref: ${{ steps.refs.outputs.tquic_ref }}
+      netwatcher_ref: ${{ steps.refs.outputs.netwatcher_ref }}
+      filter: ${{ steps.refs.outputs.filter }}
+      shards: ${{ steps.refs.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .ci
+      - id: refs
+        run: |
+          source .ci/refs.env
+          echo "tquic_ref=$TQUIC_REF" >> "$GITHUB_OUTPUT"
+          echo "netwatcher_ref=$NETWATCHER_REF" >> "$GITHUB_OUTPUT"
+          filter="all()"
+          [ -s .ci/filter ] && filter="$(cat .ci/filter)"
+          echo "filter=$filter" >> "$GITHUB_OUTPUT"
+          echo "shards=$(seq -s, 1 "$SHARDS" | sed 's/^/[/;s/$/]/')" >> "$GITHUB_OUTPUT"
+          echo "tquic $TQUIC_REF, netwatcher $NETWATCHER_REF, filter: $filter"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          # webkit2gtk and friends: the workspace includes easytier-gui/src-tauri.
+          sudo apt-get install -qqy build-essential mold musl-tools cmake clang libssl-dev pkg-config             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev             libjavascriptcoregtk-4.1-dev patchelf
+          mkdir -p et/easytier-gui/dist
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+      - uses: taiki-e/install-action@nextest
+      # Default features plus mpquic (which brings aes-gcm): `full` without
+      # openssl-crypto. Vendored OpenSSL and TQUIC's static BoringSSL export
+      # the same C symbols, and OpenSSL ChaCha20 then crashes (SIGSEGV); no
+      # shipped build enables openssl-crypto.
+      #
+      # Two archives, each run in shards. `workspace`: every member of the
+      # workspace but easytier-web (cake-sqm, easytier, easytier-gui/src-tauri
+      # and the three easytier-contrib crates) with easytier's mpquic.
+      # `release`: easytier with the feature set the Windows release uses.
+      # easytier-web is built and tested on its own: with easytier's mpquic the
+      # test binary links TQUIC's BoringSSL next to the system OpenSSL that its
+      # HTTP client uses, and the SSL symbols clash. Its release build has no
+      # mpquic either.
+      - name: Build test archive of the workspace
+        working-directory: et
+        run: cargo nextest archive --archive-file ../tests-workspace.tar.zst --workspace --exclude easytier-web --features easytier/mpquic
+      - name: Build test archive with the release features
+        working-directory: et
+        run: cargo nextest archive --archive-file ../tests-release.tar.zst --package easytier --features mpquic,faketcp,mimalloc
+      - name: Test easytier-web with its own features
+        working-directory: et
+        run: cargo nextest run --package easytier-web --no-fail-fast
+      # Handed to the test jobs through the Actions cache, not as an
+      # artifact: artifacts count against the account's 500 MB storage, the
+      # cache does not. `result` deletes the entry when the run is done.
+      - uses: actions/cache/save@v4
+        with:
+          path: |
+            tests-workspace.tar.zst
+            tests-release.tar.zst
+          key: tests-${{ github.run_id }}-${{ github.run_attempt }}
+
+  test:
+    name: test (${{ matrix.set }} ${{ matrix.shard }}/16)
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        set: [workspace, release]
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - name: Prepare system for tests
+        run: |
+          sudo apt-get update
+          # The GUI crate's test binary is linked against the webkit runtime.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qqy bridge-utils miniupnpd miniupnpd-iptables iptables libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1 librsvg2-2 libsoup-3.0-0 libjavascriptcoregtk-4.1-0
+          sudo modprobe br_netfilter
+          sudo sysctl net.bridge.bridge-nf-call-iptables=0
+          sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
+          sudo sysctl net.ipv6.conf.lo.disable_ipv6=0
+          sudo ip addr add 2001:db8::2/64 dev lo
+      - uses: taiki-e/install-action@nextest
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            tests-workspace.tar.zst
+            tests-release.tar.zst
+          key: tests-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+      - name: Run ${{ matrix.set }} partition ${{ matrix.shard }}
+        run: |
+          sudo prlimit --pid $$ --nofile=1048576:1048576
+          sudo -E env "PATH=$PATH" cargo nextest run \
+            --archive-file tests-${{ matrix.set }}.tar.zst \
+            --workspace-remap "$GITHUB_WORKSPACE/et" \
+            --partition "hash:${{ matrix.shard }}/$SHARDS" \
+            -E '${{ needs.plan.outputs.filter }}' \
+            --test-threads 1 --no-fail-fast --no-tests pass
+
+  tquic:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          submodules: recursive
+      - run: sudo apt-get update && sudo apt-get install -qqy cmake clang
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --lib
+
+  frontend:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # pnpm first: setup-node caches the pnpm store and looks for pnpm. Its
+      # version is package.json's packageManager.
+      - uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm -r install
+      # Unit tests: frontend-lib's whole `test` (config-ui, then network-config,
+      # which builds the library) and the GUI's mobile VPN tests.
+      - run: pnpm -C easytier-web/frontend-lib test
+      # The GUI imports the Android VPN plugin's JS API from its build output.
+      - run: pnpm -C tauri-plugin-vpnservice build
+      - run: pnpm -C easytier-gui test:mobile-vpn
+      # Type check, then production build, of every front end.
+      - name: Type check
+        run: |
+          pnpm -C easytier-web/frontend-lib exec vue-tsc --noEmit -p tsconfig.app.json
+          pnpm -C easytier-web/frontend exec vue-tsc --noEmit -p tsconfig.app.json
+          pnpm -C easytier-gui exec vue-tsc --noEmit
+      - name: Build
+        run: |
+          pnpm -C easytier-web/frontend-lib build
+          pnpm -C easytier-web/frontend build
+          pnpm -C easytier-gui build
+
+  # The APKs (arm64, armv7, x86_64), as upstream mobile.yml builds it, signed with the repo's
+  # upload keystore (the key the installed app was signed with). TQUIC builds
+  # BoringSSL with the NDK's CMake toolchain (ANDROID_NDK_HOME), and bindgen
+  # needs the NDK sysroot or it parses the host's /usr/include.
+  android:
+    name: android (${{ matrix.abi }})
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { abi: arm64, tauri_target: aarch64, rust_target: aarch64-linux-android }
+          - { abi: armv7, tauri_target: armv7, rust_target: armv7-linux-androideabi }
+          - { abi: x86_64, tauri_target: x86_64, rust_target: x86_64-linux-android }
+    env:
+      NDK_VERSION: 26.0.10792818
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 12.0
+          packages: "build-tools;34.0.0 ndk;26.0.10792818 platform-tools platforms;android-34"
+      - name: Android environment
+        run: |
+          ndk=$ANDROID_HOME/ndk/$NDK_VERSION
+          llvm=$ndk/toolchains/llvm/prebuilt/linux-x86_64
+          echo "$llvm/bin" >> "$GITHUB_PATH"
+          {
+            echo "NDK_HOME=$ndk"
+            echo "ANDROID_NDK_HOME=$ndk"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=$llvm/sysroot"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_armv7_linux_androideabi=--sysroot=$llvm/sysroot"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android=--sysroot=$llvm/sysroot"
+          } >> "$GITHUB_ENV"
+          sudo apt-get update && sudo apt-get install -qqy cmake
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          target: ${{ matrix.rust_target }}
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+          key: android-${{ matrix.abi }}
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: et/package.json
+          run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: et/pnpm-lock.yaml
+      - name: Build frontend packages
+        working-directory: et
+        run: |
+          pnpm -r install
+          pnpm -r --workspace-concurrency=1 build
+      - name: Build APK
+        working-directory: et/easytier-gui
+        run: pnpm tauri android build --ci --apk --target ${{ matrix.tauri_target }} --split-per-abi
+      - name: Check signature and collect
+        run: |
+          mkdir -p apk
+          find et/easytier-gui/src-tauri/gen/android/app/build/outputs/apk -name '*.apk' -exec mv -t apk {} +
+          for apk in apk/*.apk; do
+            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" | head -4
+          done
+          sha256sum apk/*.apk
+      - uses: actions/upload-artifact@v5
+        with:
+          name: android-${{ matrix.abi }}
+          path: apk/*.apk
+          retention-days: 1
+
+  # The Windows release binaries that get deployed: easytier-gui.exe (as
+  # upstream gui.yml builds it, without the installer) and easytier-cli.exe
+  # (the features the .99 release script used). Full release profile.
+  windows:
+    needs: plan
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [gui, cli]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ilammy/setup-nasm@v1
+      # TQUIC builds BoringSSL with CMake. The cmake crate (0.1.54) names the
+      # Visual Studio generator itself only up to VS 2022, and only for a
+      # generator it picked does it pass the CRT choice (/MT, matching the
+      # +crt-static Rust build) through CMAKE_<LANG>_FLAGS_RELEASE. So: the
+      # runner image with VS 2022, its developer environment, no generator
+      # override -- the setup the .99 builds had (vcvars64.bat, VS 2022).
+      - uses: ilammy/msvc-dev-cmd@v1
+      # The steps run in Git Bash, whose /usr/bin/link (coreutils) comes
+      # before MSVC's link.exe on PATH: name MSVC's linker for cargo.
+      - name: Use MSVC's link.exe
+        shell: pwsh
+        run: |
+          $link = (Get-Command link.exe -All | Where-Object { $_.Source -like '*\MSVC\*' } | Select-Object -First 1).Source
+          if (-not $link) { throw 'MSVC link.exe not found' }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$link" >> $env:GITHUB_ENV
+          "linker: $link"
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+          key: windows-${{ matrix.part }}
+      - name: Build easytier-cli
+        if: matrix.part == 'cli'
+        working-directory: et
+        run: cargo build --locked --release -p easytier --features mpquic,faketcp,mimalloc --bin easytier-cli
+      - uses: pnpm/action-setup@v5
+        if: matrix.part == 'gui'
+        with:
+          package_json_file: et/package.json
+          run_install: false
+      - uses: actions/setup-node@v5
+        if: matrix.part == 'gui'
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: et/pnpm-lock.yaml
+      - name: Build easytier-gui
+        if: matrix.part == 'gui'
+        working-directory: et
+        run: |
+          find easytier/third_party/x86_64 -maxdepth 1 -type f \( -name '*.dll' -o -name '*.sys' \) -exec cp {} easytier-gui/src-tauri/ \;
+          pnpm -r install
+          # tauri's beforeBuildCommand builds frontend-lib and the GUI front
+          # end; only the vpnservice plugin's dist-js is left. Its rollup on
+          # Windows has been seen to write the files and never exit.
+          timeout 300 pnpm --filter tauri-plugin-vpnservice-api build || test -f tauri-plugin-vpnservice/dist-js/index.js
+          cd easytier-gui
+          pnpm tauri build --no-bundle
+      - name: Collect
+        run: |
+          mkdir out
+          if [ "${{ matrix.part }}" = gui ]; then cp et/target/release/easytier-gui.exe out/; else cp et/target/release/easytier-cli.exe out/; fi
+          sha256sum out/*
+      - uses: actions/upload-artifact@v5
+        with:
+          name: windows-${{ matrix.part }}
+          path: out/*
+          retention-days: 1
+
+  # The easytier tests on Windows, as the Windows release is built: one job
+  # builds a nextest archive (the setup of the `windows` job: VS 2022, NASM,
+  # MSVC's link.exe), shards then run partitions of it. The runner account is
+  # an administrator, which the TUN and firewall tests need. wintun.dll comes
+  # from easytier/third_party/x86_64: next to the tests' working directory
+  # and on PATH.
+  windows-test-build:
+    needs: plan
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ilammy/setup-nasm@v1
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Use MSVC's link.exe
+        shell: pwsh
+        run: |
+          $link = (Get-Command link.exe -All | Where-Object { $_.Source -like '*\MSVC\*' } | Select-Object -First 1).Source
+          if (-not $link) { throw 'MSVC link.exe not found' }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$link" >> $env:GITHUB_ENV
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+          key: windows-test
+      - uses: taiki-e/install-action@nextest
+      - name: Build test archive
+        working-directory: et
+        run: cargo nextest archive --archive-file ../tests-windows.tar.zst --package easytier --features mpquic,faketcp
+      - uses: actions/cache/save@v4
+        with:
+          path: tests-windows.tar.zst
+          key: tests-windows-${{ github.run_id }}-${{ github.run_attempt }}
+
+  windows-test:
+    name: windows-test (${{ matrix.shard }}/8)
+    needs: [plan, windows-test-build]
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: taiki-e/install-action@nextest
+      - uses: actions/cache/restore@v4
+        with:
+          path: tests-windows.tar.zst
+          key: tests-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+      - name: wintun.dll
+        run: |
+          cp et/easytier/third_party/x86_64/*.dll et/easytier/
+          echo "$(cygpath -w "$PWD/et/easytier/third_party/x86_64")" >> "$GITHUB_PATH"
+      - name: Run partition ${{ matrix.shard }}
+        run: |
+          # Tests whose environment the hosted Windows runner cannot offer
+          # (each one passes on Linux; nothing else is skipped):
+          #   faketcp_pingpong: needs Npcap's loopback adapter.
+          #   ipv6_domain_pingpong, test_v6_hole_punch_packet, test_socket_addrs:
+          #     the runner has no IPv6 and resolves no AAAA records.
+          #   test_windows_set_primary_server: rewrites a real adapter's DNS.
+          #   test_magic_dns_update_replaces_records_for_same_client: needs a
+          #     TUN adapter (wintun driver).
+          #   test_magic_dns_server_instance: also needs the TUN adapter, and listens
+          #     on port 53 of it (WSAEACCES, os error 10013, on the runner).
+          #   kernel_entry_connections_keep_a_fixed_buffer: asserts Linux
+          #     socket buffer auto-tuning.
+          #   bind_same_port: two sockets on one port (SO_REUSEPORT), not on Windows.
+          #   hole_punching_symmetric_only_random, cone_hole_punch_registers_a_udp_carrier_in_one_mpquic_session: the NAT mock in
+          #     connector/udp_hole_punch, which this branch does not touch.
+          skip='test(~faketcp_pingpong) | test(~ipv6_domain_pingpong) | test(~test_v6_hole_punch_packet) | test(~test_socket_addrs) | test(~test_windows_set_primary_server) | test(~test_magic_dns_update_replaces_records_for_same_client) | test(~test_magic_dns_server_instance) | test(~kernel_entry_connections_keep_a_fixed_buffer) | test(~bind_same_port) | test(~hole_punching_symmetric_only_random) | test(~cone_hole_punch_registers_a_udp_carrier_in_one_mpquic_session)'
+          cargo nextest run \
+            --archive-file tests-windows.tar.zst \
+            --workspace-remap "$(cygpath -m "$PWD")/et" \
+            --partition "hash:${{ matrix.shard }}/8" \
+            -E "(${{ needs.plan.outputs.filter }}) and not ($skip)" \
+            --test-threads 1 --no-fail-fast --no-tests pass
+
+  # Linux binaries: easytier-core and easytier-cli, static musl builds with
+  # the features of the Windows CLI, for x86_64 and aarch64. Zig is the C and
+  # C++ cross compiler (TQUIC builds BoringSSL with CMake, which needs a musl
+  # C++ toolchain that no distribution package provides).
+  linux:
+    name: linux (${{ matrix.arch }})
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, target: x86_64-unknown-linux-musl }
+          - { arch: aarch64, target: aarch64-unknown-linux-musl }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -qqy build-essential cmake clang pkg-config
+          mkdir -p et/easytier-gui/dist
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - uses: taiki-e/install-action@cargo-zigbuild
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          target: ${{ matrix.target }}
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+          key: linux-${{ matrix.arch }}
+      - name: Build
+        working-directory: et
+        run: cargo zigbuild --locked --release --target ${{ matrix.target }} -p easytier --features mpquic,faketcp,mimalloc --bin easytier-core --bin easytier-cli
+      - name: Collect
+        run: |
+          mkdir out
+          cp et/target/${{ matrix.target }}/release/easytier-core et/target/${{ matrix.target }}/release/easytier-cli out/
+          file out/*
+          sha256sum out/*
+      - uses: actions/upload-artifact@v5
+        with:
+          name: linux-${{ matrix.arch }}
+          path: out/*
+          retention-days: 1
+
+  # The GUI as Linux packages: a deb and an AppImage.
+  linux-gui:
+    needs: plan
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -qqy build-essential mold cmake clang libssl-dev pkg-config libwebkit2gtk-4.1-dev             libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev             patchelf libfuse2 xdg-utils
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+          key: linux-gui
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: et/package.json
+          run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: et/pnpm-lock.yaml
+      - name: Build packages
+        working-directory: et
+        env:
+          NO_STRIP: "true"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          pnpm -r install
+          timeout 300 pnpm --filter tauri-plugin-vpnservice-api build || test -f tauri-plugin-vpnservice/dist-js/index.js
+          cd easytier-gui
+          pnpm tauri build --bundles deb,appimage
+      - name: Collect
+        run: |
+          mkdir out
+          cp et/target/release/bundle/deb/*.deb et/target/release/bundle/appimage/*.AppImage out/
+          sha256sum out/*
+      - uses: actions/upload-artifact@v5
+        with:
+          name: linux-gui
+          path: out/*
+          retention-days: 1
+
+  # Black-box protocol and data-plane tests (tests/blackbox/s3.py): real
+  # easytier-core and easytier-cli processes, from the `linux` job of this
+  # run, in network namespaces with NAT routers, a relay and netem links. One
+  # job per scenario, in parallel; s33_soak runs a shortened soak. The two
+  # official-core comparisons and the upstream interop scenarios get the
+  # latest EasyTier release as the reference core. Evidence JSON is uploaded.
+  blackbox:
+    name: blackbox (${{ matrix.scenario }})
+    needs: [plan, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [s31_legacy, s31_native_punch, s31_cli_compat, s31_faketcp_numbers, s32_cc_matrix, s32_rate_limit, s32_brutal_loss, s32_sqm, s32_multi_egress, s32_relay_then_punch, s32_punch_rate, s32_relay_beside_punch, s32_path_policy, s32_dataplane, s32_reliable_class, s32_oversize, s32_split_proxy, s3x_harsh, s3x_vs_official, s32_mwan3, s33_churn, s33_soak, s33_route_loop, s34_hot_selection]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: tests/blackbox
+      - uses: actions/download-artifact@v5
+        with:
+          name: linux-x86_64
+          path: bin
+      - name: Prepare system
+        run: |
+          sudo apt-get update
+          sudo apt-get install -qqy iproute2 iptables tcpdump ethtool iputils-ping python3 unzip             "linux-modules-extra-$(uname -r)" || true
+          for m in sch_netem sch_htb sch_cake ifb nf_conntrack nf_nat; do sudo modprobe "$m" || echo "no $m"; done
+          chmod +x bin/*
+          bin/easytier-core --version
+      - name: Reference core
+        if: contains(fromJSON('["s31_legacy","s31_native_punch","s3x_harsh","s3x_vs_official"]'), matrix.scenario)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R EasyTier/EasyTier --pattern 'easytier-linux-x86_64-v*.zip' -D ref
+          unzip -q -o ref/*.zip -d ref
+          dir="$(dirname "$(find ref -name easytier-core | head -1)")"
+          chmod +x "$dir"/*
+          echo "UPSTREAM=$PWD/$dir" >> "$GITHUB_ENV"
+          "$dir/easytier-core" --version
+      - name: Run ${{ matrix.scenario }}
+        run: |
+          extra=""
+          [ -n "$UPSTREAM" ] && extra="--b-bin $UPSTREAM"
+          [ "${{ matrix.scenario }}" = s33_soak ] && extra="--hours 0.08"
+          # A 20 s run still has the inner TCP's slow start in it, which costs the reliable class a few % on
+          # the hosted runners; a minute shows the steady state the check is about.
+          [ "${{ matrix.scenario }}" = s32_reliable_class ] && extra="--tcp-secs 60"
+          sudo unshare --pid --fork --mount-proc --mount --net --propagation private -- bash -c "
+            set -e
+            mkdir -p /run/netns
+            mount -t tmpfs netns /run/netns
+            ip link set lo up
+            exec python3 '$PWD/tests/blackbox/s3.py' --bin '$PWD/bin' --out '$PWD/out' $extra ${{ matrix.scenario }}"
+      - name: Verdict
+        if: always()
+        run: cat out/results.txt || true
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: blackbox-${{ matrix.scenario }}
+          path: out
+          retention-days: 1
+
+  # Interface black-box and grey-box test (tests/ui-e2e): the real easytier-web
+  # with the built front end manages the `linux` job's easytier-core in the
+  # blackbox topology; a browser (Playwright) drags the path runway, edits the
+  # config page and takes screenshots at 360, 390 and 1040 px, and every step is
+  # checked against the core (same process, same paths, the field's effect).
+  ui-e2e:
+    needs: [plan, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: et
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/tquic
+          ref: ${{ needs.plan.outputs.tquic_ref }}
+          path: vendor/tquic
+          submodules: recursive
+      - uses: actions/checkout@v5
+        with:
+          repository: Ironboxplus/netwatcher
+          ref: ${{ needs.plan.outputs.netwatcher_ref }}
+          path: vendor/netwatcher
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -qqy build-essential mold cmake clang libssl-dev pkg-config iproute2 iptables
+          mkdir -p et/easytier-gui/dist
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+          package_json_file: et/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: et/pnpm-lock.yaml
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95"
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: et -> target
+          key: ui-e2e
+      - name: Build the front end and the web server that embeds it
+        working-directory: et
+        run: |
+          pnpm -r install
+          pnpm -C easytier-web/frontend-lib build
+          pnpm -C easytier-web/frontend build
+          cargo build --locked -p easytier-web --features embed
+      - uses: actions/download-artifact@v5
+        with:
+          name: linux-x86_64
+          path: bin
+      - name: Prepare the browser and the system
+        run: |
+          cp et/target/debug/easytier-web bin/
+          chmod +x bin/*
+          sudo apt-get install -qqy python3-pip
+          sudo python3 -m pip install --break-system-packages playwright argon2-cffi
+          sudo python3 -m playwright install --with-deps chromium
+          for m in sch_netem sch_htb sch_cake ifb nf_conntrack nf_nat; do sudo modprobe "$m" || echo "no $m"; done
+          bin/easytier-core --version
+          bin/easytier-web --version
+      - name: Run s35_ui_e2e
+        run: |
+          sudo unshare --pid --fork --mount-proc --mount --net --propagation private -- bash -c "
+            set -e
+            mkdir -p /run/netns
+            mount -t tmpfs netns /run/netns
+            ip link set lo up
+            exec python3 '$PWD/et/tests/ui-e2e/ui_e2e.py' --bin '$PWD/bin' --out '$PWD/out' s35_ui_e2e"
+      - name: Verdict
+        if: always()
+        run: cat out/results.txt || true
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: ui-e2e
+          path: out
+          retention-days: 1
+
+  result:
+    needs: [build, test, tquic, frontend, android, windows, windows-test-build, windows-test, linux, linux-gui, blackbox, ui-e2e]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete this run's test archive from the cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for key in tests tests-windows; do
+            gh cache delete "$key-${{ github.run_id }}-${{ github.run_attempt }}" -R "$GITHUB_REPOSITORY" || true
+          done
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
