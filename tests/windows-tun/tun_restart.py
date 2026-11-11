@@ -57,6 +57,8 @@ def profile_count():
 
 
 def start(index, ip, rpc):
+    # A parent that ignores Ctrl+C passes that on to its children.
+    kernel32.SetConsoleCtrlHandler(None, False)
     log = open(OUT / f"core{index}.log", "ab")
     proc = subprocess.Popen(
         [CORE, "--no-listener", "--ipv4", ip, "--network-name", f"wt{index}", "--network-secret", "s",
@@ -76,17 +78,27 @@ def wait_adapters(count, secs=90):
     return rows
 
 
+SEND_CTRL_C = """
+import ctypes, sys, time
+k = ctypes.windll.kernel32
+k.FreeConsole()
+if not k.AttachConsole(int(sys.argv[1])):
+    print("AttachConsole failed", ctypes.get_last_error() or k.GetLastError()); sys.exit(2)
+k.SetConsoleCtrlHandler(None, True)
+print("GenerateConsoleCtrlEvent", k.GenerateConsoleCtrlEvent(0, 0))
+time.sleep(2)
+k.FreeConsole()
+"""
+
+
 def ctrl_c(proc):
-    """Ctrl+C into the child's console: attach to it, ignore the event ourselves, send it."""
-    kernel32.FreeConsole()
-    if not kernel32.AttachConsole(proc.pid):
-        return False
-    kernel32.SetConsoleCtrlHandler(None, True)
-    kernel32.GenerateConsoleCtrlEvent(0, 0)
-    time.sleep(1)
-    kernel32.FreeConsole()
-    kernel32.SetConsoleCtrlHandler(None, False)
-    return True
+    """Ctrl+C into the child's console, from a helper process of its own: it attaches to that console,
+    ignores the event itself and sends it to everything attached."""
+    out = subprocess.run([sys.executable, "-c", SEND_CTRL_C, str(proc.pid)], capture_output=True, text=True,
+                         timeout=60)
+    evidence.setdefault("ctrl_c", []).append({"pid": proc.pid, "rc": out.returncode,
+                                              "out": out.stdout.strip(), "err": out.stderr.strip()})
+    return out.returncode == 0
 
 
 def stop(proc, force):

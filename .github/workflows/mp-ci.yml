@@ -716,7 +716,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [s31_legacy, s31_native_punch, s31_cli_compat, s31_faketcp_numbers, s32_cc_matrix, s32_rate_limit, s32_brutal_loss, s32_sqm, s32_multi_egress, s32_relay_then_punch, s32_punch_rate, s32_relay_beside_punch, s32_path_policy, s32_dataplane, s32_reliable_class, s32_oversize, s32_split_proxy, s3x_harsh, s3x_vs_official, s32_mwan3, s33_churn, s33_soak, s33_route_loop, s34_hot_selection, s40_relay_failover_empty_peer, s41_recv_limit_liveness, s42_quic_tunnel_etq1, s43_proxy_flows, s44_flow_pinning, s45_tcp_punch_keepalive, s46_sym_punch, s47_mixed_fork_versions]
+        scenario: [s31_legacy, s31_native_punch, s31_cli_compat, s31_faketcp_numbers, s32_cc_matrix, s32_rate_limit, s32_brutal_loss, s32_sqm, s32_multi_egress, s32_relay_then_punch, s32_punch_rate, s32_relay_beside_punch, s32_path_policy, s32_dataplane, s32_reliable_class, s32_oversize, s32_split_proxy, s3x_harsh, s3x_vs_official, s32_mwan3, s33_churn, s33_soak, s33_route_loop, s34_hot_selection, s40_relay_failover_empty_peer, s41_recv_limit_liveness, s42_quic_tunnel_etq1, s43_proxy_flows, s44_flow_pinning, s45_tcp_punch_keepalive, s46_sym_punch, s47_mixed_fork_versions, s48_stun_mismatch]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -756,6 +756,7 @@ jobs:
           [ -n "$UPSTREAM" ] && extra="--b-bin $UPSTREAM"
           [ "${{ matrix.scenario }}" = s47_mixed_fork_versions ] && extra="--b-bin $PWD/baseline"
           [ "${{ matrix.scenario }}" = s33_soak ] && extra="--hours 0.08"
+          [ "${{ matrix.scenario }}" = s46_sym_punch ] && extra="--rust-log easytier::connector=debug,easytier::common::stun=debug"
           # A 20 s run still has the inner TCP's slow start in it, which costs the reliable class a few % on
           # the hosted runners; a minute shows the steady state the check is about.
           [ "${{ matrix.scenario }}" = s32_reliable_class ] && extra="--tcp-secs 60"

@@ -417,10 +417,17 @@ def serve():
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp.bind(("0.0.0.0", ECHO_PORT))
 
+    # Answer from the address the datagram was sent to: a host with several addresses (s43's .2 and
+    # .3) would otherwise reply from its primary one, and the client could not tell the hosts apart.
+    udp.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
+
     def echo():
         while True:
-            data, addr = udp.recvfrom(1 << 16)
-            udp.sendto(data, addr)
+            data, ancdata, _, addr = udp.recvmsg(1 << 16, 256)
+            reply_from = [(level, kind, struct.pack("i4s4s", 0, pktinfo[8:12], b"\0" * 4))
+                          for level, kind, pktinfo in ancdata
+                          if level == socket.IPPROTO_IP and kind == socket.IP_PKTINFO]
+            udp.sendmsg([data], reply_from, 0, addr)
 
     threading.Thread(target=echo, daemon=True).start()
     while True:
@@ -2284,8 +2291,11 @@ def s43_proxy_flows(run, args):
         entries = clients()
         run.evidence[f"{mode}/entries_while_open"] = entries
         mine = [e for e in entries if str(e.get("dst", "")).split(":")[0] in hosts.split(",")]
-        run.check(f"{mode}: both flows from one source port are listed", len({e["dst"] for e in mine}) >= 2,
-                  entries=mine)
+        # The flow table of T2-1 is the TCP proxy's, which the NAT and smoltcp modes use. The QUIC and
+        # KCP proxies carry the flows in their own streams: only that the bytes arrive is checked.
+        if mode in ("nat", "smoltcp"):
+            run.check(f"{mode}: both flows from one source port are listed",
+                      len({e["dst"] for e in mine}) >= 2, entries=mine)
         t.join(timeout=180)
         for r in res["dual"]:
             run.check(f"{mode}: flow to {r['host']} delivered its bytes intact",
@@ -2406,8 +2416,11 @@ def s46_sym_punch(run, args):
         if b_kind:
             net.sym_nat("b", b_kind)
         run.relay()
-        b = run.core("b", "s3b", B_VIP, peers=[f"tcp://{RELAY}:11010"])
-        a = run.core("a", "s3a", A_VIP, peers=[f"tcp://{RELAY}:11010"])
+        # TCP punching would make the pair direct first (the NATs here only treat UDP as symmetric),
+        # and a direct pair is not punched again.
+        flags = {"disable_tcp_hole_punching": True}
+        b = run.core("b", "s3b", B_VIP, peers=[f"tcp://{RELAY}:11010"], flags=flags)
+        a = run.core("a", "s3a", A_VIP, peers=[f"tcp://{RELAY}:11010"], flags=flags)
         run.wait_ping("s3a", B_VIP, secs=60)
         t0 = time.time()
         try:
@@ -2449,13 +2462,42 @@ def s47_mixed_fork_versions(run, args):
     run.mp_payload(a, "after the upgrade", 8 << 20)
 
 
+def s48_stun_mismatch(run, args):
+    """T3-3: A's NAT maps A's punching socket to 198.18.0.11 towards the STUN servers and the relay, but
+    to 198.18.0.12 towards B. The mapping A declares to B is therefore not the source B sees. B is a
+    DMZ host: its punch packets to the declared mapping are dropped by A's router, yet its listener is
+    reachable. The native UDP punch must still end in a direct UDP connection, made from A's own SYN
+    (MP off)."""
+    net = run.topo(dnat=True)
+    sh("iptables", "-t", "nat", "-I", "POSTROUTING", "-o", "raw", "-p", "udp", "-d", B_WAN,
+       "-j", "SNAT", "--to-source", "198.18.0.12", ns="s3ra")
+    run.relay()
+    flags = {"disable_tcp_hole_punching": True}  # a TCP connection would make the pair direct first
+    b = run.core("b", "s3b", B_VIP, peers=[f"tcp://{RELAY}:11010"], flags=flags)
+    a = run.core("a", "s3a", A_VIP, peers=[f"tcp://{RELAY}:11010"], flags=flags)
+    run.wait_ping("s3a", B_VIP, secs=60)
+    t0 = time.time()
+    row = wait_native_p2p(run, a, secs=120)
+    run.evidence["punch_secs"] = round(time.time() - t0, 1)
+    run.evidence["peer_row"] = row
+    # Grey box: B sees A's connection coming from the address that differs from the declared one.
+    conns = wait_until(lambda: live_conns(b, "a", "udp"), 30, "B's direct udp connection from A")
+    run.evidence["b_conns"] = conns
+    sources = [str(c.get("remote")) for c in conns]
+    run.check("B sees A at the address its NAT uses towards B, not the STUN one",
+              any("198.18.0.12" in s for s in sources) and not any("198.18.0.11" in s for s in sources),
+              sources=sources)
+    run.payload("over the connection from the mismatched mapping", 4 << 20)
+
+
 SCENARIOS = {f.__name__: f for f in [
     s31_legacy, s31_native_punch, s31_cli_compat, s31_faketcp_numbers, s32_cc_matrix, s32_rate_limit, s32_brutal_loss, s32_sqm,
     s32_relay_then_punch, s32_relay_beside_punch, s32_multi_egress, s32_punch_rate,
     s32_path_policy, s32_dataplane, s32_reliable_class, s32_oversize, s32_split_proxy, s32_mwan3,
     s33_churn, s33_soak, s33_route_loop, s3x_vs_official, s3x_harsh, s34_hot_selection,
     s40_relay_failover_empty_peer, s41_recv_limit_liveness, s42_quic_tunnel_etq1, s43_proxy_flows,
-    s44_flow_pinning, s45_tcp_punch_keepalive, s46_sym_punch, s47_mixed_fork_versions]}
+    s44_flow_pinning, s45_tcp_punch_keepalive, s46_sym_punch, s47_mixed_fork_versions,
+    s48_stun_mismatch]}
 
 
 def main():

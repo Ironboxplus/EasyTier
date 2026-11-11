@@ -22,12 +22,19 @@ use crate::{
     tunnel::{
         Tunnel, TunnelConnCounter, TunnelListener as _,
         packet_def::{UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader, UdpPacketType},
-        udp::{UdpTunnelConnector, UdpTunnelListener, new_hole_punch_packet},
+        udp::{
+            UdpHolePunchObserver, UdpHolePunchObserverRegistry, UdpTunnelConnector,
+            UdpTunnelListener, new_hole_punch_packet,
+        },
     },
 };
 
-pub(crate) const HOLE_PUNCH_PACKET_BODY_LEN: u16 = 16;
+pub(crate) use crate::tunnel::udp::HOLE_PUNCH_PACKET_BODY_LEN;
 const MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS: usize = 4;
+/// A listener selection is followed by the requester's socket and STUN preparation; a
+/// registration made by the selection that nobody claimed in that time is abandoned. It matches
+/// how long a selected listener is kept.
+pub(crate) const PREPARED_CONE_PUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn generate_shuffled_port_vec() -> Vec<u16> {
     let mut rng = rand::thread_rng();
@@ -405,6 +412,8 @@ pub(crate) struct UdpHolePunchListener {
     tasks: JoinSet<()>,
     running: Arc<AtomicCell<bool>>,
     mp_raw: bool,
+    /// Where the transactions' first punch packets came from; the raw MP listener has none.
+    hole_punch_observers: Option<UdpHolePunchObserverRegistry>,
     mapped_addr: SocketAddr,
     has_port_mapping_lease: bool,
     _port_mapping_lease: Option<upnp::UdpPortMappingLease>,
@@ -456,6 +465,7 @@ impl UdpHolePunchListener {
         let running_clone = running.clone();
 
         let conn_counter = listener.get_conn_counter();
+        let hole_punch_observers = listener.hole_punch_observers();
         let mut tasks = JoinSet::new();
 
         tasks.spawn(async move {
@@ -494,6 +504,7 @@ impl UdpHolePunchListener {
             socket,
             running,
             mp_raw: false,
+            hole_punch_observers: Some(hole_punch_observers),
             mapped_addr,
             has_port_mapping_lease: port_mapping_lease.is_some(),
             _port_mapping_lease: port_mapping_lease,
@@ -536,6 +547,7 @@ impl UdpHolePunchListener {
             tasks: JoinSet::new(),
             running: Arc::new(AtomicCell::new(true)),
             mp_raw: true,
+            hole_punch_observers: None,
             mapped_addr,
             has_port_mapping_lease: port_mapping_lease.is_some(),
             _port_mapping_lease: port_mapping_lease,
@@ -580,6 +592,9 @@ impl PunchHoleServerCommon {
                 {
                     // remove listener that is not active for 40 seconds but keep listeners that are selected less than 30 seconds
                     l.lock().await.retain(|listener| {
+                        if let Some(observers) = &listener.hole_punch_observers {
+                            observers.expire_prepared();
+                        }
                         listener.last_active_time.load().elapsed().as_secs() < 40
                             || listener.last_select_time.load().elapsed().as_secs() < 30
                             || (listener.mp_raw && Arc::strong_count(&listener.socket) > 1)
@@ -608,6 +623,46 @@ impl PunchHoleServerCommon {
         })?;
 
         Some(listener.get_socket().await)
+    }
+
+    /// Registers the observation of `transaction_id` on the listener with this mapped address, so
+    /// the first punch packet is kept even when it arrives before the RPC that claims it.
+    pub(crate) async fn prepare_hole_punch(
+        &self,
+        addr: &SocketAddr,
+        transaction_id: u32,
+    ) -> anyhow::Result<()> {
+        let listeners = self.listeners.lock().await;
+        let observers = listeners
+            .iter()
+            .find(|listener| {
+                !listener.mp_raw && listener.mapped_addr == *addr && listener.running.load()
+            })
+            .and_then(|listener| listener.hole_punch_observers.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("failed to find hole-punch listener"))?;
+        observers.prepare(transaction_id, PREPARED_CONE_PUNCH_TIMEOUT)?;
+        Ok(())
+    }
+
+    /// The listener's socket and the observer of `transaction_id` on it.
+    pub(crate) async fn observe_hole_punch(
+        &self,
+        addr: &SocketAddr,
+        transaction_id: u32,
+    ) -> anyhow::Result<(Arc<UdpSocket>, UdpHolePunchObserver)> {
+        let listeners = self.listeners.lock().await;
+        let listener = listeners
+            .iter()
+            .find(|listener| {
+                !listener.mp_raw && listener.mapped_addr == *addr && listener.running.load()
+            })
+            .ok_or_else(|| anyhow::anyhow!("send_punch_packet_for_cone failed to find listener"))?;
+        let observer = listener
+            .hole_punch_observers
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("hole-punch listener cannot observe sources"))?
+            .observe(transaction_id)?;
+        Ok((listener.get_socket().await, observer))
     }
 
     #[cfg(feature = "mpquic")]
