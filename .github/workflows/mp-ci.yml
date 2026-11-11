@@ -34,6 +34,7 @@ jobs:
       netwatcher_ref: ${{ steps.refs.outputs.netwatcher_ref }}
       filter: ${{ steps.refs.outputs.filter }}
       shards: ${{ steps.refs.outputs.shards }}
+      jobs: ${{ steps.refs.outputs.jobs }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -47,10 +48,18 @@ jobs:
           [ -s .ci/filter ] && filter="$(cat .ci/filter)"
           echo "filter=$filter" >> "$GITHUB_OUTPUT"
           echo "shards=$(seq -s, 1 "$SHARDS" | sed 's/^/[/;s/$/]/')" >> "$GITHUB_OUTPUT"
-          echo "tquic $TQUIC_REF, netwatcher $NETWATCHER_REF, filter: $filter"
+          # `.ci/jobs`: the job names to run, space separated (default: all).
+          # A job also brings the jobs it needs.
+          jobs=" $( [ -s .ci/jobs ] && cat .ci/jobs || echo all ) "
+          case "$jobs" in *" ui-e2e "*|*" blackbox "*) jobs="$jobs linux ";; esac
+          case "$jobs" in *" test "*) jobs="$jobs build ";; esac
+          case "$jobs" in *" windows-test "*) jobs="$jobs windows-test-build ";; esac
+          echo "jobs=$jobs" >> "$GITHUB_OUTPUT"
+          echo "tquic $TQUIC_REF, netwatcher $NETWATCHER_REF, filter: $filter, jobs:$jobs"
 
   build:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' build ')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -121,6 +130,7 @@ jobs:
   test:
     name: test (${{ matrix.set }} ${{ matrix.shard }}/16)
     needs: [plan, build]
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' test ')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -161,6 +171,7 @@ jobs:
 
   tquic:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' tquic ')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -179,6 +190,7 @@ jobs:
 
   frontend:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' frontend ')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -222,6 +234,7 @@ jobs:
   android:
     name: android (${{ matrix.abi }})
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' android ')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -320,6 +333,7 @@ jobs:
   # (the features the .99 release script used). Full release profile.
   windows:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' windows ')
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -416,6 +430,7 @@ jobs:
   # and on PATH.
   windows-test-build:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' windows-test-build ')
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v5
@@ -465,6 +480,7 @@ jobs:
   windows-test:
     name: windows-test (${{ matrix.shard }}/8)
     needs: [plan, windows-test-build]
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' windows-test ')
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -516,6 +532,7 @@ jobs:
   linux:
     name: linux (${{ matrix.arch }})
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' linux ')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -578,6 +595,7 @@ jobs:
   # The GUI as Linux packages: a deb and an AppImage.
   linux-gui:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' linux-gui ')
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -649,6 +667,7 @@ jobs:
   blackbox:
     name: blackbox (${{ matrix.scenario }})
     needs: [plan, linux]
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' blackbox ')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -712,6 +731,7 @@ jobs:
   # checked against the core (same process, same paths, the field's effect).
   ui-e2e:
     needs: [plan, linux]
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' ui-e2e ')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
