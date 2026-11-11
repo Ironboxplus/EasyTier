@@ -1518,8 +1518,10 @@ def s3x_harsh(run, args):
             run.b_bin = off
             run.reset()
     run.evidence["harsh"] = res
-    run.check("all reference observations completed", len(res) == len(profiles) * 4
-              and not any("error" in row for row in res.values()), results=res)
+    # The official core may break under the harshest profiles (its client stalls: an observation kept in
+    # the evidence); every case of this build must complete.
+    run.check("every case of this build completed", len(res) == len(profiles) * 4
+              and not any("error" in row for key, row in res.items() if "/mp/" in key), results=res)
 
 
 def s3x_vs_official(run, args):
