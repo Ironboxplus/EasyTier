@@ -536,7 +536,7 @@ function showEventLogs() {
         <MpEgressPanel :runtime="mpRuntime" :mp-config="mpConfig" :egress-wire-limit-bps="egressWireLimitBps" />
         <MpLiveSettings v-if="mpConfig" :mp-config="mpConfig" :egress-wire-limit-bps="egressWireLimitBps"
           :tcp-hole-punch-mode="tcpHolePunchMode" :busy="mpBusy" class="mt-3"
-          @apply="(label, change) => emit('mp-live-apply', label, change)" />
+          @apply="(label, change) => emit('mp-live-apply', label, change)" @reconnect="emit('mp-reconnect')" />
         <Divider />
       </template>
 

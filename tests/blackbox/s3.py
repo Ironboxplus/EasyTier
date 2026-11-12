@@ -1393,6 +1393,9 @@ def s32_dataplane(run, args):
                 run.reset()
             table[f"{mode}/{loss}"] = row
             if loss:
+                print(f"s32_dataplane {mode}/{loss}% p99 stream {row['stream']['p99']:.1f} datagram {row['datagram']['p99']:.1f} "
+                      f"ratio {row['datagram']['p99'] / max(row['stream']['p99'], 1e-9):.3f} "
+                      f"bulk stream {row['stream']['bulk_bps']} datagram {row['datagram']['bulk_bps']} lost {row['datagram']['lost']}", flush=True)
                 run.check(f"{mode}/{loss}% p99 datagram <= 50% stream",
                           row["datagram"]["p99"] <= row["stream"]["p99"] * 0.5, row=row)
     run.evidence["dataplane"] = table

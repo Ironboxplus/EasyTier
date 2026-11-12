@@ -221,7 +221,7 @@ const instanceRecvBpsLimitInput = computed<string>({
           <Panel :header="t('basic_settings')">
             <div class="flex flex-col gap-y-2">
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <div class="flex items-center" for="virtual_ip">
                     <label class="mr-2"> {{ t('virtual_ipv4') }} </label>
                     <Checkbox v-model="curNetwork.dhcp" input-id="virtual_ip_auto" :binary="true" />
@@ -244,11 +244,11 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label for="network_name">{{ t('network_name') }}</label>
                   <InputText id="network_name" v-model="curNetwork.network_name" aria-describedby="network_name-help" />
                 </div>
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label for="network_secret">{{ t('network_secret') }}</label>
                   <Password id="network_secret" v-model="curNetwork.network_secret"
                     aria-describedby="network_secret-help" toggleMask :feedback="false" />
@@ -256,7 +256,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <div class="flex items-center">
                     <label for="initial_nodes">{{ t('initial_nodes') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('initial_nodes_help')"></span>
@@ -277,7 +277,7 @@ const instanceRecvBpsLimitInput = computed<string>({
             <div class="flex flex-col gap-y-2">
 
               <div class="flex flex-row gap-x-9 flex-wrap w-full">
-                <div class="flex flex-col gap-2 grow">
+                <div class="flex flex-col gap-2 grow min-w-0 basis-full">
                   <label>{{ t('mp_settings') }}</label>
                   <MpConfigPanel
                     :model-value="curNetwork.mp ?? DEFAULT_MP_CONFIG()"
@@ -293,7 +293,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label> {{ t('flags_switch') }} </label>
                   <div class="flex flex-row flex-wrap">
 
@@ -308,7 +308,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label for="hostname">{{ t('hostname') }}</label>
                   <InputText id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"
                     :placeholder="t('hostname_placeholder', [props.hostname])" />
@@ -316,7 +316,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap w-full">
-                <div class="flex flex-col gap-2 grow p-fluid">
+                <div class="flex flex-col gap-2 grow p-fluid min-w-0">
                   <label for="username">{{ t('proxy_cidrs') }}</label>
                   <AutoComplete id="subnet-proxy" v-model="curNetwork.proxy_cidrs"
                     :placeholder="t('chips_placeholder', ['10.0.0.0/24'])" class="w-full" multiple fluid
@@ -325,13 +325,13 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap ">
-                <div class="flex flex-col gap-2 grow">
+                <div class="flex flex-col gap-2 grow min-w-0">
                   <label for="username">VPN Portal</label>
                   <ToggleButton v-model="curNetwork.enable_vpn_portal" on-icon="pi pi-check" off-icon="pi pi-times"
                     :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
                   <div v-if="curNetwork.enable_vpn_portal" class="items-center flex flex-row gap-x-4">
                     <div class="flex flex-row gap-x-9 flex-wrap w-full">
-                      <div class="flex flex-col gap-2 basis-8/12 grow">
+                      <div class="flex flex-col gap-2 basis-8/12 grow min-w-0">
                         <InputGroup>
                           <InputText v-model="curNetwork.vpn_portal_client_network_addr"
                             :placeholder="t('vpn_portal_client_network')" />
@@ -340,7 +340,7 @@ const instanceRecvBpsLimitInput = computed<string>({
                           </InputGroupAddon>
                         </InputGroup>
                       </div>
-                      <div class="flex flex-col gap-2 basis-3/12 grow">
+                      <div class="flex flex-col gap-2 basis-3/12 grow min-w-0">
                         <InputNumber v-model="curNetwork.vpn_portal_listen_port" :allow-empty="false" :format="false"
                           :min="0" :max="65535" fluid />
                       </div>
@@ -350,7 +350,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 grow p-fluid">
+                <div class="flex flex-col gap-2 grow p-fluid min-w-0">
                   <label for="listener_urls">{{ t('listener_urls') }}</label>
                   <UrlListInput v-model="curNetwork.listener_urls" :protos="protos" :add-label="t('add_listener_url')"
                     placeholder="0.0.0.0" />
@@ -358,7 +358,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label for="dev_name">{{ t('dev_name') }}</label>
                   <InputText id="dev_name" v-model="curNetwork.dev_name" aria-describedby="dev_name-help" :format="true"
                     :placeholder="t('dev_name_placeholder')" />
@@ -366,7 +366,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <div class="flex">
                     <label for="mtu">{{ t('mtu') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mtu_help')"></span>
@@ -377,7 +377,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <div class="flex">
                     <label for="instance_recv_bps_limit">{{ t('instance_recv_bps_limit') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center"
@@ -390,7 +390,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <div class="flex">
                     <label for="relay_network_whitelist">{{ t('relay_network_whitelist') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center"
@@ -409,7 +409,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap ">
-                <div class="flex flex-col gap-2 grow">
+                <div class="flex flex-col gap-2 grow min-w-0">
                   <div class="flex">
                     <label for="routes">{{ t('manual_routes') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('manual_routes_help')"></span>
@@ -427,7 +427,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap ">
-                <div class="flex flex-col gap-2 grow">
+                <div class="flex flex-col gap-2 grow min-w-0">
                   <div class="flex">
                     <label for="socks5_port">{{ t('socks5') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('socks5_help')"></span>
@@ -444,7 +444,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap w-full">
-                <div class="flex flex-col gap-2 grow p-fluid">
+                <div class="flex flex-col gap-2 grow p-fluid min-w-0">
                   <div class="flex">
                     <label for="exit_nodes">{{ t('exit_nodes') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('exit_nodes_help')"></span>
@@ -456,7 +456,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap w-full">
-                <div class="flex flex-col gap-2 grow p-fluid">
+                <div class="flex flex-col gap-2 grow p-fluid min-w-0">
                   <div class="flex">
                     <label for="mapped_listeners">{{ t('mapped_listeners') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mapped_listeners_help')"></span>
@@ -481,12 +481,12 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="encryption_algorithm">{{ t('security_settings.encryption_algorithm') }}<MpEffectBadge field="encryption_algorithm" /></label>
                   <Select id="encryption_algorithm" v-model="curNetwork.encryption_algorithm" :options="encryptionAlgorithmOptions" show-clear
                     :placeholder="t('security_settings.default')" />
                 </div>
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="data_compress_algo">{{ t('security_settings.compression') }}<MpEffectBadge field="data_compress_algo" /></label>
                   <Select id="data_compress_algo" v-model="curNetwork.data_compress_algo" :options="compressionOptions"
                     option-label="label" option-value="value" show-clear :placeholder="t('security_settings.default')" />
@@ -494,15 +494,15 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="credential_file">{{ t('security_settings.credential_file') }}<MpEffectBadge field="credential_file" /></label>
                   <InputText id="credential_file" v-model="curNetwork.credential_file" />
                 </div>
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="ipv6_public_addr_prefix">{{ t('security_settings.ipv6_prefix') }}<MpEffectBadge field="ipv6_public_addr_prefix" /></label>
                   <InputText id="ipv6_public_addr_prefix" v-model="curNetwork.ipv6_public_addr_prefix" placeholder="2001:db8::/64" />
                 </div>
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="socket_mark">{{ t('security_settings.socket_mark') }}<MpEffectBadge field="socket_mark" /></label>
                   <InputNumber id="socket_mark" v-model="curNetwork.socket_mark" :min="0" :format="false" fluid />
                 </div>
@@ -516,12 +516,12 @@ const instanceRecvBpsLimitInput = computed<string>({
           <Panel :header="t('core_switches.title')" toggleable collapsed>
             <div class="flex flex-col gap-y-3" data-testid="core-switches">
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="default_protocol">{{ t('core_switches.default_protocol') }}<MpEffectBadge field="default_protocol" /></label>
                   <Select id="default_protocol" v-model="curNetwork.default_protocol" :options="defaultProtocolOptions" show-clear
                     :placeholder="t('core_switches.default_protocol_auto')" />
                 </div>
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="multi_thread_count">{{ t('core_switches.multi_thread_count') }}<MpEffectBadge field="multi_thread_count" /></label>
                   <InputNumber id="multi_thread_count" v-model="curNetwork.multi_thread_count" :min="1" :max="256" :format="false"
                     :placeholder="t('core_switches.multi_thread_count_placeholder')" fluid />
@@ -536,35 +536,35 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="foreign_relay_bps_limit">{{ t('core_switches.foreign_relay_limit') }}<MpEffectBadge field="foreign_relay_bps_limit" /></label>
                   <InputNumber id="foreign_relay_bps_limit" v-model="curNetwork.foreign_relay_bps_limit as number | null" :min="0" :format="false"
                     suffix=" bps" :placeholder="t('core_switches.unlimited')" fluid />
                 </div>
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="tld_dns_zone">{{ t('core_switches.tld_dns_zone') }}<MpEffectBadge field="tld_dns_zone" /></label>
                   <InputText id="tld_dns_zone" v-model="curNetwork.tld_dns_zone" placeholder="et.net." />
                 </div>
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="ipv6_addr">{{ t('core_switches.ipv6') }}<MpEffectBadge field="ipv6" /></label>
                   <InputText id="ipv6_addr" v-model="curNetwork.ipv6" placeholder="fd00::2/64" />
                 </div>
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="netns">{{ t('core_switches.netns') }}<MpEffectBadge field="netns" /></label>
                   <InputText id="netns" v-model="curNetwork.netns" />
                 </div>
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="tcp_whitelist">{{ t('core_switches.tcp_whitelist') }}<MpEffectBadge field="tcp_whitelist" /></label>
                   <AutoComplete id="tcp_whitelist" v-model="curNetwork.tcp_whitelist" :placeholder="t('chips_placeholder', ['80,8000-8100'])" multiple fluid
                     :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
                 </div>
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="udp_whitelist">{{ t('core_switches.udp_whitelist') }}<MpEffectBadge field="udp_whitelist" /></label>
                   <AutoComplete id="udp_whitelist" v-model="curNetwork.udp_whitelist" :placeholder="t('chips_placeholder', ['53'])" multiple fluid
                     :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
@@ -572,17 +572,17 @@ const instanceRecvBpsLimitInput = computed<string>({
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-3/12 grow">
+                <div class="flex flex-col gap-2 basis-3/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="stun_servers">{{ t('core_switches.stun_servers') }}<MpEffectBadge field="stun_servers" /></label>
                   <AutoComplete id="stun_servers" v-model="curNetwork.stun_servers" :placeholder="t('chips_placeholder', ['stun.example.org:3478'])" multiple fluid
                     :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
                 </div>
-                <div class="flex flex-col gap-2 basis-3/12 grow">
+                <div class="flex flex-col gap-2 basis-3/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="tcp_stun_servers">{{ t('core_switches.tcp_stun_servers') }}<MpEffectBadge field="tcp_stun_servers" /></label>
                   <AutoComplete id="tcp_stun_servers" v-model="curNetwork.tcp_stun_servers" :placeholder="t('chips_placeholder', ['stun.example.org:3478'])" multiple fluid
                     :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
                 </div>
-                <div class="flex flex-col gap-2 basis-3/12 grow">
+                <div class="flex flex-col gap-2 basis-3/12 grow min-w-0">
                   <label class="flex items-center gap-2" for="stun_servers_v6">{{ t('core_switches.stun_servers_v6') }}<MpEffectBadge field="stun_servers_v6" /></label>
                   <AutoComplete id="stun_servers_v6" v-model="curNetwork.stun_servers_v6" :placeholder="t('chips_placeholder', ['stun6.example.org:3478'])" multiple fluid
                     :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
@@ -596,7 +596,7 @@ const instanceRecvBpsLimitInput = computed<string>({
           <Panel :header="t('port_forwards')" toggleable collapsed>
             <div ref="portForwardContainer" class="flex flex-col gap-y-2">
               <div class="flex flex-row gap-x-9 flex-wrap w-full">
-                <div class="flex flex-col gap-2 grow p-fluid">
+                <div class="flex flex-col gap-2 grow p-fluid min-w-0">
                   <div class="flex">
                     <label for="port_forwards">{{ t('port_forwards_help') }}</label>
                   </div>

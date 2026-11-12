@@ -60,6 +60,14 @@ describe('PeerList', () => {
     expect(wrapper.find('[data-testid="peer-traffic"]').text()).toContain('1.0 KiB')
   })
 
+  it('keeps sent, received and loss apart, each with its own icon', () => {
+    const wrapper = mountList([row('1', { loss: '14%', lossPercent: 14 })])
+    const parts = wrapper.findAll('[data-testid="peer-traffic"] > span')
+    expect(parts).toHaveLength(3)
+    for (const part of parts) expect(part.find('svg').exists()).toBe(true)
+    expect(parts[2].text()).toBe('14%')
+  })
+
   it('emits the key when a row is clicked or activated from the keyboard', async () => {
     const wrapper = mountList([row('1'), row('2')])
     const rows = wrapper.findAll('[data-testid="peer-row"]')

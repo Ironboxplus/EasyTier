@@ -250,16 +250,16 @@ const sqmRangeInvalid = computed(() =>
 </script>
 
 <template>
-  <div class="mp-config-panel flex flex-col gap-4" data-testid="mp-config-panel">
+  <div class="mp-config-panel flex flex-col gap-4 w-full min-w-0" data-testid="mp-config-panel">
     <!-- ================= basic ================= -->
     <div class="flex flex-row flex-wrap gap-4 items-center">
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
         <Checkbox :model-value="mp.enabled" input-id="mp-enabled" :binary="true" data-testid="mp-enabled"
           @update:model-value="(v: boolean) => patch({ enabled: v })" />
         <label for="mp-enabled">{{ t('mp_enabled') }}</label>
         <MpEffectBadge field="mp.enabled" />
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
         <Checkbox :model-value="mp.sqm.enabled" input-id="mp-sqm-enabled" :binary="true" data-testid="mp-sqm-enabled"
           @update:model-value="(v: boolean) => patchSqm({ enabled: v })" />
         <label for="mp-sqm-enabled">{{ t('mp_sqm_enabled') }}</label>
@@ -269,7 +269,7 @@ const sqmRangeInvalid = computed(() =>
     </div>
 
     <div class="flex flex-row flex-wrap gap-4">
-      <div class="flex flex-col gap-1 min-w-[14rem]">
+      <div class="flex flex-col gap-1 min-w-0 sm:min-w-[14rem] max-w-full">
         <label>{{ t('mp_egress_wire_limit') }}
           <span class="pi pi-question-circle" v-tooltip="t('mp_egress_wire_limit_help')"></span>
           <MpEffectBadge field="egress_wire_limit_bps" /></label>
@@ -279,11 +279,11 @@ const sqmRangeInvalid = computed(() =>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <div class="flex flex-col gap-1">
+      <div class="flex flex-col gap-1 min-w-0">
         <MpEffectBadge field="mp.packet_scheduler" />
         <MpSchedulerPanel v-model="schedulerModel" kind="scheduler" :label="t('mp_packet_scheduler')" />
       </div>
-      <div class="flex flex-col gap-1" data-testid="mp-cc-panel">
+      <div class="flex flex-col gap-1 min-w-0" data-testid="mp-cc-panel">
         <MpEffectBadge field="mp.congestion_control" />
         <MpSchedulerPanel v-model="congestionModel" kind="congestion_control" :label="t('mp_congestion_control')"
           testid="mp-cc-select" />
@@ -305,7 +305,7 @@ const sqmRangeInvalid = computed(() =>
     <motion.div v-show="showAdvanced" key="mp-advanced" :initial="{ opacity: 0, height: 0 }"
       :animate="{ opacity: 1, height: 'auto' }" :exit="{ opacity: 0, height: 0 }"
       class="flex flex-col gap-4 overflow-hidden" data-testid="mp-advanced">
-      <fieldset class="flex flex-col gap-2 border rounded p-3">
+      <fieldset class="flex flex-col gap-2 min-w-0 border rounded p-3">
         <legend class="px-1 font-medium">{{ t('mp_paths_section') }}
           <MpEffectBadge field="mp.kmax" /></legend>
         <div class="flex flex-row flex-wrap gap-4">
@@ -331,7 +331,7 @@ const sqmRangeInvalid = computed(() =>
         </div>
       </fieldset>
 
-      <fieldset class="flex flex-col gap-2 border rounded p-3">
+      <fieldset class="flex flex-col gap-2 min-w-0 border rounded p-3">
         <legend class="px-1 font-medium">{{ t('mp_paths_section') }}
           <MpEffectBadge field="mp.providers" /></legend>
         <label>{{ t('mp_providers') }}</label>
@@ -343,7 +343,7 @@ const sqmRangeInvalid = computed(() =>
           </div>
         </div>
         <div class="flex flex-row flex-wrap gap-4">
-          <div class="flex flex-col gap-1 min-w-[14rem]">
+          <div class="flex flex-col gap-1 min-w-0 sm:min-w-[14rem] max-w-full">
             <label>{{ t('tcp_hole_punch_mode') }}
               <MpEffectBadge field="tcp_hole_punch_mode" /></label>
             <Select v-model="holeMode" :options="holeModeOptions" option-label="label" option-value="value"
@@ -375,7 +375,7 @@ const sqmRangeInvalid = computed(() =>
         </div>
       </fieldset>
 
-      <fieldset class="flex flex-col gap-2 border rounded p-3" data-testid="mp-policies">
+      <fieldset class="flex flex-col gap-2 min-w-0 border rounded p-3" data-testid="mp-policies">
         <legend class="px-1 font-medium">{{ t('mp_policies_section') }}
           <MpEffectBadge field="mp.path_policies" /></legend>
         <small class="text-color-secondary">{{ t('mp_policies_help') }}</small>
@@ -418,7 +418,7 @@ const sqmRangeInvalid = computed(() =>
           data-testid="mp-policy-add" @click="addPolicy" />
       </fieldset>
 
-      <fieldset class="flex flex-col gap-2 border rounded p-3" data-testid="mp-egress-limits">
+      <fieldset class="flex flex-col gap-2 min-w-0 border rounded p-3" data-testid="mp-egress-limits">
         <legend class="px-1 font-medium">{{ t('mp_limits_section') }}
           <MpEffectBadge field="mp.egress_limits" /></legend>
         <small class="text-color-secondary">{{ t('mp_limits_help') }}</small>
@@ -440,7 +440,7 @@ const sqmRangeInvalid = computed(() =>
         </div>
       </fieldset>
 
-      <fieldset class="flex flex-col gap-2 border rounded p-3" data-testid="mp-punch-rate">
+      <fieldset class="flex flex-col gap-2 min-w-0 border rounded p-3" data-testid="mp-punch-rate">
         <legend class="px-1 font-medium">{{ t('mp_punch_rate_section') }}
           <MpEffectBadge field="mp.punch_pps" /></legend>
         <small class="text-color-secondary">{{ t('mp_punch_rate_help') }}</small>
@@ -466,7 +466,7 @@ const sqmRangeInvalid = computed(() =>
         </div>
       </fieldset>
 
-      <fieldset class="flex flex-col gap-2 border rounded p-3" data-testid="mp-sqm">
+      <fieldset class="flex flex-col gap-2 min-w-0 border rounded p-3" data-testid="mp-sqm">
         <legend class="px-1 font-medium">{{ t('mp_sqm_section') }}</legend>
         <div class="flex flex-row flex-wrap gap-4">
           <div class="flex flex-col gap-1">
@@ -495,7 +495,7 @@ const sqmRangeInvalid = computed(() =>
         <small v-if="sqmRangeInvalid" class="text-red-500">{{ t('mp_sqm_range_invalid') }}</small>
       </fieldset>
 
-      <fieldset class="flex flex-col gap-2 border rounded p-3" data-testid="mp-resource-groups">
+      <fieldset class="flex flex-col gap-2 min-w-0 border rounded p-3" data-testid="mp-resource-groups">
         <legend class="px-1 font-medium">{{ t('mp_resource_groups') }}
           <MpEffectBadge field="mp.resource_groups" /></legend>
         <small class="text-color-secondary">{{ t('mp_resource_groups_help') }}</small>
@@ -532,7 +532,6 @@ const sqmRangeInvalid = computed(() =>
     </motion.div>
     </AnimatePresence>
 
-    <small class="text-color-secondary">{{ t('mp_config_help') }}</small>
   </div>
 </template>
 

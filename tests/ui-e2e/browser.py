@@ -2,7 +2,7 @@
 """The browser half of s35_ui_e2e. It runs in node A's namespace, next to the web server and the core.
 
 It logs in through the page, starts the network through the web server's API, then on the status page
-drags the path runway's handles and on the config page edits a hot field and a restart-only field.
+uses the path map's controls and the MP settings card, and on the config page edits a hot field and a restart-only field.
 After each step it asks the core (easytier-cli) what happened: same process, same paths, the selection
 as expected. Evidence goes to <out>/report.json, screenshots to <out>/shots/.
 """
@@ -125,19 +125,11 @@ def wait_for(pred, secs=30, what="state"):
 
 # ---------------------------------------------------------------- the page
 
-def drag(page, locator, dx, dy):
-    # The runway ignores a pointer while a change is still being applied.
-    page.locator('[data-testid="path-runway"][aria-busy="false"]').wait_for(state="visible", timeout=30000)
+def ready(page):
+    # The path map takes no edit while a change is still being applied.
+    page.locator('[data-testid="path-map"][aria-busy="false"]').wait_for(state="visible", timeout=30000)
     # A toast left from the step before would pass for this step's: wait until none is shown.
     page.locator(".p-toast-message").first.wait_for(state="detached", timeout=30000)
-    locator.scroll_into_view_if_needed()
-    box = locator.bounding_box()
-    cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-    page.mouse.move(cx, cy)
-    page.mouse.down()
-    page.mouse.move(cx + dx / 2, cy + dy / 2, steps=8)
-    page.mouse.move(cx + dx, cy + dy, steps=8)
-    page.mouse.up()
 
 
 def open_panel(page, title, probe):
@@ -174,8 +166,7 @@ def toast_and_undo(page, what, undo=True):
         EVIDENCE["no_toast"] = {
             "what": what,
             "toasts": page.locator(".p-toast-message").all_inner_texts(),
-            "shield_handles": page.locator('[data-testid="runway-shield"]').count(),
-            "busy": page.locator('[data-testid="path-runway"]').get_attribute("aria-busy"),
+            "busy": page.locator('[data-testid="path-map"]').get_attribute("aria-busy"),
             "api": API_LOG[-12:],
             "paths": [(pa.get("carrier_kind"), pa.get("egress_device"), pa.get("tier"), pa.get("selected")) for pa in s3.paths_of(stats())],
         }
@@ -191,15 +182,99 @@ def no_sideways_scroll(page, label):
     check(f"{label}: no sideways scroll", width[0] <= width[1] + 1, scroll_width=width[0], inner_width=width[1])
 
 
+def effect_badges_fit(page, label):
+    """Every effect badge is a small block inside the window, and so is every field the page shows
+    (a card that clips its content leaves scrollWidth unchanged, so the boxes are measured)."""
+    boxes = page.evaluate("""() => {
+        const inner = window.innerWidth
+        const rect = el => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width,
+            visible: r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden' } }
+        const out = { badges: [], fields: [], inner }
+        document.querySelectorAll('.mp-effect').forEach(el => out.badges.push({ ...rect(el), text: el.textContent }))
+        document.querySelectorAll('.p-inputtext, .p-select, .p-slider, .p-inputnumber').forEach(el =>
+            out.fields.push({ ...rect(el), cls: el.className.toString().slice(0, 40) }))
+        return out
+    }""")
+    inner = boxes["inner"]
+    wide = [b for b in boxes["badges"] if b["visible"] and b["width"] >= 120]
+    outside = [b for b in boxes["badges"] + boxes["fields"] if b["visible"] and (b["right"] > inner + 1 or b["left"] < -1)]
+    check(f"{label}: every effect badge is under 120 px wide", not wide, wide=wide[:3], badges=len(boxes["badges"]))
+    chain = []
+    if outside:
+        # Which box is wider than the window, from the first field outwards: where the width comes from.
+        chain = page.evaluate("""() => {
+            const inner = window.innerWidth
+            const el = [...document.querySelectorAll('.p-select, .p-slider, .p-inputtext, .mp-effect')]
+                .find(e => e.getBoundingClientRect().right > inner + 1)
+            const out = []
+            for (let n = el; n && n !== document.body; n = n.parentElement) {
+                const r = n.getBoundingClientRect()
+                out.push(`${n.tagName.toLowerCase()}.${String(n.className).slice(0, 60)} w=${Math.round(r.width)} sw=${n.scrollWidth}`)
+            }
+            return out
+        }""")
+    check(f"{label}: no badge or field sticks out of the window", not outside, outside=outside[:3], chain=chain)
+
+
+def nothing_cut(page, label):
+    """No pipeline step and no peer-row text is cut short (text wider than its box)."""
+    cut = page.evaluate("""() => [...document.querySelectorAll('.mp-step b, .mp-step-name, [data-testid="peer-row"] *')]
+        .filter(el => el.children.length === 0 && el.clientWidth > 0 && el.scrollWidth > el.clientWidth + 1)
+        .map(el => ({ text: el.textContent.slice(0, 40), scroll: el.scrollWidth, client: el.clientWidth }))""")
+    check(f"{label}: no text is cut short", not cut, cut=cut[:5])
+
+
+def login(pg):
+    pg.goto(f"{args.web}/#/auth")
+    pg.locator("#username").fill(args.user)
+    pg.locator('input[type="password"]').first.fill(args.password)
+    pg.locator('button[type="submit"]').click()
+    pg.wait_for_url("**/#/h/**", timeout=30000)
+
+
+def shoot_status(pg, lang, width):
+    """The status page as pictures: the window, the page at full height (the page scrolls inside its
+    own container, so the window is made tall for a moment), and the path map, the peer list and the MP
+    settings card each by themselves."""
+    pg.screenshot(path=str(SHOTS / f"status-{lang}-{width}-window.png"))
+    pg.set_viewport_size({"width": width, "height": 3200})
+    pg.wait_for_timeout(800)
+    pg.screenshot(path=str(SHOTS / f"status-{lang}-{width}-long.png"))
+    pg.set_viewport_size({"width": width, "height": 900})
+    pg.wait_for_timeout(500)
+    for name, testid in (("paths", "path-map"), ("peers", "peer-list"), ("settings", "mp-live-settings")):
+        target = pg.locator(f'[data-testid="{testid}"]').first
+        if target.count() and target.is_visible():
+            target.screenshot(path=str(SHOTS / f"status-{lang}-{width}-{name}.png"))
+        else:
+            check(f"{lang} {width} px: {name} is on the page", False)
+    # Every path's numbers sit inside the map, clear of each other and of the two columns of exits.
+    layout = pg.evaluate("""() => {
+        const box = el => { const r = el.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom } }
+        const map = document.querySelector('[data-testid="path-map"]')
+        return { map: map && box(map),
+                 pills: [...document.querySelectorAll('[data-testid="path-map-path"]')].map(box),
+                 ports: [...document.querySelectorAll('[data-testid^="path-map-port"]')].map(box) }
+    }""")
+    m, pills, ports = layout["map"], layout["pills"], layout["ports"]
+    hit = lambda a, b: a["l"] < b["r"] - 1 and b["l"] < a["r"] - 1 and a["t"] < b["b"] - 1 and b["t"] < a["b"] - 1
+    check(f"{lang} {width} px: the path map shows every path inside it, nothing drawn over another",
+          bool(m) and bool(pills)
+          and all(p["l"] >= m["l"] and p["r"] <= m["r"] for p in pills)
+          and not any(hit(a, b) for i, a in enumerate(pills) for b in pills[i + 1:])
+          and not any(hit(p, q) for p in pills for q in ports),
+          map=m, pills=pills[:6], ports=ports[:6])
+
+
 def peer_row(page):
     """The status page's row of node B (the first row is this node, the relay is another one)."""
     return page.locator('[data-testid="peer-row"]').filter(has=page.get_by_text("b", exact=True)).first
 
 
-def open_runway(page):
+def open_paths(page):
     peer_row(page).click()
     page.locator('[data-testid="mp-step-paths"]').click()
-    page.locator('[data-testid="path-runway"]').wait_for(state="visible", timeout=30000)
+    page.locator('[data-testid="path-map"]').wait_for(state="visible", timeout=30000)
     page.wait_for_timeout(1000)
 
 
@@ -248,46 +323,72 @@ def run() -> None:
         page.goto(device_url(INSTANCE))
         peer_row(page).wait_for(state="visible", timeout=60000)
         no_sideways_scroll(page, "status page, 1040 px")
-        open_runway(page)
+        open_paths(page)
         page.screenshot(path=str(SHOTS / "status-1040.png"))
 
-        # threshold handle to the right, then undo
+        # the switching threshold in the MP settings card, then undo
         before = peer(stats()).get("switch_threshold_micros")
-        drag(page, page.locator('[data-testid="runway-shield"]').first, 60, 0)
-        toast_and_undo(page, "threshold drag", undo=False)
+        ready(page)
+        field = page.locator('[data-testid="mp-live-switch-min"] input').first
+        field.scroll_into_view_if_needed()
+        field.fill(str(int(int(before or 5000) / 1000) + 4))
+        field.press("Enter")
+        toast_and_undo(page, "threshold edit", undo=False)
         wait_for(lambda s: peer(s).get("switch_threshold_micros") != before, secs=30, what="a new switch threshold")
-        s = grey("threshold drag")
-        check("threshold drag: the core reports a new threshold", peer(s).get("switch_threshold_micros") != before,
+        s = grey("threshold edit")
+        check("threshold edit: the core reports a new threshold", peer(s).get("switch_threshold_micros") != before,
               before=before, after=peer(s).get("switch_threshold_micros"))
         page.locator('[data-testid="mp-undo"]').first.click()
         wait_for(lambda s: peer(s).get("switch_threshold_micros") == before, secs=30, what="the threshold back after undo")
         grey("threshold undo")
 
-        # split line down one row: the second direct path sends too, then undo
+        # one path more at once: the second direct path sends too, then undo
         check("kmax 1 at the start", len(selected(stats())) == 1, selected=selected(stats()))
-        drag(page, page.locator('[data-testid="runway-kmax"]').first, 0, 40)
-        toast_and_undo(page, "split line drag", undo=False)
+        ready(page)
+        page.locator('[data-testid="path-map-kmax-plus"]').first.click()
+        toast_and_undo(page, "one path more", undo=False)
         wait_for(lambda s: len(selected(s)) == 2, secs=30, what="two sending paths")
-        grey("split line drag")
+        grey("one path more")
         page.locator('[data-testid="mp-undo"]').first.click()
         wait_for(lambda s: len(selected(s)) == 1, secs=30, what="one sending path after undo")
-        grey("split line undo")
+        grey("one path more undo")
 
-        # the relay dot into the primary lane, 30 px to the left, then undo
-        relay = page.locator('[data-testid="runway-path"]:has(svg.lucide-waypoints) [data-testid="runway-dot"]').first
-        page.locator('[data-testid="path-runway"][aria-busy="false"]').wait_for(state="visible", timeout=30000)
-        relay.scroll_into_view_if_needed()
-        lane = page.locator('[data-testid="runway-lane-primary"]').first.bounding_box()
-        dot = relay.bounding_box()
-        drag(page, relay, -30, lane["y"] + lane["height"] / 2 - (dot["y"] + dot["height"] / 2))
-        toast_and_undo(page, "relay dot drag", undo=False)
+        # every relay made a primary path from the relay's own popover, then undo
+        ready(page)
+        fold = page.locator('[data-testid="path-map-relays"]').first
+        fold.scroll_into_view_if_needed()
+        if fold.get_attribute("aria-expanded") != "true":
+            fold.click()
+        page.locator('[data-testid="path-map-path"][data-relay="true"]').first.click()
+        page.locator('[data-testid="runway-detail"]').wait_for(state="visible", timeout=10000)
+        tier = page.locator('[data-testid="runway-tier-primary"]').first
+        try:
+            tier.click(timeout=10000)
+        except Exception:
+            # What covers the button, where the popover is, and a picture.
+            page.screenshot(path=str(SHOTS / "relay-tier-not-clickable.png"), full_page=True)
+            EVIDENCE["relay_tier_click"] = page.evaluate("""() => {
+                const b = document.querySelector('[data-testid="runway-tier-primary"]')
+                const r = b.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2
+                const top = document.elementFromPoint(x, y)
+                const d = document.querySelector('[data-testid="runway-detail"]').getBoundingClientRect()
+                return { button: [r.left, r.top, r.width, r.height], viewport: [innerWidth, innerHeight],
+                         detail: [d.left, d.top, d.width, d.height],
+                         on_top: top ? top.outerHTML.slice(0, 300) : null,
+                         on_top_parents: (() => { const o = []; for (let n = top; n && o.length < 6; n = n.parentElement) o.push(n.tagName + '.' + String(n.className).slice(0, 60)); return o })() }
+            }""")
+            raise
+        toast_and_undo(page, "relay made primary", undo=False)
+        page.keyboard.press("Escape")
+        # The core takes longer than the toast's 6 s to report the new tier; a toast under the pointer waits.
+        page.locator('[data-testid="mp-undo"]').first.hover()
         wait_for(lambda s: any(s3.kind_is(pa, "relay") and pa.get("tier") == "primary" for pa in s3.paths_of(s)),
                  secs=30, what="the relay reported as primary")
-        grey("relay dot drag")
+        grey("relay made primary")
         page.locator('[data-testid="mp-undo"]').first.click()
         wait_for(lambda s: all(pa.get("tier") == "backup" for pa in s3.paths_of(s) if s3.kind_is(pa, "relay")),
-                 secs=30, what="the relay back in the backup lane after undo")
-        grey("relay dot undo")
+                 secs=30, what="the relay a backup again after undo")
+        grey("relay made primary undo")
 
         # ---- the config page: a hot field, then a restart-only field
         def open_config():
@@ -320,10 +421,22 @@ def run() -> None:
         page.get_by_role("button", name="Save and restart").click()
         wait_for(lambda s: len(direct_addrs(s)) >= 2 and direct_addrs(s).isdisjoint(base_direct), secs=240,
                  what="the instance running again on new direct paths")
-        after = identity(stats())
+        st_after = stats()
+        after = identity(st_after)
         time.sleep(20)
-        # A direct path may still come up in those 20 s; a second restart would replace every path.
-        check("restart-only field: restarted exactly once", after <= identity(stats()))
+        st_later = stats()
+        later = identity(st_later)
+        # A direct path may still come up in those 20 s, and a relay path may retire once the direct
+        # ones carry the route; a second restart would give every direct path a new local port.
+        def validated_direct(st):
+            return {((pa.get("path") or {}).get("local_addr"), (pa.get("path") or {}).get("remote_addr"))
+                    for pa in s3.paths_of(st) if s3.kind_is(pa, "udp", "direct") and s3.is_validated(pa)}
+
+        direct_after, direct_later = validated_direct(st_after), validated_direct(st_later)
+        EVIDENCE["restart"] = {"after": sorted(map(str, after)), "later": sorted(map(str, later)),
+                               "direct_after": sorted(map(str, direct_after)), "direct_later": sorted(map(str, direct_later))}
+        check("restart-only field: restarted exactly once", direct_after <= direct_later,
+              lost=sorted(map(str, direct_after - direct_later)), lost_any_kind=sorted(map(str, after - later)))
         check("restart-only field: the process lives", start_ticks() == base_ticks)
 
         # ---- narrow screens: screenshots and no sideways scroll
@@ -333,12 +446,48 @@ def run() -> None:
             page.goto("about:blank")
             page.goto(device_url(INSTANCE))
             peer_row(page).wait_for(state="visible", timeout=60000)
-            open_runway(page)
+            open_paths(page)
             no_sideways_scroll(page, f"status page, {width} px")
-            page.screenshot(path=str(SHOTS / f"status-{width}.png"), full_page=True)
+            effect_badges_fit(page, f"status page, {width} px")
+            nothing_cut(page, f"status page, {width} px")
+            shoot_status(page, "en", width)
             open_config()
             no_sideways_scroll(page, f"config page, {width} px")
-            page.screenshot(path=str(SHOTS / f"config-{width}.png"), full_page=True)
+            effect_badges_fit(page, f"config page, {width} px")
+            page.set_viewport_size({"width": width, "height": 3200})
+            page.wait_for_timeout(800)
+            page.screenshot(path=str(SHOTS / f"config-en-{width}-long.png"))
+            page.set_viewport_size({"width": width, "height": 900})
+
+        # ---- the same pages in Chinese, the language the owner reads
+        cn = browser.new_context(viewport={"width": 1040, "height": 900}, locale="zh-CN")
+        # The page takes its language from localStorage, not from the browser's.
+        # about:blank, which the run passes through, has no storage: the script must not fail there.
+        cn.add_init_script("try { localStorage.setItem('lang', 'cn') } catch (e) {}")
+        cpage = cn.new_page()
+        cpage.on("pageerror", lambda e: errors.append(str(e)))
+        login(cpage)
+        for width in (360, 390, 1040):
+            cpage.set_viewport_size({"width": width, "height": 900})
+            cpage.goto("about:blank")
+            cpage.goto(device_url(INSTANCE))
+            peer_row(cpage).wait_for(state="visible", timeout=60000)
+            open_paths(cpage)
+            no_sideways_scroll(cpage, f"status page (Chinese), {width} px")
+            effect_badges_fit(cpage, f"status page (Chinese), {width} px")
+            nothing_cut(cpage, f"status page (Chinese), {width} px")
+            shoot_status(cpage, "cn", width)
+            cpage.goto("about:blank")
+            cpage.goto(device_url(INSTANCE))
+            cpage.locator('button:has(.pi-ellipsis-v)').first.click()
+            cpage.get_by_text("编辑网络").first.click()
+            open_panel(cpage, "高级设置", "#hostname")
+            no_sideways_scroll(cpage, f"config page (Chinese), {width} px")
+            effect_badges_fit(cpage, f"config page (Chinese), {width} px")
+            cpage.set_viewport_size({"width": width, "height": 3200})
+            cpage.wait_for_timeout(800)
+            cpage.screenshot(path=str(SHOTS / f"config-cn-{width}-long.png"))
+            cpage.set_viewport_size({"width": width, "height": 900})
         check("the page raised no script error", not errors, errors=errors[:5])
         browser.close()
 

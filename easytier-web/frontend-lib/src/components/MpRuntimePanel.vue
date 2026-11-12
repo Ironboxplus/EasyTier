@@ -38,7 +38,7 @@ import {
 import MpFlowSankey from './MpFlowSankey.vue'
 import MpSchedulerPanel from './MpSchedulerPanel.vue'
 import MpStat from './MpStat.vue'
-import PathRunway from './runway/PathRunway.vue'
+import PathMap from './runway/PathMap.vue'
 
 type Step = 'classify' | 'cc' | 'paths'
 
@@ -550,8 +550,8 @@ function mtuOverhead(dp: MpDataPlaneStatus): number | undefined {
               </span>
             </Message>
 
-            <PathRunway :peer="peer" :mp-config="mpConfig" :peer-name="peerName(peer.peer_id)" :peer-names="peerNames"
-              :busy="busy || !mpConfig" @edit="(label, update) => emit('edit-mp', label, update)"
+            <PathMap :peer="peer" :mp-config="mpConfig" :peer-name="peerName(peer.peer_id)" :peer-names="peerNames"
+              :rates="view.pathRates" :busy="busy || !mpConfig" @edit="(label, update) => emit('edit-mp', label, update)"
               @set-policy="(m, a) => emit('set-policy', m, a)" />
 
             <details class="mp-details" data-testid="mp-runtime-path-details">
@@ -726,15 +726,30 @@ function mtuOverhead(dp: MpDataPlaneStatus): number | undefined {
   background: var(--p-primary-color, #10b981);
 }
 
-/* On a phone the four steps would cut their names; the number stays and the
-   name is the button's title. */
+/* On a phone the four steps form two rows of two, wide enough for a value such as
+   "Default (BBR)"; a value that is still longer wraps, nothing is cut. */
 @media (max-width: 480px) {
-  .mp-step {
-    padding: 0.5rem 0.5rem 0.6rem;
+  .mp-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .mp-step-label {
+  .mp-step {
+    padding: 0.5rem 0.75rem 0.6rem;
+  }
+
+  .mp-step + .mp-step::before {
     display: none;
+  }
+
+  .mp-step:nth-child(n + 3) {
+    border-top: 1px solid var(--p-content-border-color, rgba(0, 0, 0, 0.1));
+  }
+
+  .mp-step b {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
   }
 }
 

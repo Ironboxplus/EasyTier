@@ -56,7 +56,8 @@ jobs:
           # "blackbox:<scenario>" runs only the named black-box scenarios (and the blackbox job).
           picked=$(for j in $jobs; do case $j in blackbox:*) printf "%s " "${j#blackbox:}";; esac; done)
           if [ -n "$picked" ]; then jobs="$jobs blackbox "; scenarios=$picked
-          else scenarios="s31_legacy s31_native_punch s31_cli_compat s31_faketcp_numbers s32_cc_matrix s32_rate_limit s32_brutal_loss s32_sqm s32_multi_egress s32_relay_then_punch s32_punch_rate s32_relay_beside_punch s32_path_policy s32_dataplane s32_reliable_class s32_oversize s32_split_proxy s3x_harsh s3x_vs_official s32_mwan3 s33_churn s33_soak s33_route_loop s34_hot_selection s40_relay_failover_empty_peer s41_recv_limit_liveness s42_quic_tunnel_etq1 s43_proxy_flows s44_flow_pinning s45_tcp_punch_keepalive s46_sym_punch s47_mixed_fork_versions s48_stun_mismatch"; fi
+          else scenarios="s31_legacy s31_native_punch s31_cli_compat s31_faketcp_numbers s32_cc_matrix s32_rate_limit s32_brutal_loss s32_sqm s32_multi_egress s32_relay_then_punch s32_punch_rate s32_relay_beside_punch s32_path_policy s32_dataplane s32_reliable_class s32_oversize s32_split_proxy s3x_harsh s3x_vs_official s32_mwan3 s33_churn s33_soak s33_route_loop s34_hot_selection s40_relay_failover_empty_peer s41_recv_limit_liveness s42_quic_tunnel_etq1 s43_proxy_flows s44_flow_pinning s45_tcp_punch_keepalive s46_sym_punch s47_mixed_fork_versions"; fi
+          # s48_stun_mismatch tests T3-3 (#2680), which ships in the next batch (P2b), not in this one.
           json=$(for x in $scenarios; do printf '"%s",' "$x"; done)
           echo "scenarios=[${json%,}]" >> "$GITHUB_OUTPUT"
           # aarch64 only when the Linux binaries themselves are asked for; ui-e2e and blackbox use x86_64.
@@ -643,8 +644,11 @@ jobs:
           path: vendor/netwatcher
       - if: steps.bin.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -qqy build-essential cmake clang pkg-config
+          # The runner image already has these; apt only fills a gap (its mirror is sometimes unreachable).
+          command -v cmake && command -v clang && command -v pkg-config && command -v make || {
+            sudo apt-get update
+            sudo apt-get install -qqy build-essential cmake clang pkg-config
+          }
           mkdir -p et/easytier-gui/dist
       - if: steps.bin.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
@@ -834,7 +838,7 @@ jobs:
 
   # Interface black-box and grey-box test (tests/ui-e2e): the real easytier-web
   # with the built front end manages the `linux` job's easytier-core in the
-  # blackbox topology; a browser (Playwright) drags the path runway, edits the
+  # blackbox topology; a browser (Playwright) uses the path map, edits the
   # config page and takes screenshots at 360, 390 and 1040 px, and every step is
   # checked against the core (same process, same paths, the field's effect).
   ui-e2e:

@@ -179,7 +179,6 @@ mp_group_col:
   remotes: 远端地址
 mp_group_name_placeholder: 新网卡组名称
 mp_group_add: 添加网卡组
-mp_config_help: 随网络配置保存。网络运行时，标为“立即生效”的设置马上生效；“对新路径生效”的设置对之后建立的路径生效；“需重连”的设置要在状态页点重连。
 mp_runtime_title: 多路径与 SQM 运行状态
 mp_runtime_empty: 还没有对端上报多路径会话。
 mp_sqm_enabled: 启用 SQM
@@ -226,9 +225,9 @@ mp_sqm_autorate_max: Autorate 带宽估计上限
 mp_sqm_range_invalid: Autorate 下限不能大于上限。
 mp_effect:
   hot: 立即生效
-  new_path: 对新路径生效
-  reconnect: 需重连
-  restart: 需重启实例
+  new_path: 新路径生效
+  reconnect: 重连后生效
+  restart: 重启后生效
 mp_hot_applied: 已应用到运行中的网络，未重启。
 mp_patch_failed: 应用到运行中的网络失败
 mp_policy:
@@ -243,7 +242,6 @@ mp_policy:
   clear_help: 清除此路径的策略
 mp_live:
   title: 多路径设置
-  hint: 在这里修改，立即作用于运行中的网络；每项标明何时生效。
   applied: 已应用多路径设置
   egress_limit: 网卡发送速率上限
   sqm_enabled: 智能队列管理
@@ -251,9 +249,13 @@ mp_live:
   data_plane: 数据报数据面
   hole_mode: TCP 打洞方式
   punch_attempts: 打洞尝试次数
-  punch_pps: 打洞每秒包数（0 为不限）
-  apply: 应用
-  discard: 放弃修改
+  punch_pps: 打洞每秒包数
+  switch: 换路门槛
+  switch_help: 更快的路径要同时满足这两条，才会换下正在发送的路径，免得来回切换。
+  switch_faster: 新路径至少快
+  switch_and: 并且至少快
+  lossy: 丢包超过这个比例的路径不用
+  unmeasured: 还没测到时延的路径，按这个时延排序
 mp_restart:
   title: 需要重启
   message: "对 {0} 的修改要在网络重启后才生效。现在保存并重启？"
@@ -295,7 +297,9 @@ mp_runway:
   undo: 撤销
   rtt: 往返时延
   loss: 丢包率
-  bias: 排序前加在往返时延上的值
+  bias: 选路时按往返时延从低到高排。这类路径的时延先加上这个值再排，负数让它们排得更靠前，正数更靠后。
+  bias_label: 排序时加减
+  tier_label: 用作
   all_of_kind: "所有{0}"
   drop_here: 把路径拖到这里
   kind_v6: "{0}（IPv6）"
@@ -324,6 +328,28 @@ mp_runway:
     switch: "快 {0} 毫秒且快 {1}% 才换路"
     unmeasured: "没有测到时延的路径按 {0} 毫秒排序"
     lossy: "丢包超过 {0}% 的路径不参与"
+mp_map:
+  you: 本机
+  send: 发送
+  send_note: 本机选路
+  recv: 接收
+  recv_note: 对端选路
+  unit: 速率单位 Mbit/s
+  kmax_before: 同时用
+  kmax_after: 条
+  kmax_less: 少用一条
+  kmax_more: 多用一条
+  kmax_tip: 同时发送数据的路径数，按往返时延从低到高选
+  loss: "丢 {0}%"
+  unmeasured: 未测
+  relays: "经中转 {0} 条 · 最快 {1} ms"
+  relays_unmeasured: "经中转 {0} 条"
+  relay_port: 中转
+  empty: 还没有建立好的路径
+  scope:
+    lan: 局域网
+    wan: 公网
+    v6: IPv6
 mp_rt:
   cc_name:
     engine_default: 默认（BBR）

@@ -3,7 +3,7 @@
 // same logarithmic axis the path runway uses, traffic and loss in small type.
 // What does not fit a narrow screen (address, hops, NAT, version) goes into
 // the opened row instead of a sideways scroll.
-import { ChevronDown, ChevronRight, Server, Waypoints, Zap } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, PackageX, Server, Waypoints, Zap } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { cn } from '../lib/utils'
 import { runwayAxis } from '../modules/pathRunway'
@@ -72,10 +72,15 @@ const dotTone = (row: PeerRow) => {
               :class="cn('absolute top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full', dotTone(row))"
               :style="{ left: `${axis.x(row.latencyMs)}%` }" data-testid="peer-latency-dot" />
           </div>
-          <span :class="cn('shrink-0 text-xs tabular-nums', row.lossPercent >= 10 ? 'text-amber-600' : 'text-zinc-500')"
-            data-testid="peer-traffic">
-            <template v-if="row.tx || row.rx">&uarr;{{ row.tx || '0 B' }} &darr;{{ row.rx || '0 B' }}</template>
-            <template v-if="row.loss"> {{ row.loss }}</template>
+          <span class="flex shrink-0 items-center gap-2 text-xs tabular-nums text-zinc-500" data-testid="peer-traffic">
+            <template v-if="row.tx || row.rx">
+              <span class="inline-flex items-center gap-0.5"><ArrowUp class="size-3" />{{ row.tx || '0 B' }}</span>
+              <span class="inline-flex items-center gap-0.5"><ArrowDown class="size-3" />{{ row.rx || '0 B' }}</span>
+            </template>
+            <span v-if="row.loss" :title="t('loss_rate')"
+              :class="cn('inline-flex items-center gap-0.5 rounded px-1', row.lossPercent >= 10 ? 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200' : 'bg-zinc-100 dark:bg-zinc-800')">
+              <PackageX class="size-3" />{{ row.loss }}
+            </span>
           </span>
         </div>
       </div>

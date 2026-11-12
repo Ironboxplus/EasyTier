@@ -137,23 +137,23 @@ const row = { initial: { opacity: 0, y: -4 }, animate: { opacity: 1, y: 0 }, exi
 </script>
 
 <template>
-  <fieldset class="flex flex-col gap-3 border rounded p-3" data-testid="mp-dataplane">
+  <fieldset class="flex flex-col gap-3 min-w-0 border rounded p-3" data-testid="mp-dataplane">
     <legend class="px-1 font-medium">{{ t('mp_dp.section') }}
       <MpEffectBadge field="mp.data_plane.enabled" /></legend>
     <small class="text-color-secondary">{{ t('mp_dp.help') }}</small>
 
     <!-- basic: switch, scenario preset, proxies -->
-    <div class="flex flex-row flex-wrap gap-4 items-center">
+    <div class="flex min-w-0 flex-row flex-wrap items-center gap-4">
       <div class="flex items-center gap-2">
         <Checkbox :model-value="dp.enabled" input-id="mp-dp-enabled" :binary="true" data-testid="mp-dp-enabled"
           @update:model-value="(v: boolean) => patchDp({ enabled: v })" />
         <label for="mp-dp-enabled">{{ t('mp_dp.enabled') }}</label>
         <span class="pi pi-question-circle" v-tooltip="t('mp_dp.enabled_help')"></span>
       </div>
-      <div class="flex flex-col gap-1 min-w-[16rem]">
+      <div class="flex flex-col gap-1 min-w-0 max-w-full sm:min-w-[16rem]">
         <label>{{ t('mp_dp.preset_label') }}
           <MpEffectBadge field="mp.data_plane.class_policies" /></label>
-        <Select :model-value="preset" :options="presetOptions" option-label="label" option-value="value"
+        <Select class="w-full min-w-0" :model-value="preset" :options="presetOptions" option-label="label" option-value="value"
           :disabled="!dp.enabled" data-testid="mp-dp-preset" @update:model-value="onPreset" />
       </div>
     </div>
@@ -177,10 +177,10 @@ const row = { initial: { opacity: 0, y: -4 }, animate: { opacity: 1, y: 0 }, exi
       <motion.div v-if="advanced && dp.enabled" key="dp-advanced" v-bind="reveal" class="flex flex-col gap-3 overflow-hidden"
         data-testid="mp-dp-advanced">
         <div class="flex flex-row flex-wrap gap-4">
-          <div class="flex flex-col gap-1 min-w-[14rem]">
+          <div class="flex flex-col gap-1 min-w-0 max-w-full sm:min-w-[14rem]">
             <label>{{ t('mp_dp.oversize_label') }}
               <MpEffectBadge field="mp.data_plane.oversize" /></label>
-            <Select :model-value="dp.oversize" :options="oversizeOptions" option-label="label" option-value="value"
+            <Select class="w-full min-w-0" :model-value="dp.oversize" :options="oversizeOptions" option-label="label" option-value="value"
               data-testid="mp-dp-oversize" @update:model-value="(v) => patchDp({ oversize: v })" />
             <small class="text-color-secondary max-w-[28rem]">{{ t(`mp_dp.oversize_help.${dp.oversize}`) }}</small>
           </div>

@@ -16,6 +16,14 @@ const effect = computed(() => fieldEffect(props.field))
 
 <style scoped>
 .mp-effect {
+  /* A small block right after its label, also when the parent is a column flexbox or a grid
+     (which would stretch it over the whole row). */
+  display: inline-block;
+  flex: none;
+  align-self: flex-start;
+  justify-self: start;
+  width: fit-content;
+  max-width: 100%;
   font-size: 0.7rem;
   padding: 0 0.35rem;
   border-radius: 0.25rem;

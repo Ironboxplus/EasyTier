@@ -1,9 +1,7 @@
-// The path runway: the model that places the paths of a peer and turns a
-// dragged handle into a selection rule, and the component that wires the
-// handles to `edit` events (test 9).
-import { mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
-import PathRunway from '../src/components/runway/PathRunway.vue'
+// The model behind the path map: it places the paths of a peer as the core
+// reported them (or as a draft rule would), and turns an edit into a selection
+// rule. The map component itself is tested in path-map.spec.ts.
+import { describe, expect, it } from 'vitest'
 import {
   kindOf,
   kmaxAfterDrag,
@@ -15,13 +13,7 @@ import {
   withSwitchThreshold,
   withUnmeasuredMs,
 } from '../src/modules/pathRunway'
-import { DEFAULT_MP_CONFIG, DEFAULT_MP_SELECTION_CONFIG, normalizeMpConfig, type MpPathStatus, type MpPeerStatus } from '../src/types/mpConfig'
-import { mpGlobal } from './primevueStubs'
-
-vi.mock('@vueuse/core', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@vueuse/core')>()),
-  useElementSize: () => ({ width: { value: 600 }, height: { value: 100 } }),
-}))
+import { DEFAULT_MP_SELECTION_CONFIG, type MpPathStatus, type MpPeerStatus } from '../src/types/mpConfig'
 
 const WIDTH = 600
 
@@ -179,153 +171,5 @@ describe('runway model: handles to rules', () => {
     expect(axis.x(1)).toBeLessThan(axis.x(10))
     expect(axis.x(10) - axis.x(1)).toBeLessThan(axis.x(100) - axis.x(10))
     expect(axis.x(1000)).toBe(axis.x(600))
-  })
-})
-
-// ---- the component ----------------------------------------------------------------
-
-function mountRunway(selected?: number[]) {
-  const mpConfig = normalizeMpConfig({ ...DEFAULT_MP_CONFIG(), enabled: true, kmax: 2 })
-  const wrapper = mount(PathRunway, {
-    props: { peer: peer(selected), mpConfig, peerName: 'peer-a', peerAddress: '10.0.0.2' },
-    global: mpGlobal(),
-    attachTo: document.body,
-  })
-  return { wrapper, mpConfig }
-}
-
-type Edit = [string, (mp: ReturnType<typeof normalizeMpConfig>) => ReturnType<typeof normalizeMpConfig>]
-const lastEdit = (wrapper: ReturnType<typeof mountRunway>['wrapper']) => {
-  const edits = wrapper.emitted('edit') as Edit[] | undefined
-  expect(edits?.length).toBeGreaterThan(0)
-  return edits![edits!.length - 1]
-}
-
-describe('PathRunway', () => {
-  it('shows every sending path on the primary lane and the relay on the backup lane', () => {
-    const { wrapper } = mountRunway()
-    const primary = wrapper.find('[data-testid="runway-lane-primary"]')
-    const backup = wrapper.find('[data-testid="runway-lane-backup"]')
-    expect(primary.findAll('[data-testid="runway-path"]').map(n => n.attributes('data-state'))).toEqual(['sending', 'sending', 'standby'])
-    expect(backup.findAll('[data-testid="runway-path"]')).toHaveLength(1)
-    expect(wrapper.findAll('[data-testid="runway-out-item"]')).toHaveLength(1)
-    wrapper.unmount()
-  })
-
-  it('dragging the cut down one row emits a kmax edit; the update sets kmax', async () => {
-    const { wrapper, mpConfig } = mountRunway()
-    const handle = wrapper.find('[data-testid="runway-kmax"]')
-    expect(handle.text()).toContain('2')
-    await handle.trigger('pointerdown', { clientX: 0, clientY: 100, button: 0 })
-    await handle.trigger('pointermove', { clientX: 0, clientY: 140 })
-    expect(handle.text()).toContain('3')
-    await handle.trigger('pointerup', { clientX: 0, clientY: 140 })
-    const [, update] = lastEdit(wrapper)
-    expect(update(mpConfig).kmax).toBe(3)
-    expect(update(mpConfig).selection).toEqual(DEFAULT_MP_SELECTION_CONFIG())
-    wrapper.unmount()
-  })
-
-  it('a cut released where it started edits nothing', async () => {
-    const { wrapper } = mountRunway()
-    const handle = wrapper.find('[data-testid="runway-kmax"]')
-    await handle.trigger('pointerdown', { clientX: 0, clientY: 100, button: 0 })
-    await handle.trigger('pointerup', { clientX: 0, clientY: 100 })
-    expect(wrapper.emitted('edit')).toBeUndefined()
-    wrapper.unmount()
-  })
-
-  it('dragging the shield wider emits the switch threshold', async () => {
-    const { wrapper, mpConfig } = mountRunway()
-    const axis = runwayAxis(WIDTH)
-    const handle = wrapper.find('[data-testid="runway-shield"]')
-    const from = axis.x(5.1)
-    await handle.trigger('pointerdown', { clientX: from, clientY: 0, button: 0 })
-    await handle.trigger('pointermove', { clientX: axis.x(2.1), clientY: 0 })
-    await handle.trigger('pointerup', { clientX: axis.x(2.1), clientY: 0 })
-    const [, update] = lastEdit(wrapper)
-    expect(update(mpConfig).selection.switch_min_ms).toBe(8)
-    expect(update(mpConfig).kmax).toBe(2)
-    wrapper.unmount()
-  })
-
-  it('dragging a dot sideways writes a rule for its kind', async () => {
-    const { wrapper, mpConfig } = mountRunway()
-    const axis = runwayAxis(WIDTH)
-    // the IPv6 path sits at 13.1 - 3 = 10.1 ms; drag it to its real RTT
-    const dots = wrapper.find('[data-testid="runway-lane-primary"]').findAll('[data-testid="runway-dot"]')
-    const v6Dot = dots[1]
-    await v6Dot.trigger('pointerdown', { clientX: axis.x(10.1), clientY: 0, button: 0 })
-    await v6Dot.trigger('pointermove', { clientX: axis.x(13.1), clientY: 0 })
-    await v6Dot.trigger('pointerup', { clientX: axis.x(13.1), clientY: 0 })
-    const [, update] = lastEdit(wrapper)
-    expect(update(mpConfig).selection.kind_rules).toEqual([
-      { carrier_kind: 'udp-direct', ip_family: 'v6', tier: 'primary', rtt_bias_ms: 0 },
-    ])
-    wrapper.unmount()
-  })
-
-  // A dot dragged into the other lane is redrawn by another element: the one that took the pointer
-  // never sees the release, so the release is heard on the window.
-  it('a dot released away from its own element still ends the drag', async () => {
-    const { wrapper, mpConfig } = mountRunway()
-    const axis = runwayAxis(WIDTH)
-    const v6Dot = wrapper.find('[data-testid="runway-lane-primary"]').findAll('[data-testid="runway-dot"]')[1]
-    await v6Dot.trigger('pointerdown', { clientX: axis.x(10.1), clientY: 0, button: 0 })
-    window.dispatchEvent(new MouseEvent('pointermove', { clientX: axis.x(13.1), clientY: 0 }))
-    window.dispatchEvent(new MouseEvent('pointerup', { clientX: axis.x(13.1), clientY: 0 }))
-    await wrapper.vm.$nextTick()
-    const [, update] = lastEdit(wrapper)
-    expect(update(mpConfig).selection.kind_rules).toEqual([
-      { carrier_kind: 'udp-direct', ip_family: 'v6', tier: 'primary', rtt_bias_ms: 0 },
-    ])
-    wrapper.unmount()
-  })
-
-  it('a click on a dot opens its detail instead of editing', async () => {
-    const { wrapper } = mountRunway()
-    const dot = wrapper.find('[data-testid="runway-dot"]')
-    await dot.trigger('pointerdown', { clientX: 10, clientY: 0, button: 0 })
-    await dot.trigger('pointerup', { clientX: 10, clientY: 0 })
-    expect(wrapper.emitted('edit')).toBeUndefined()
-    expect(document.body.querySelector('[data-testid="runway-detail"]')).not.toBeNull()
-    wrapper.unmount()
-  })
-
-  it('the loss handle emits the loss threshold', async () => {
-    const { wrapper, mpConfig } = mountRunway()
-    const handle = wrapper.find('[data-testid="runway-loss"]')
-    await handle.trigger('pointerdown', { clientX: 0, clientY: 0, button: 0 })
-    // the meter has no layout in the test DOM: width 0 is treated as 1 px, so any move clamps to the maximum
-    await handle.trigger('pointermove', { clientX: 1000, clientY: 0 })
-    await handle.trigger('pointerup', { clientX: 1000, clientY: 0 })
-    const [, update] = lastEdit(wrapper)
-    expect(update(mpConfig).selection.lossy_percent).toBe(40)
-    wrapper.unmount()
-  })
-
-  it('shows the core report again once the next report arrives after a release', async () => {
-    const { wrapper } = mountRunway()
-    const handle = wrapper.find('[data-testid="runway-kmax"]')
-    await handle.trigger('pointerdown', { clientX: 0, clientY: 100, button: 0 })
-    await handle.trigger('pointermove', { clientX: 0, clientY: 140 })
-    await handle.trigger('pointerup', { clientX: 0, clientY: 140 })
-    expect(wrapper.find('[data-testid="runway-kmax"]').text()).toContain('3')
-    await wrapper.setProps({ peer: peer([3, 2, 1]), mpConfig: normalizeMpConfig({ ...DEFAULT_MP_CONFIG(), enabled: true, kmax: 3 }) })
-    expect(wrapper.find('[data-testid="runway-kmax"]').text()).toContain('3')
-    expect(wrapper.findAll('[data-testid="runway-lane-primary"] [data-testid="runway-path"]').map(n => n.attributes('data-state')))
-      .toEqual(['sending', 'sending', 'sending'])
-    wrapper.unmount()
-  })
-
-  it('does not start an edit while a patch is in flight', async () => {
-    const mpConfig = normalizeMpConfig({ ...DEFAULT_MP_CONFIG(), enabled: true, kmax: 2 })
-    const wrapper = mount(PathRunway, { props: { peer: peer(), mpConfig, peerName: 'peer-a', busy: true }, global: mpGlobal() })
-    const handle = wrapper.find('[data-testid="runway-kmax"]')
-    await handle.trigger('pointerdown', { clientX: 0, clientY: 100, button: 0 })
-    await handle.trigger('pointermove', { clientX: 0, clientY: 140 })
-    await handle.trigger('pointerup', { clientX: 0, clientY: 140 })
-    expect(wrapper.emitted('edit')).toBeUndefined()
-    wrapper.unmount()
   })
 })
