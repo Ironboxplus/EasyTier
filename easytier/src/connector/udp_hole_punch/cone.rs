@@ -30,6 +30,10 @@ use crate::{
 
 use super::common::PunchHoleServerCommon;
 
+/// How often the plain UDP cone punch sends its SYN, and how long each SYN is waited for.
+const CONE_CONNECT_ATTEMPTS: usize = 5;
+const CONE_CONNECT_ATTEMPT: Duration = Duration::from_secs(1);
+
 /// `dest_addr`'s port at each of the requester's other public IPv4s
 /// (`SendPunchPacketConeRequest.mp_alt_dest_ips`).
 #[cfg(feature = "mpquic")]
@@ -83,16 +87,28 @@ impl PunchConeHoleServer {
         ))?;
         let listener_addr = std::net::SocketAddr::from(listener_addr);
         #[cfg(feature = "mpquic")]
-        let listener = if request.use_mp {
-            self.common.find_mp_listener(&listener_addr).await
-        } else {
-            self.common.find_listener(&listener_addr).await
-        };
+        let use_mp = request.use_mp;
         #[cfg(not(feature = "mpquic"))]
-        let listener = self.common.find_listener(&listener_addr).await;
-        let listener = listener.ok_or(anyhow::anyhow!(
-            "send_punch_packet_for_cone failed to find listener"
-        ))?;
+        let use_mp = false;
+        // The non-MP listener also reports where the requester's punch packets come from (its
+        // registration, if the requester made one while selecting, is claimed here). The raw MP
+        // listener has its own handoff.
+        let (listener, mut observer) = if use_mp {
+            #[cfg(feature = "mpquic")]
+            let listener = self.common.find_mp_listener(&listener_addr).await;
+            #[cfg(not(feature = "mpquic"))]
+            let listener: Option<Arc<UdpSocket>> = None;
+            let listener = listener.ok_or(anyhow::anyhow!(
+                "send_punch_packet_for_cone failed to find listener"
+            ))?;
+            (listener, None)
+        } else {
+            let (listener, observer) = self
+                .common
+                .observe_hole_punch(&listener_addr, request.transaction_id)
+                .await?;
+            (listener, Some(observer))
+        };
 
         let dest_addr = request.dest_addr.ok_or(anyhow::anyhow!(
             "send_punch_packet_for_cone request missing dest_addr"
@@ -140,25 +156,58 @@ impl PunchConeHoleServer {
 
         let global_ctx = self.common.get_global_ctx();
         let local_addr = listener.local_addr().ok();
-        for _ in 0..request.packet_batch_count {
-            tracing::info!(?request, "sending hole punching packet");
-
-            for _ in 0..request.packet_count_per_batch {
-                for dest_addr in &dest_addrs {
-                    if !global_ctx
-                        .allow_punch_packet(local_addr, dest_addr.ip())
-                        .await
-                    {
-                        continue;
-                    }
-                    let udp_packet =
-                        new_hole_punch_packet(request.transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
-                    if let Err(e) = listener.send_to(&udp_packet.into_bytes(), dest_addr).await {
-                        tracing::error!(?e, "failed to send hole punch packet to dest addr");
+        let send_batch = |dest_addrs: Vec<std::net::SocketAddr>| {
+            let (listener, global_ctx, request) = (&listener, &global_ctx, &request);
+            async move {
+                for _ in 0..request.packet_count_per_batch {
+                    for dest_addr in &dest_addrs {
+                        if !global_ctx
+                            .allow_punch_packet(local_addr, dest_addr.ip())
+                            .await
+                        {
+                            continue;
+                        }
+                        let udp_packet = new_hole_punch_packet(
+                            request.transaction_id,
+                            HOLE_PUNCH_PACKET_BODY_LEN,
+                        );
+                        if let Err(e) = listener.send_to(&udp_packet.into_bytes(), dest_addr).await
+                        {
+                            tracing::error!(?e, "failed to send hole punch packet to dest addr");
+                        }
                     }
                 }
             }
-            tokio::time::sleep(Duration::from_millis(request.packet_interval_ms as u64)).await;
+        };
+        // The endpoint the requester's packets really come from, once one has arrived: its NAT
+        // may map this socket differently than STUN said, so it gets the batches too.
+        let mut observed_addr = observer.as_ref().and_then(|observer| observer.source_addr());
+        for _ in 0..request.packet_batch_count {
+            tracing::info!(?request, "sending hole punching packet");
+
+            send_batch(dest_addrs.clone()).await;
+            if let Some(addr) = observed_addr.filter(|addr| !dest_addrs.contains(addr)) {
+                send_batch(vec![addr]).await;
+            }
+            let interval =
+                tokio::time::sleep(Duration::from_millis(request.packet_interval_ms as u64));
+            tokio::pin!(interval);
+            match observer.as_mut().filter(|_| observed_addr.is_none()) {
+                Some(observer) => {
+                    tokio::select! {
+                        _ = &mut interval => {}
+                        addr = observer.wait_for_source_addr() => {
+                            let addr = addr.map_err(anyhow::Error::from)?;
+                            observed_addr = Some(addr);
+                            if !dest_addrs.contains(&addr) {
+                                send_batch(vec![addr]).await;
+                            }
+                            interval.await;
+                        }
+                    }
+                }
+                None => interval.await,
+            }
         }
 
         Ok(Void::default())
@@ -218,11 +267,23 @@ impl PunchConeHoleClient {
                     use_mp: request_mp,
                     requester_peer_id,
                     mp_provider: "udp-punch".into(),
+                    transaction_id: Some(tid),
                 },
             )
             .await;
 
         let resp = handle_rpc_result(resp, dst_peer_id, &self.blacklist)?;
+        // A listener that registered another transaction would observe somebody else's packets.
+        // An older one does not echo: it registers when the punch packets are requested.
+        if resp.transaction_id.is_some_and(|registered| registered != tid) {
+            return Err(anyhow::anyhow!(
+                "listener registered a different hole-punch transaction"
+            ));
+        }
+        tracing::debug!(
+            source_observation_registered = resp.transaction_id == Some(tid),
+            "selected hole-punch listener"
+        );
 
         let remote_mapped_addr = resp.listener_mapped_addr.ok_or(anyhow::anyhow!(
             "select_punch_listener response missing listener_mapped_addr"
@@ -265,18 +326,29 @@ impl PunchConeHoleClient {
             "hole punch got remote listener"
         );
 
-        udp_array.add_new_socket(local_socket).await?;
-        udp_array.add_intreast_tid(tid);
+        // MP waits for the listener's punch packet to learn where its answer comes from. Plain UDP
+        // does not: the socket is left to the connection, which is the only receiver on it.
+        if use_mp {
+            udp_array.add_new_socket(local_socket.clone()).await?;
+            udp_array.add_intreast_tid(tid);
+        }
         let send_from_local = || async {
             for addr in std::iter::once(remote_mapped_addr.into()).chain(remote_alt_addrs.iter().copied())
             {
-                udp_array
-                    .send_with_all(
-                        &new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes(),
-                        addr,
-                    )
-                    .await
-                    .with_context(|| "failed to send hole punch packet from local")?;
+                let packet = new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();
+                if use_mp {
+                    udp_array
+                        .send_with_all(&packet, addr)
+                        .await
+                        .with_context(|| "failed to send hole punch packet from local")?;
+                } else {
+                    for _ in 0..3 {
+                        local_socket
+                            .send_to(&packet, addr)
+                            .await
+                            .with_context(|| "failed to send hole punch packet from local")?;
+                    }
+                }
             }
             Ok::<(), anyhow::Error>(())
         };
@@ -321,9 +393,55 @@ impl PunchConeHoleClient {
             }
         }));
 
-        // server: will send some punching resps, total 10 packets.
         // client: use the socket to create UdpTunnel with UdpTunnelConnector
         // NOTICE: UdpTunnelConnector will ignore the punching resp packet sent by remote.
+        if !use_mp {
+            // The listener answers the SYN to wherever it came from, so a STUN mapping that is not
+            // the NAT's real source (a mapping per destination) does not keep the connection from
+            // coming up. Our punch packets keep going out while it tries: a SYN that reaches the
+            // listener's NAT before the listener's own packets opened it is dropped, and its
+            // connector waits 3 s for an answer, so a silent attempt is repeated after a second.
+            let _punch_task = punch_task;
+            for _ in 0..CONE_CONNECT_ATTEMPTS {
+                let connect = tokio::time::timeout(
+                    CONE_CONNECT_ATTEMPT,
+                    finish_with_role(
+                        &self.peer_mgr,
+                        dst_peer_id,
+                        local_socket.clone(),
+                        remote_mapped_addr.into(),
+                        false,
+                        UdpPunchRole::Client,
+                        lifetime_guard.clone(),
+                    ),
+                );
+                tokio::pin!(connect);
+                loop {
+                    tokio::select! {
+                        outcome = &mut connect => {
+                            match outcome {
+                                Ok(Ok(outcome)) => {
+                                    tracing::info!("UDP hole punched transport ready");
+                                    return Ok(Some(outcome));
+                                }
+                                Ok(Err(e)) => {
+                                    tracing::error!(?e, "failed to connect with socket");
+                                    tokio::time::sleep(Duration::from_millis(200)).await;
+                                }
+                                Err(_) => tracing::debug!("no answer to the SYN, sending it again"),
+                            }
+                            break;
+                        }
+                        _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                            send_from_local().await?;
+                        }
+                    }
+                }
+            }
+            return Ok(None);
+        }
+
+        // server: will send some punching resps, total 10 packets.
         let mut finish_time: Option<Instant> = None;
         while finish_time.is_none() || finish_time.as_ref().unwrap().elapsed().as_millis() < 1000 {
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -391,19 +509,23 @@ pub mod tests {
     #[cfg(feature = "mpquic")]
     use std::time::Duration;
 
-    #[cfg(feature = "mpquic")]
     use tokio::net::UdpSocket;
 
     use crate::{
-        common::upnp::{
-            reset_udp_port_mapping_attempts_for_test, udp_port_mapping_attempts_for_test,
+        common::{
+            error::Error,
+            stun::{MockStunInfoCollector, StunInfoCollectorTrait},
+            upnp::{reset_udp_port_mapping_attempts_for_test, udp_port_mapping_attempts_for_test},
         },
         connector::udp_hole_punch::{
             UdpHolePunchConnector, cone::PunchConeHoleClient,
             tests::create_mock_peer_manager_with_mock_stun,
         },
         peers::tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
-        proto::common::NatType,
+        proto::{
+            common::{NatType, StunInfo},
+            rpc_types::controller::BaseController,
+        },
     };
 
     #[cfg(feature = "mpquic")]
@@ -500,6 +622,77 @@ pub mod tests {
         println!("{:?}", p_a.list_routes().await);
     }
 
+    /// A STUN collector whose mapping of the punching socket is not the endpoint the NAT really
+    /// gives it: the listener's punch packets go to `wrong`, and nothing ever reaches the socket.
+    struct WrongMappingStun {
+        inner: MockStunInfoCollector,
+        wrong: std::net::SocketAddr,
+    }
+
+    #[async_trait::async_trait]
+    impl StunInfoCollectorTrait for WrongMappingStun {
+        fn get_stun_info(&self) -> StunInfo {
+            self.inner.get_stun_info()
+        }
+
+        async fn get_udp_port_mapping(&self, local_port: u16) -> Result<std::net::SocketAddr, Error> {
+            self.inner.get_udp_port_mapping(local_port).await
+        }
+
+        async fn get_udp_port_mapping_with_socket(
+            &self,
+            _udp: Arc<UdpSocket>,
+        ) -> Result<std::net::SocketAddr, Error> {
+            Ok(self.wrong)
+        }
+
+        async fn get_tcp_port_mapping(&self, local_port: u16) -> Result<std::net::SocketAddr, Error> {
+            self.inner.get_tcp_port_mapping(local_port).await
+        }
+    }
+
+    /// The client connects through its own socket and does not wait for the listener's punch
+    /// packets to come back: when the STUN mapping differs from the real source they never do,
+    /// yet the listener is reachable and answers the SYN to wherever it came from.
+    #[tokio::test]
+    async fn cone_hole_punch_connects_when_the_stun_mapping_is_wrong() {
+        let p_a = create_mock_peer_manager_with_mock_stun(NatType::Restricted).await;
+        let p_b = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
+        let p_c = create_mock_peer_manager_with_mock_stun(NatType::Restricted).await;
+        // keeps the wrong endpoint bound, so the stray packets are absorbed there
+        let nowhere = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        p_a.get_global_ctx()
+            .replace_stun_info_collector(Box::new(WrongMappingStun {
+                inner: MockStunInfoCollector {
+                    udp_nat_type: NatType::Restricted,
+                },
+                wrong: nowhere.local_addr().unwrap(),
+            }));
+        connect_peer_manager(p_a.clone(), p_b.clone()).await;
+        connect_peer_manager(p_b.clone(), p_c.clone()).await;
+        wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
+
+        let hole_punching_a = UdpHolePunchConnector::new(p_a.clone());
+        let mut hole_punching_c = UdpHolePunchConnector::new(p_c.clone());
+        hole_punching_c.run_as_server().await.unwrap();
+        let data = hole_punching_a.client.data();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            data.cone_client.do_hole_punching(p_c.my_peer_id()),
+        )
+        .await
+        .expect("the punch must end");
+        assert!(
+            data.handle_udp_transport_result(p_c.my_peer_id(), result, None, None)
+                .await,
+            "the connection must not depend on the listener's packets reaching the declared mapping"
+        );
+        wait_route_appear_with_cost(p_a.clone(), p_c.my_peer_id(), Some(1))
+            .await
+            .unwrap();
+        drop(nowhere);
+    }
+
     #[cfg(feature = "mpquic")]
     #[rstest::rstest]
     #[case(true)]
@@ -553,6 +746,162 @@ pub mod tests {
         .await;
         assert_eq!(p_a.get_mp_session_manager().tracked_peer_count(), 1);
         assert_eq!(p_c.get_mp_session_manager().tracked_peer_count(), 1);
+    }
+
+    async fn cone_server_fixture() -> (
+        super::PunchConeHoleServer,
+        Arc<super::PunchHoleServerCommon>,
+        std::net::SocketAddr,
+        std::net::SocketAddr,
+    ) {
+        let peer_mgr = create_mock_peer_manager_with_mock_stun(NatType::Restricted).await;
+        let common = Arc::new(super::PunchHoleServerCommon::new(peer_mgr));
+        let (socket, mapped) = common.select_listener(false, false).await.unwrap();
+        let local = std::net::SocketAddr::from(([127, 0, 0, 1], socket.local_addr().unwrap().port()));
+        (
+            super::PunchConeHoleServer::new(common.clone()),
+            common,
+            mapped,
+            local,
+        )
+    }
+
+    fn cone_request(
+        listener: std::net::SocketAddr,
+        dest: std::net::SocketAddr,
+        tid: u32,
+        batches: u32,
+        interval_ms: u32,
+    ) -> crate::proto::peer_rpc::SendPunchPacketConeRequest {
+        crate::proto::peer_rpc::SendPunchPacketConeRequest {
+            listener_mapped_addr: Some(listener.into()),
+            dest_addr: Some(dest.into()),
+            transaction_id: tid,
+            packet_count_per_batch: 2,
+            packet_batch_count: batches,
+            packet_interval_ms: interval_ms,
+            ..Default::default()
+        }
+    }
+
+    async fn send_punch(from: &UdpSocket, to: std::net::SocketAddr, tid: u32) {
+        let packet = crate::tunnel::udp::new_hole_punch_packet(
+            tid,
+            crate::connector::udp_hole_punch::common::HOLE_PUNCH_PACKET_BODY_LEN,
+        );
+        from.send_to(&packet.into_bytes(), to).await.unwrap();
+    }
+
+    /// The transaction ids of the hole punch packets that arrive until the socket is idle.
+    async fn punch_tids(socket: &UdpSocket) -> Vec<u32> {
+        use zerocopy::FromBytes as _;
+        let mut tids = Vec::new();
+        let mut buf = [0u8; 256];
+        while let Ok(Ok((len, _))) = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            socket.recv_from(&mut buf),
+        )
+        .await
+        {
+            let header = crate::tunnel::packet_def::UDPTunnelHeader::ref_from_prefix(&buf[..len])
+                .unwrap();
+            assert_eq!(
+                header.msg_type,
+                crate::tunnel::packet_def::UdpPacketType::HolePunch as u8
+            );
+            tids.push(header.conn_id.get());
+        }
+        tids
+    }
+
+    /// The listener punches towards the endpoint the requester declared and, once a punch packet of
+    /// the transaction has come in, towards the endpoint it came from: a NAT that maps the
+    /// requester's socket differently for the listener than STUN said is reached at the latter.
+    #[tokio::test]
+    async fn cone_server_punches_the_declared_and_the_observed_source() {
+        let (server, common, mapped, local) = cone_server_fixture().await;
+        let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let declared = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        common.prepare_hole_punch(&mapped, 7).await.unwrap();
+        // before the RPC that sends the punch packets: the registration keeps the source
+        send_punch(&peer, local, 7).await;
+        send_punch(&peer, local, 8).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        server
+            .send_punch_packet_cone(
+                BaseController::default(),
+                cone_request(mapped, declared.local_addr().unwrap(), 7, 1, 0),
+            )
+            .await
+            .unwrap();
+        assert_eq!(punch_tids(&declared).await, [7, 7]);
+        assert_eq!(punch_tids(&peer).await, [7, 7]);
+        // the active RPC's registration is gone with it
+        common.prepare_hole_punch(&mapped, 7).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cone_server_does_not_punch_the_same_endpoint_twice() {
+        let (server, common, mapped, local) = cone_server_fixture().await;
+        let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        common.prepare_hole_punch(&mapped, 7).await.unwrap();
+        send_punch(&peer, local, 7).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        server
+            .send_punch_packet_cone(
+                BaseController::default(),
+                cone_request(mapped, peer.local_addr().unwrap(), 7, 1, 0),
+            )
+            .await
+            .unwrap();
+        assert_eq!(punch_tids(&peer).await, [7, 7]);
+    }
+
+    /// A requester that did not register while selecting is observed from its punch RPC on, and a
+    /// source that shows up in the middle of the batches is punched in the batches that follow.
+    #[tokio::test]
+    async fn cone_server_punches_a_source_observed_while_sending() {
+        let (server, _common, mapped, local) = cone_server_fixture().await;
+        let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let declared = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let send = server.send_punch_packet_cone(
+            BaseController::default(),
+            cone_request(mapped, declared.local_addr().unwrap(), 7, 4, 200),
+        );
+        let reveal = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            send_punch(&peer, local, 7).await;
+        };
+        let (sent, _) = tokio::join!(send, reveal);
+        sent.unwrap();
+        assert_eq!(punch_tids(&declared).await, [7; 8]);
+        let observed = punch_tids(&peer).await;
+        assert!(
+            observed.len() >= 4 && observed.iter().all(|tid| *tid == 7),
+            "the observed source gets the later batches: {observed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cone_server_ignores_other_transactions_when_observing() {
+        let (server, common, mapped, local) = cone_server_fixture().await;
+        let stranger = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let declared = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        common.prepare_hole_punch(&mapped, 7).await.unwrap();
+        send_punch(&stranger, local, 8).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        server
+            .send_punch_packet_cone(
+                BaseController::default(),
+                cone_request(mapped, declared.local_addr().unwrap(), 7, 1, 0),
+            )
+            .await
+            .unwrap();
+        assert_eq!(punch_tids(&declared).await, [7, 7]);
+        assert!(punch_tids(&stranger).await.is_empty());
     }
 
     #[tokio::test]

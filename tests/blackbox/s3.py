@@ -2439,21 +2439,28 @@ def s46_sym_punch(run, args):
 
 
 def s47_mixed_fork_versions(run, args):
-    """G1: this build and the build before the proto renumbering (--b-bin) in one network. The native
-    UDP punch succeeds and business traffic flows; no multipath session forms, because the two ends
-    read each other's multipath fields differently. When the old end is restarted with this build,
-    the session comes up and carries the payload."""
+    """This build and the release of this fork before it (--b-bin) in one network, as during a staged
+    deployment. The native UDP punch succeeds and business traffic flows. What happens to multipath
+    depends on the old end (--mixed-mp): built before the proto renumbering (G1), it reads the
+    multipath fields differently and no session forms; built after it (the P2a release, against
+    P2b's T3-3 punch fields), the session forms while mixed. When the old end is restarted with this
+    build, the session comes up and carries the payload."""
     reference_binary(run, args)
+    run.evidence["mixed_mp"] = args.mixed_mp
     # A TCP hole punch would make the pair direct first and the UDP punch would never run.
     _, a, b = pair(run, "udp", flags_extra={"disable_tcp_hole_punching": True})
     row = wait_native_p2p(run, a, secs=300)
     run.evidence["mixed_peer_row"] = row
     run.check("mixed: a direct UDP connection by native punching", True)
     run.payload("mixed versions")
-    time.sleep(30)
-    st = a.stats()
-    run.evidence["mixed_stats"] = st
-    run.check("mixed: no multipath path is validated", not validated(st, 1), paths=paths_of(st))
+    if args.mixed_mp == "session":
+        established(run, a, "udp")
+        run.mp_payload(a, "mixed versions, multipath", 8 << 20)
+    else:
+        time.sleep(30)
+        st = a.stats()
+        run.evidence["mixed_stats"] = st
+        run.check("mixed: no multipath path is validated", not validated(st, 1), paths=paths_of(st))
     run.payload("mixed versions, later")
     for core in (a, b):
         run.check(f"mixed: {core.name} is still running", core.proc.poll() is None)
@@ -2523,6 +2530,9 @@ def main():
     ap.add_argument("--hours")
     ap.add_argument("--rounds", help="rounds of s33_route_loop (default 20)")
     ap.add_argument("--tcp-secs", default="20", help="seconds of each TCP run of s32_reliable_class (default 20)")
+    ap.add_argument("--mixed-mp", choices=["none", "session"], default="none",
+                    help="s47: what the two versions do about multipath while mixed (default none: --b-bin predates "
+                         "the proto renumbering; session: --b-bin reads the same multipath fields)")
     ap.add_argument("--rust-log", help="RUST_LOG for every core (debug runs)")
     ap.add_argument("--pcap", action="store_true", help="capture UDP/TCP on both routers' WAN side")
     ap.add_argument("scenarios", nargs="+")

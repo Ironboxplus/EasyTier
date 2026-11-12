@@ -56,16 +56,15 @@ jobs:
           # "blackbox:<scenario>" runs only the named black-box scenarios (and the blackbox job).
           picked=$(for j in $jobs; do case $j in blackbox:*) printf "%s " "${j#blackbox:}";; esac; done)
           if [ -n "$picked" ]; then jobs="$jobs blackbox "; scenarios=$picked
-          else scenarios="s31_legacy s31_native_punch s31_cli_compat s31_faketcp_numbers s32_cc_matrix s32_rate_limit s32_brutal_loss s32_sqm s32_multi_egress s32_relay_then_punch s32_punch_rate s32_relay_beside_punch s32_path_policy s32_dataplane s32_reliable_class s32_oversize s32_split_proxy s3x_harsh s3x_vs_official s32_mwan3 s33_churn s33_soak s33_route_loop s34_hot_selection s40_relay_failover_empty_peer s41_recv_limit_liveness s42_quic_tunnel_etq1 s43_proxy_flows s44_flow_pinning s45_tcp_punch_keepalive s46_sym_punch s47_mixed_fork_versions"; fi
-          # s48_stun_mismatch tests T3-3 (#2680), which ships in the next batch (P2b), not in this one.
+          else scenarios="s31_legacy s31_native_punch s31_cli_compat s31_faketcp_numbers s32_cc_matrix s32_rate_limit s32_brutal_loss s32_sqm s32_multi_egress s32_relay_then_punch s32_punch_rate s32_relay_beside_punch s32_path_policy s32_dataplane s32_reliable_class s32_oversize s32_split_proxy s3x_harsh s3x_vs_official s32_mwan3 s33_churn s33_soak s33_route_loop s34_hot_selection s40_relay_failover_empty_peer s41_recv_limit_liveness s42_quic_tunnel_etq1 s43_proxy_flows s44_flow_pinning s45_tcp_punch_keepalive s46_sym_punch s47_mixed_fork_versions s48_stun_mismatch"; fi
           json=$(for x in $scenarios; do printf '"%s",' "$x"; done)
           echo "scenarios=[${json%,}]" >> "$GITHUB_OUTPUT"
           # aarch64 only when the Linux binaries themselves are asked for; ui-e2e and blackbox use x86_64.
           x86='{"arch":"x86_64","target":"x86_64-unknown-linux-musl"}'
           arm='{"arch":"aarch64","target":"aarch64-unknown-linux-musl"}'
-          # The tree before the proto renumbering (G1), pushed once to a branch that does not run CI:
-          # the other end of the mixed-version black-box test.
-          base='{"arch":"x86_64-baseline","target":"x86_64-unknown-linux-musl","ref":"baseline/e02a19e0"}'
+          # The release before this one, the other end of the mixed-version black-box test: P2a (G1 and
+          # the upstream tiers without T3-3), as pushed by ci_push.sh to ci/upstream-tiers (run 43206264983).
+          base='{"arch":"x86_64-baseline","target":"x86_64-unknown-linux-musl","ref":"e8b382a8a04d0be9da598fc24432bedc7956972d"}'
           m=$x86
           case "$jobs" in *" all "*|*" linux "*) m="$m,$arm";; esac
           case "$jobs" in *" all "*|*" linux "*|*" blackbox "*) m="$m,$base";; esac
@@ -620,7 +619,7 @@ jobs:
         with:
           path: et
           ref: ${{ matrix.ref }}
-          # The baseline branch lives only on Ironboxplus/EasyTier; a run on another fork reads it there.
+          # The baseline commit lives only on Ironboxplus/EasyTier; a run on another fork reads it there.
           repository: ${{ matrix.ref && 'Ironboxplus/EasyTier' || github.repository }}
       # The binaries depend only on the Rust side: a push that changes the front end, the tests or
       # the CI files finds them in the cache and builds nothing.
@@ -814,7 +813,7 @@ jobs:
         run: |
           extra=""
           [ -n "$UPSTREAM" ] && extra="--b-bin $UPSTREAM"
-          [ "${{ matrix.scenario }}" = s47_mixed_fork_versions ] && extra="--b-bin $PWD/baseline"
+          [ "${{ matrix.scenario }}" = s47_mixed_fork_versions ] && extra="--b-bin $PWD/baseline --mixed-mp session"
           [ "${{ matrix.scenario }}" = s33_soak ] && extra="--hours 0.08"
           [ "${{ matrix.scenario }}" = s46_sym_punch ] && extra="--rust-log easytier::connector=debug,easytier::common::stun=debug"
           # A 20 s run still has the inner TCP's slow start in it, which costs the reliable class a few % on
