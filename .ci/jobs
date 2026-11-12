@@ -1,1 +1,1 @@
-blackbox:s47_mixed_fork_versions
+test windows android linux blackbox:s31_legacy blackbox:s31_native_punch blackbox:s3x_vs_official blackbox:s32_relay_then_punch blackbox:s32_relay_beside_punch blackbox:s32_punch_rate blackbox:s32_mwan3 blackbox:s46_sym_punch blackbox:s47_mixed_fork_versions
