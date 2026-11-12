@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { PopoverContentEmits, PopoverContentProps } from 'reka-ui'
 import type { HTMLAttributes } from 'vue'
-import { reactiveOmit } from '@vueuse/core'
-import { PopoverContent, PopoverPortal, useForwardPropsEmits } from 'reka-ui'
+import { reactiveOmit, useEventListener } from '@vueuse/core'
+import { injectPopoverRootContext, PopoverContent, PopoverPortal, useForwardPropsEmits } from 'reka-ui'
 import { cn } from '../../../lib/utils'
 
 defineOptions({ inheritAttrs: false })
@@ -18,6 +18,16 @@ const emits = defineEmits<PopoverContentEmits>()
 
 const delegatedProps = reactiveOmit(props, 'class')
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
+
+// Escape closes this popover only. The drawer or dialog around the page listens on the document and
+// would close too, before the popover (which listens on the window) hears the key; so an open
+// popover takes Escape first, while the event is still capturing, and closes itself.
+const root = injectPopoverRootContext()
+useEventListener(() => window, 'keydown', (event: KeyboardEvent) => {
+  if (event.key !== 'Escape' || !root.open.value) return
+  event.stopPropagation()
+  root.onOpenChange(false)
+}, { capture: true })
 </script>
 
 <template>

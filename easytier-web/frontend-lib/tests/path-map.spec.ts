@@ -186,4 +186,24 @@ describe('PathMap', () => {
     expect(update(mpConfig).selection.kind_rules).toEqual([{ carrier_kind: 'udp-punch', ip_family: 'v4', tier: 'primary', rtt_bias_ms: 1 }])
     wrapper.unmount()
   })
+
+  // The web console shows the status page in a drawer that closes on Escape (a listener on the
+  // document); Escape in an open popover must close the popover only.
+  it('Escape closes an open path popover and goes no further', async () => {
+    const { wrapper } = mountMap()
+    const outer = vi.fn()
+    document.addEventListener('keydown', outer)
+    await wrapper.find('[data-testid="path-map-path"]').trigger('click')
+    expect(document.body.querySelector('[data-testid="runway-detail"]')).not.toBeNull()
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 0))
+    expect(outer).not.toHaveBeenCalled()
+    expect(document.body.querySelector('[data-testid="runway-detail"]')).toBeNull()
+    // with no popover open, Escape reaches the page as before
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(outer).toHaveBeenCalledTimes(1)
+    document.removeEventListener('keydown', outer)
+    wrapper.unmount()
+  })
 })
