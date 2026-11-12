@@ -249,6 +249,12 @@ mp_live:
   hole_mode: TCP hole punch mode
   punch_attempts: Hole punch attempts
   punch_pps: Hole punch packets per second
+  switch: Switching threshold
+  switch_help: A faster path replaces a sending one only when it meets both, so paths do not flap.
+  switch_faster: Faster by at least
+  switch_and: and by at least
+  lossy: Paths losing more than this stay out
+  unmeasured: Paths without a measured time rank as
 mp_restart:
   title: Restart needed
   message: "Changes to {0} only take effect when the network restarts. Save and restart now?"
@@ -290,7 +296,9 @@ mp_runway:
   undo: Undo
   rtt: Round-trip time
   loss: Packet loss
-  bias: Added to the round-trip time before ranking
+  bias: Paths are ranked by round-trip time, lowest first. This value is added to the time of these paths before ranking; negative ranks them earlier, positive later.
+  bias_label: Ranking offset
+  tier_label: Use as
   all_of_kind: "All {0}"
   drop_here: Drop a path here
   kind_v6: "{0} (IPv6)"
@@ -319,6 +327,28 @@ mp_runway:
     switch: "Switch only if faster by {0} ms and {1} %"
     unmeasured: "Paths without a measurement rank as {0} ms"
     lossy: "Paths losing more than {0} % stay out"
+mp_map:
+  you: This device
+  send: Send
+  send_note: path chosen here
+  recv: Receive
+  recv_note: path chosen by the peer
+  unit: rates in Mbit/s
+  kmax_before: Use
+  kmax_after: at once
+  kmax_less: One path fewer
+  kmax_more: One path more
+  kmax_tip: Number of paths sending at once, picked by round-trip time, lowest first
+  loss: "loss {0}%"
+  unmeasured: not measured
+  relays: "{0} via relays · fastest {1} ms"
+  relays_unmeasured: "{0} via relays"
+  relay_port: Relay
+  empty: No path is established yet
+  scope:
+    lan: LAN
+    wan: Internet
+    v6: IPv6
 mp_rt:
   cc_name:
     engine_default: Default (BBR)

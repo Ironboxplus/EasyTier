@@ -17,6 +17,22 @@ const applied = (wrapper: ReturnType<typeof mountCard>) => (wrapper.emitted('app
 const before = () => normalizeMpConfig({ ...DEFAULT_MP_CONFIG(), enabled: true })
 
 describe('MpLiveSettings', () => {
+  it('edits the path selection rules, the built-in values shown for an unset rule', async () => {
+    const wrapper = mountCard()
+    expect((wrapper.find('[data-testid="mp-live-switch-min"]').element as HTMLInputElement).value).toBe('5')
+    expect((wrapper.find('[data-testid="mp-live-lossy"]').element as HTMLInputElement).value).toBe('10')
+    const field = wrapper.find('[data-testid="mp-live-switch-percent"]')
+    await field.setValue(25)
+    await field.trigger('blur')
+    const lossy = wrapper.find('[data-testid="mp-live-lossy"]')
+    await lossy.setValue(20)
+    await lossy.trigger('blur')
+    const [[, a], [, b]] = applied(wrapper)
+    expect(a.mp!(before()).selection).toMatchObject({ switch_percent: 25, switch_min_ms: 0, lossy_percent: 0 })
+    expect(b.mp!(before()).selection).toMatchObject({ lossy_percent: 20 })
+    expect(b.mp!(before()).kmax).toBe(before().kmax)
+  })
+
   it('has no Apply or Discard button and no explanatory sentence', () => {
     const wrapper = mountCard()
     expect(wrapper.find('[data-testid="mp-live-apply"]').exists()).toBe(false)

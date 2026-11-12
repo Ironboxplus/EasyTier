@@ -570,8 +570,11 @@ jobs:
           path: vendor/netwatcher
       - if: steps.bin.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -qqy build-essential cmake clang pkg-config
+          # The runner image already has these; apt only fills a gap (its mirror is sometimes unreachable).
+          command -v cmake && command -v clang && command -v pkg-config && command -v make || {
+            sudo apt-get update
+            sudo apt-get install -qqy build-essential cmake clang pkg-config
+          }
           mkdir -p et/easytier-gui/dist
       - if: steps.bin.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
@@ -752,7 +755,7 @@ jobs:
 
   # Interface black-box and grey-box test (tests/ui-e2e): the real easytier-web
   # with the built front end manages the `linux` job's easytier-core in the
-  # blackbox topology; a browser (Playwright) drags the path runway, edits the
+  # blackbox topology; a browser (Playwright) uses the path map, edits the
   # config page and takes screenshots at 360, 390 and 1040 px, and every step is
   # checked against the core (same process, same paths, the field's effect).
   ui-e2e:

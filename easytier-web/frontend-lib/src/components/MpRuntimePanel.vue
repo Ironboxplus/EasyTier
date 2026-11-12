@@ -38,7 +38,7 @@ import {
 import MpFlowSankey from './MpFlowSankey.vue'
 import MpSchedulerPanel from './MpSchedulerPanel.vue'
 import MpStat from './MpStat.vue'
-import PathRunway from './runway/PathRunway.vue'
+import PathMap from './runway/PathMap.vue'
 
 type Step = 'classify' | 'cc' | 'paths'
 
@@ -550,8 +550,8 @@ function mtuOverhead(dp: MpDataPlaneStatus): number | undefined {
               </span>
             </Message>
 
-            <PathRunway :peer="peer" :mp-config="mpConfig" :peer-name="peerName(peer.peer_id)" :peer-names="peerNames"
-              :busy="busy || !mpConfig" @edit="(label, update) => emit('edit-mp', label, update)"
+            <PathMap :peer="peer" :mp-config="mpConfig" :peer-name="peerName(peer.peer_id)" :peer-names="peerNames"
+              :rates="view.pathRates" :busy="busy || !mpConfig" @edit="(label, update) => emit('edit-mp', label, update)"
               @set-policy="(m, a) => emit('set-policy', m, a)" />
 
             <details class="mp-details" data-testid="mp-runtime-path-details">
