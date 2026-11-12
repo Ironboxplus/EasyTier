@@ -1723,9 +1723,18 @@ async fn udp_hole_punch_succeeds_via_upnp_mappings_with_different_external_ports
     assert_ne!(mapped_port_a, local_port_a);
     assert_ne!(mapped_port_c, local_port_c);
 
-    // A is the punching client: its lease ends with the punch, and the punch no longer waits for
-    // the listener's packets before connecting (#2680), so it may be gone by now. Only the
-    // listener's lease lives as long as the listener and can be looked up at any time.
+    let mapped_addr_a = timeout_stage(
+        "query_udp_mapping(a)",
+        Duration::from_secs(10),
+        query_udp_mapping(
+            DUAL_NS_A,
+            DUAL_EXTERNAL_A_IP,
+            DUAL_CLIENT_A_IP,
+            local_port_a,
+        ),
+    )
+    .await
+    .unwrap();
     let mapped_addr_c = timeout_stage(
         "query_udp_mapping(c)",
         Duration::from_secs(10),
@@ -1739,6 +1748,7 @@ async fn udp_hole_punch_succeeds_via_upnp_mappings_with_different_external_ports
     .await
     .unwrap();
 
+    assert_eq!(mapped_addr_a.port(), mapped_port_a);
     assert_eq!(mapped_addr_c.port(), mapped_port_c);
 
     timeout_stage(
@@ -1767,6 +1777,7 @@ async fn udp_hole_punch_succeeds_via_upnp_mappings_with_different_external_ports
     )
     .await;
 
+    assert_ne!(mapped_addr_a.port(), local_port_a);
     assert_ne!(mapped_addr_c.port(), local_port_c);
 }
 

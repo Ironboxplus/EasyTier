@@ -323,7 +323,6 @@ impl DirectConnectorManagerData {
                     use_mp: true,
                     requester_peer_id: self.peer_manager.my_peer_id(),
                     mp_provider: "udp-direct".into(),
-                    transaction_id: None,
                 },
             )
             .await

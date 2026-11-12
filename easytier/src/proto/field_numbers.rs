@@ -71,33 +71,6 @@ fn assert_renumbered<M: Message + Default + PartialEq + Debug>(
     );
 }
 
-/// Like [`assert_renumbered`] for a one-byte varint field whose old number now belongs to an
-/// upstream field: the same byte under `old_tag` must read as `upstream`, never as the fork field.
-fn assert_renumbered_to_upstream<M: Message + Default + PartialEq + Debug>(
-    msg: M,
-    new_tag: u32,
-    old_tag: u32,
-    upstream: M,
-) {
-    let name = std::any::type_name::<M>();
-    assert_eq!(
-        msg.encode_to_vec(),
-        field(new_tag, VARINT, ONE),
-        "{name} must be written as field {new_tag}"
-    );
-    assert_eq!(
-        M::decode(&field(new_tag, VARINT, ONE)[..]).unwrap(),
-        msg,
-        "{name} must read field {new_tag}"
-    );
-    assert_eq!(
-        M::decode(&field(old_tag, VARINT, ONE)[..]).unwrap(),
-        upstream,
-        "{name} must read the retired field {old_tag} as upstream's field"
-    );
-    assert_ne!(upstream, msg);
-}
-
 const X: &[u8] = &[1, b'x'];
 const ONE: &[u8] = &[1];
 const EMPTY_MSG: &[u8] = &[0];
@@ -309,48 +282,16 @@ fn direct_connected_peer_info_est_bw() {
 }
 
 #[test]
-fn punch_listener_transaction_id_is_optional_and_legacy_compatible() {
-    // transaction id 0 is a value, not absence
-    let request = SelectPunchListenerRequest {
-        transaction_id: Some(0),
-        ..Default::default()
-    };
-    assert_eq!(request.encode_to_vec(), field(3, VARINT, &[0]));
-    assert_eq!(
-        SelectPunchListenerRequest::decode(&request.encode_to_vec()[..]).unwrap(),
-        request
-    );
-    let response = SelectPunchListenerResponse {
-        transaction_id: Some(0),
-        ..Default::default()
-    };
-    assert_eq!(response.encode_to_vec(), field(2, VARINT, &[0]));
-    assert_eq!(
-        SelectPunchListenerResponse::decode(&response.encode_to_vec()[..]).unwrap(),
-        response
-    );
-    // a peer without the field neither sends nor echoes it
-    let legacy = SelectPunchListenerRequest::decode(&field(1, VARINT, ONE)[..]).unwrap();
-    assert!(legacy.force_new);
-    assert_eq!(legacy.transaction_id, None);
-    assert_eq!(SelectPunchListenerResponse::decode(&[][..]).unwrap().transaction_id, None);
-}
-
-#[test]
 fn punch_rpc_fork_fields() {
-    // The old numbers 3 (request) and 2 (response) are upstream's `transaction_id` since #2680: the
-    // fork's field is written at 1001, and an unrenumbered peer's bytes read as upstream's field.
-    assert_renumbered_to_upstream(
+    assert_renumbered(
         SelectPunchListenerRequest {
             use_mp: true,
             ..Default::default()
         },
         1001,
         3,
-        SelectPunchListenerRequest {
-            transaction_id: Some(1),
-            ..Default::default()
-        },
+        VARINT,
+        ONE,
     );
     assert_renumbered(
         SelectPunchListenerRequest {
@@ -372,17 +313,15 @@ fn punch_rpc_fork_fields() {
         LEN,
         X,
     );
-    assert_renumbered_to_upstream(
+    assert_renumbered(
         SelectPunchListenerResponse {
             mp_accepted: true,
             ..Default::default()
         },
         1001,
         2,
-        SelectPunchListenerResponse {
-            transaction_id: Some(1),
-            ..Default::default()
-        },
+        VARINT,
+        ONE,
     );
     assert_renumbered(
         SendPunchPacketConeRequest {

@@ -2441,7 +2441,8 @@ def s47_mixed_fork_versions(run, args):
     read each other's multipath fields differently. When the old end is restarted with this build,
     the session comes up and carries the payload."""
     reference_binary(run, args)
-    _, a, b = pair(run, "udp")
+    # A TCP hole punch would make the pair direct first and the UDP punch would never run.
+    _, a, b = pair(run, "udp", flags_extra={"disable_tcp_hole_punching": True})
     row = wait_native_p2p(run, a, secs=300)
     run.evidence["mixed_peer_row"] = row
     run.check("mixed: a direct UDP connection by native punching", True)

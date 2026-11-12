@@ -34,6 +34,9 @@ jobs:
       netwatcher_ref: ${{ steps.refs.outputs.netwatcher_ref }}
       filter: ${{ steps.refs.outputs.filter }}
       shards: ${{ steps.refs.outputs.shards }}
+      jobs: ${{ steps.refs.outputs.jobs }}
+      linux_matrix: ${{ steps.refs.outputs.linux_matrix }}
+      scenarios: ${{ steps.refs.outputs.scenarios }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -47,10 +50,34 @@ jobs:
           [ -s .ci/filter ] && filter="$(cat .ci/filter)"
           echo "filter=$filter" >> "$GITHUB_OUTPUT"
           echo "shards=$(seq -s, 1 "$SHARDS" | sed 's/^/[/;s/$/]/')" >> "$GITHUB_OUTPUT"
-          echo "tquic $TQUIC_REF, netwatcher $NETWATCHER_REF, filter: $filter"
+          # `.ci/jobs`: the job names to run, space separated (default: all).
+          # A job also brings the jobs it needs.
+          jobs=" $( [ -s .ci/jobs ] && cat .ci/jobs || echo all ) "
+          # "blackbox:<scenario>" runs only the named black-box scenarios (and the blackbox job).
+          picked=$(for j in $jobs; do case $j in blackbox:*) printf "%s " "${j#blackbox:}";; esac; done)
+          if [ -n "$picked" ]; then jobs="$jobs blackbox "; scenarios=$picked
+          else scenarios="s31_legacy s31_native_punch s31_cli_compat s31_faketcp_numbers s32_cc_matrix s32_rate_limit s32_brutal_loss s32_sqm s32_multi_egress s32_relay_then_punch s32_punch_rate s32_relay_beside_punch s32_path_policy s32_dataplane s32_reliable_class s32_oversize s32_split_proxy s3x_harsh s3x_vs_official s32_mwan3 s33_churn s33_soak s33_route_loop s34_hot_selection s40_relay_failover_empty_peer s41_recv_limit_liveness s42_quic_tunnel_etq1 s43_proxy_flows s44_flow_pinning s45_tcp_punch_keepalive s46_sym_punch s47_mixed_fork_versions s48_stun_mismatch"; fi
+          json=$(for x in $scenarios; do printf '"%s",' "$x"; done)
+          echo "scenarios=[${json%,}]" >> "$GITHUB_OUTPUT"
+          # aarch64 only when the Linux binaries themselves are asked for; ui-e2e and blackbox use x86_64.
+          x86='{"arch":"x86_64","target":"x86_64-unknown-linux-musl"}'
+          arm='{"arch":"aarch64","target":"aarch64-unknown-linux-musl"}'
+          # The tree before the proto renumbering (G1), pushed once to a branch that does not run CI:
+          # the other end of the mixed-version black-box test.
+          base='{"arch":"x86_64-baseline","target":"x86_64-unknown-linux-musl","ref":"baseline/e02a19e0"}'
+          m=$x86
+          case "$jobs" in *" all "*|*" linux "*) m="$m,$arm";; esac
+          case "$jobs" in *" all "*|*" linux "*|*" blackbox "*) m="$m,$base";; esac
+          echo "linux_matrix=[$m]" >> "$GITHUB_OUTPUT"
+          case "$jobs" in *" ui-e2e "*|*" blackbox "*) jobs="$jobs linux ";; esac
+          case "$jobs" in *" test "*) jobs="$jobs build ";; esac
+          case "$jobs" in *" windows-test "*) jobs="$jobs windows-test-build ";; esac
+          echo "jobs=$jobs" >> "$GITHUB_OUTPUT"
+          echo "tquic $TQUIC_REF, netwatcher $NETWATCHER_REF, filter: $filter, jobs:$jobs"
 
   build:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' build ')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -121,6 +148,7 @@ jobs:
   test:
     name: test (${{ matrix.set }} ${{ matrix.shard }}/16)
     needs: [plan, build]
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' test ')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -161,6 +189,7 @@ jobs:
 
   tquic:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' tquic ')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -179,6 +208,7 @@ jobs:
 
   frontend:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' frontend ')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -222,6 +252,7 @@ jobs:
   android:
     name: android (${{ matrix.abi }})
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' android ')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -320,6 +351,7 @@ jobs:
   # (the features the .99 release script used). Full release profile.
   windows:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' windows ')
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -416,6 +448,7 @@ jobs:
   # and on PATH.
   windows-test-build:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' windows-test-build ')
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v5
@@ -465,6 +498,7 @@ jobs:
   windows-test:
     name: windows-test (${{ matrix.shard }}/8)
     needs: [plan, windows-test-build]
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' windows-test ')
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -574,63 +608,83 @@ jobs:
   linux:
     name: linux (${{ matrix.arch }})
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' linux ')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { arch: x86_64, target: x86_64-unknown-linux-musl }
-          - { arch: aarch64, target: aarch64-unknown-linux-musl }
-          # The tree before the proto renumbering (G1), pushed once to a branch that
-          # does not run CI: the other end of the mixed-version black-box test.
-          - { arch: x86_64-baseline, target: x86_64-unknown-linux-musl, ref: baseline/e02a19e0 }
+        include: ${{ fromJSON(needs.plan.outputs.linux_matrix) }}
     steps:
       - uses: actions/checkout@v5
         with:
           path: et
           ref: ${{ matrix.ref }}
-      - uses: actions/checkout@v5
+          # The baseline branch lives only on Ironboxplus/EasyTier; a run on another fork reads it there.
+          repository: ${{ matrix.ref && 'Ironboxplus/EasyTier' || github.repository }}
+      # The binaries depend only on the Rust side: a push that changes the front end, the tests or
+      # the CI files finds them in the cache and builds nothing.
+      - id: bin
+        uses: actions/cache/restore@v4
+        with:
+          path: out
+          key: linux-bin-${{ matrix.arch }}-${{ needs.plan.outputs.tquic_ref }}-${{ needs.plan.outputs.netwatcher_ref }}-${{ hashFiles('et/**', '!et/.ci/**', '!et/.github/**', '!et/tests/**', '!et/easytier-web/**', '!et/easytier-gui/**', '!et/tauri-plugin-vpnservice/**', '!et/**/node_modules/**') }}
+      - if: steps.bin.outputs.cache-hit != 'true'
+        uses: actions/checkout@v5
         with:
           repository: Ironboxplus/tquic
           ref: ${{ needs.plan.outputs.tquic_ref }}
           path: vendor/tquic
           submodules: recursive
-      - uses: actions/checkout@v5
+      - if: steps.bin.outputs.cache-hit != 'true'
+        uses: actions/checkout@v5
         with:
           repository: Ironboxplus/netwatcher
           ref: ${{ needs.plan.outputs.netwatcher_ref }}
           path: vendor/netwatcher
-      - run: |
+      - if: steps.bin.outputs.cache-hit != 'true'
+        run: |
           sudo apt-get update
           sudo apt-get install -qqy build-essential cmake clang pkg-config
           mkdir -p et/easytier-gui/dist
-      - uses: mlugg/setup-zig@v2
+      - if: steps.bin.outputs.cache-hit != 'true'
+        uses: mlugg/setup-zig@v2
         with:
           version: 0.14.1
-      - uses: taiki-e/install-action@cargo-zigbuild
-      - uses: arduino/setup-protoc@v3
+      - if: steps.bin.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@cargo-zigbuild
+      - if: steps.bin.outputs.cache-hit != 'true'
+        uses: arduino/setup-protoc@v3
         with:
           version: "35.1"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - if: steps.bin.outputs.cache-hit != 'true'
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: "1.95"
           target: ${{ matrix.target }}
           cache: false
           rustflags: ""
-      - uses: Swatinem/rust-cache@v2
+      - if: steps.bin.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: et -> target
           key: linux-${{ matrix.arch }}
       - name: Build
+        if: steps.bin.outputs.cache-hit != 'true'
         working-directory: et
         run: cargo zigbuild --locked --release --target ${{ matrix.target }} -p easytier --features mpquic,faketcp,mimalloc --bin easytier-core --bin easytier-cli
       - name: Collect
+        if: steps.bin.outputs.cache-hit != 'true'
         run: |
           mkdir out
           cp et/target/${{ matrix.target }}/release/easytier-core et/target/${{ matrix.target }}/release/easytier-cli out/
           file out/*
-          sha256sum out/*
+      - if: steps.bin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: out
+          key: ${{ steps.bin.outputs.cache-primary-key }}
+      - run: sha256sum out/*
       - uses: actions/upload-artifact@v5
         with:
           name: linux-${{ matrix.arch }}
@@ -640,6 +694,7 @@ jobs:
   # The GUI as Linux packages: a deb and an AppImage.
   linux-gui:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' linux-gui ')
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -711,12 +766,13 @@ jobs:
   blackbox:
     name: blackbox (${{ matrix.scenario }})
     needs: [plan, linux]
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' blackbox ')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        scenario: [s31_legacy, s31_native_punch, s31_cli_compat, s31_faketcp_numbers, s32_cc_matrix, s32_rate_limit, s32_brutal_loss, s32_sqm, s32_multi_egress, s32_relay_then_punch, s32_punch_rate, s32_relay_beside_punch, s32_path_policy, s32_dataplane, s32_reliable_class, s32_oversize, s32_split_proxy, s3x_harsh, s3x_vs_official, s32_mwan3, s33_churn, s33_soak, s33_route_loop, s34_hot_selection, s40_relay_failover_empty_peer, s41_recv_limit_liveness, s42_quic_tunnel_etq1, s43_proxy_flows, s44_flow_pinning, s45_tcp_punch_keepalive, s46_sym_punch, s47_mixed_fork_versions, s48_stun_mismatch]
+        scenario: ${{ fromJSON(needs.plan.outputs.scenarios) }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -783,6 +839,7 @@ jobs:
   # checked against the core (same process, same paths, the field's effect).
   ui-e2e:
     needs: [plan, linux]
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' ui-e2e ')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -823,10 +880,21 @@ jobs:
           toolchain: "1.95"
           cache: false
           rustflags: ""
-      - uses: Swatinem/rust-cache@v2
+      - id: target
+        uses: actions/cache/restore@v4
+        with:
+          path: et/target
+          key: ui-e2e-target-${{ needs.plan.outputs.tquic_ref }}-${{ needs.plan.outputs.netwatcher_ref }}-${{ hashFiles('et/**', '!et/.ci/**', '!et/.github/**', '!et/tests/**', '!et/easytier-web/frontend/**', '!et/easytier-web/frontend-lib/**', '!et/easytier-gui/**', '!et/tauri-plugin-vpnservice/**', '!et/**/node_modules/**') }}
+      - if: steps.target.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: et -> target
           key: ui-e2e
+      # Cargo compares source and output times. A checkout makes every source new, so the sources
+      # get one old time: with the exact cache key the Rust sources are the ones the cache was built
+      # from, and only the freshly built front end files (embedded by easytier-web) are newer.
+      - name: Give the Rust sources one old time
+        run: find et vendor -path '*/node_modules' -prune -o -type f -exec touch -h -d '2020-01-01 00:00:00' {} +
       - name: Build the front end and the web server that embeds it
         working-directory: et
         run: |
@@ -834,6 +902,13 @@ jobs:
           pnpm -C easytier-web/frontend-lib build
           pnpm -C easytier-web/frontend build
           cargo build --locked -p easytier-web --features embed
+      - if: steps.target.outputs.cache-hit != 'true'
+        run: rm -rf et/target/debug/incremental
+      - if: steps.target.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: et/target
+          key: ${{ steps.target.outputs.cache-primary-key }}
       - uses: actions/download-artifact@v5
         with:
           name: linux-x86_64

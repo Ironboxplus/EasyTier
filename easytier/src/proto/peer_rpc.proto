@@ -213,9 +213,7 @@ service DirectConnectorRpc {
 message SelectPunchListenerRequest {
   bool force_new = 1;
   bool prefer_port_mapping = 2;
-  // Register source observation before returning the listener address (upstream #2680).
-  optional uint32 transaction_id = 3;
-  reserved 4, 5;
+  reserved 3, 4, 5;
   bool use_mp = 1001;
   uint32 requester_peer_id = 1002;
   // Empty is the legacy/default UDP punch provider.
@@ -224,9 +222,7 @@ message SelectPunchListenerRequest {
 
 message SelectPunchListenerResponse {
   common.SocketAddr listener_mapped_addr = 1;
-  // Echoed only after source observation is registered; absent on older peers.
-  optional uint32 transaction_id = 2;
-  reserved 3, 4;
+  reserved 2, 3, 4;
   bool mp_accepted = 1001;
   // The bound socket address. Direct/LAN candidates use its port instead of
   // incorrectly assuming that a STUN/UPnP mapped port equals the local port.
