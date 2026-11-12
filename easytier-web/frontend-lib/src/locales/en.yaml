@@ -350,6 +350,7 @@ mp_map:
     wan: Internet
     v6: IPv6
 mp_rt:
+  peer_fallback: Node {0}
   cc_name:
     engine_default: Default (BBR)
     bbr: BBR v1

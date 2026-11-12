@@ -128,24 +128,29 @@ const fastestRelay = computed(() => {
 // ---- geometry ------------------------------------------------------------------
 const boxEl = useTemplateRef<HTMLElement>('box')
 const { width: measured } = useElementSize(boxEl)
-const W = computed(() => Math.max(300, measured.value))
+// The drawn width is the box's real width: the ports sit at the box's CSS edges, so any other width
+// puts the pills and the remote ports out of step. 300 only stands in before the first measurement.
+const W = computed(() => measured.value || 300)
 const narrow = computed(() => W.value < 560)
+// Too narrow for a rate beside the pill on the same line (the status drawer on a phone): the lanes
+// move apart, the send lane above the pill and the receive lane below it.
+const tight = computed(() => W.value < 400)
 const PORT = computed(() => (narrow.value ? 58 : 108))
 const XL = computed(() => PORT.value)
 const XR = computed(() => W.value - PORT.value)
 const CX = computed(() => W.value / 2)
 const HEAD = 30
-const ROWH = 56
-const HALF = 26
+const ROWH = computed(() => (tight.value ? 78 : 56))
+const HALF = computed(() => (tight.value ? 36 : 26))
 /** Distance of each lane from the row's middle. */
-const OFF = 9
-const rowY = (i: number) => HEAD + HALF + 2 + i * ROWH
-const directBottom = computed(() => (model.value.rows.length ? rowY(model.value.rows.length - 1) + HALF : HEAD + 40))
+const OFF = computed(() => (tight.value ? 25 : 9))
+const rowY = (i: number) => HEAD + HALF.value + 2 + i * ROWH.value
+const directBottom = computed(() => (model.value.rows.length ? rowY(model.value.rows.length - 1) + HALF.value : HEAD + 40))
 const foldY = computed(() => directBottom.value + 30)
-const relayY = (j: number) => foldY.value + 30 + HALF + j * ROWH
+const relayY = (j: number) => foldY.value + 30 + HALF.value + j * ROWH.value
 const height = computed(() => {
   if (!relays.value.length) return directBottom.value + 12
-  return relaysShown.value ? relayY(relays.value.length - 1) + HALF + 12 : foldY.value + 26
+  return relaysShown.value ? relayY(relays.value.length - 1) + HALF.value + 12 : foldY.value + 26
 })
 
 interface Drawn { row: MapRow, y: number, relay: boolean }
@@ -155,8 +160,8 @@ const drawn = computed<Drawn[]>(() => [
 ])
 
 function portBox(p: MapPort, y: (i: number) => number) {
-  const top = y(p.from) - HALF
-  return { top, height: y(p.to) - y(p.from) + 2 * HALF }
+  const top = y(p.from) - HALF.value
+  return { top, height: y(p.to) - y(p.from) + 2 * HALF.value }
 }
 const relayPortBox = computed(() => portBox({ key: '', from: 0, to: relays.value.length - 1, label: '', sub: '' }, relayY))
 
@@ -172,11 +177,11 @@ function lanes(d: Drawn): Lane[] {
   if (state === 'lossy' && !recv)
     return [{ kind: 'lossy', y, x1: XL.value + 6, x2: XR.value - 6, w: 2.5, bps: 0 }]
   const up: Lane = state === 'sending'
-    ? { kind: 'up', y: y - OFF, x1: XL.value + 4, x2: XR.value - 8, w: laneWidth(row.sendBps), bps: row.sendBps }
-    : state === 'lossy' ? { kind: 'lossy', y: y - OFF, x1: XL.value + 6, x2: XR.value - 6, w: 2.5, bps: 0 } : idle(y - OFF)
+    ? { kind: 'up', y: y - OFF.value, x1: XL.value + 4, x2: XR.value - 8, w: laneWidth(row.sendBps), bps: row.sendBps }
+    : state === 'lossy' ? { kind: 'lossy', y: y - OFF.value, x1: XL.value + 6, x2: XR.value - 6, w: 2.5, bps: 0 } : idle(y - OFF.value)
   const down: Lane = recv
-    ? { kind: 'down', y: y + OFF, x1: XR.value - 4, x2: XL.value + 8, w: laneWidth(row.recvBps), bps: row.recvBps }
-    : idle(y + OFF)
+    ? { kind: 'down', y: y + OFF.value, x1: XR.value - 4, x2: XL.value + 8, w: laneWidth(row.recvBps), bps: row.recvBps }
+    : idle(y + OFF.value)
   return [up, down]
 }
 const CHIP = computed(() => (narrow.value ? 24 : 62))

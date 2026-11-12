@@ -351,6 +351,7 @@ mp_map:
     wan: 公网
     v6: IPv6
 mp_rt:
+  peer_fallback: 节点 {0}
   cc_name:
     engine_default: 默认（BBR）
     bbr: BBR v1

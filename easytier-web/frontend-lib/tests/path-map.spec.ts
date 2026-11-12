@@ -10,9 +10,10 @@ import { reportedView } from '../src/modules/pathRunway'
 import { DEFAULT_MP_CONFIG, DEFAULT_MP_SELECTION_CONFIG, normalizeMpConfig, type MpPathStatus, type MpPeerStatus } from '../src/types/mpConfig'
 import { mpGlobal } from './primevueStubs'
 
+const box = vi.hoisted(() => ({ width: 900 }))
 vi.mock('@vueuse/core', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@vueuse/core')>()),
-  useElementSize: () => ({ width: { value: 900 }, height: { value: 300 } }),
+  useElementSize: () => ({ width: { value: box.width }, height: { value: 300 } }),
 }))
 
 function path(id: number, kind: string, nic: string, remote: string, rttMicros: number, extra: Partial<MpPathStatus> = {}): MpPathStatus {
@@ -205,5 +206,25 @@ describe('PathMap', () => {
     expect(outer).toHaveBeenCalledTimes(1)
     document.removeEventListener('keydown', outer)
     wrapper.unmount()
+  })
+
+  it('in a box as narrow as the phone drawer, centres on the real width and moves the lanes clear of the pill', () => {
+    box.width = 231
+    try {
+      const { wrapper } = mountMap()
+      const pill = wrapper.find('[data-testid="path-map-path"]')
+      // the remote ports sit at the box's right edge, so the pill is centred on the same width
+      expect(pill.attributes('style')).toContain('left: 115.5px')
+      const y = Number(/top: ([\d.]+)px/.exec(pill.attributes('style')!)![1])
+      const up = Number(wrapper.find('line[data-lane="up"]').attributes('y1'))
+      const down = Number(wrapper.find('line[data-lane="down"]').attributes('y1'))
+      // a rate on a lane (half 9 px high) clears the pill (half 14 px high)
+      expect(y - up).toBeGreaterThanOrEqual(14 + 9)
+      expect(down - y).toBeGreaterThanOrEqual(14 + 9)
+      wrapper.unmount()
+    }
+    finally {
+      box.width = 900
+    }
   })
 })
