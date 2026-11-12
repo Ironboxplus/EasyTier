@@ -360,7 +360,24 @@ def run() -> None:
         if fold.get_attribute("aria-expanded") != "true":
             fold.click()
         page.locator('[data-testid="path-map-path"][data-relay="true"]').first.click()
-        page.locator('[data-testid="runway-tier-primary"]').first.click()
+        page.locator('[data-testid="runway-detail"]').wait_for(state="visible", timeout=10000)
+        tier = page.locator('[data-testid="runway-tier-primary"]').first
+        try:
+            tier.click(timeout=10000)
+        except Exception:
+            # What covers the button, where the popover is, and a picture.
+            page.screenshot(path=str(SHOTS / "relay-tier-not-clickable.png"), full_page=True)
+            EVIDENCE["relay_tier_click"] = page.evaluate("""() => {
+                const b = document.querySelector('[data-testid="runway-tier-primary"]')
+                const r = b.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2
+                const top = document.elementFromPoint(x, y)
+                const d = document.querySelector('[data-testid="runway-detail"]').getBoundingClientRect()
+                return { button: [r.left, r.top, r.width, r.height], viewport: [innerWidth, innerHeight],
+                         detail: [d.left, d.top, d.width, d.height],
+                         on_top: top ? top.outerHTML.slice(0, 300) : null,
+                         on_top_parents: (() => { const o = []; for (let n = top; n && o.length < 6; n = n.parentElement) o.push(n.tagName + '.' + String(n.className).slice(0, 60)); return o })() }
+            }""")
+            raise
         toast_and_undo(page, "relay made primary", undo=False)
         page.keyboard.press("Escape")
         wait_for(lambda s: any(s3.kind_is(pa, "relay") and pa.get("tier") == "primary" for pa in s3.paths_of(s)),
