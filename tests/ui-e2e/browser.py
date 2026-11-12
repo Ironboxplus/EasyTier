@@ -380,6 +380,8 @@ def run() -> None:
             raise
         toast_and_undo(page, "relay made primary", undo=False)
         page.keyboard.press("Escape")
+        # The core takes longer than the toast's 6 s to report the new tier; a toast under the pointer waits.
+        page.locator('[data-testid="mp-undo"]').first.hover()
         wait_for(lambda s: any(s3.kind_is(pa, "relay") and pa.get("tier") == "primary" for pa in s3.paths_of(s)),
                  secs=30, what="the relay reported as primary")
         grey("relay made primary")
