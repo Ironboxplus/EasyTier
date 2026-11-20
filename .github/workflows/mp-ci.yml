@@ -291,7 +291,10 @@ jobs:
           java-version: "17"
       - uses: android-actions/setup-android@v3
         with:
-          cmdline-tools-version: 12.0
+          # The build number, not "12.0": YAML reads 12.0 as the number 12, and the action matched it only
+          # while the runner image preinstalled cmdline-tools 12.0; with 20.0 there it downloaded
+          # commandlinetools-linux-12_latest.zip, which does not exist (404). 11076708 is 12.0.
+          cmdline-tools-version: "11076708"
           packages: "build-tools;34.0.0 ndk;26.0.10792818 platform-tools platforms;android-34"
       - name: Android environment
         run: |
