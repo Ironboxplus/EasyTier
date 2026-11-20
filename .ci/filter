@@ -1,1 +1,1 @@
-test(~mp_path) | test(~mp_session)
+test(~mp_path) | test(~mp_session) | test(~loss_probes)

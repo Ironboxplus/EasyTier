@@ -321,6 +321,10 @@ pub(crate) struct PathCandidate {
     last_loss_sample: Option<f64>,
     /// The loss level the last sample settled on (see `loss_level`).
     settled_loss_level: LossLevel,
+    /// The first line `settled_loss_level` was settled against. A changed
+    /// line is the user's intent, not measurement noise: under another line
+    /// the level does not carry over, and the path is judged afresh.
+    settled_lossy_loss: f64,
     /// TQUIC's cumulative data packets sent at the last control tick, and
     /// whether they grew since the tick before (see `sent_data`).
     data_packets: (u64, bool),
@@ -481,26 +485,37 @@ impl PathCandidate {
         self.loss_level(lossy_loss) > LossLevel::Clean
     }
 
-    /// The path's loss level against the first line `lossy_loss`. It moves
-    /// only when the last sample and the average both put the path on another
-    /// level, and then only as far as the nearer of the two: RFC 8966
-    /// Appendix A.3 switches routes only when both the instantaneous and the
-    /// smoothed metric say so. XQUIC classifies by the loss rate alone; ET
-    /// adds this because a path whose loss sits right on the line is common
-    /// (incident 2026-11-20: 8-10% against a 10% line). The level is worked
-    /// out against the lines given here, so a changed `lossy_loss` applies at
-    /// once.
+    /// The path's loss level against the first line `lossy_loss`. It goes up
+    /// only when the last sample and the average are both over a higher
+    /// level's line, to the nearer such level, and comes down only when both
+    /// are at or under half the line of the level it leaves: half `lossy_loss`
+    /// to be clean again, half the second line to come down from very lossy.
+    /// RFC 8966 Appendix A.3 switches routes only when both the instantaneous
+    /// and the smoothed metric say so; XQUIC classifies by the loss rate
+    /// alone. ET adds this because a path whose loss sits right on the line is
+    /// common (incident 2026-11-20: 8-10% against a 10% line). The half is
+    /// ET's own width, with no reference value behind it: just over the line
+    /// the average sits close to it, and when the way down was the same line,
+    /// one good sample brought a path losing 15% back within seconds (s49, CI
+    /// run 44789248007). Under a `lossy_loss` other than the one the level was
+    /// settled against, the path is judged afresh, as one coming up from
+    /// clean, so a line the user moves applies at once.
     pub(crate) fn loss_level(&self, lossy_loss: f64) -> LossLevel {
         let (Some(sample), Some(average)) = (self.last_loss_sample, self.recent_loss) else {
             return self.settled_loss_level;
         };
-        let sample = LossLevel::of(sample, lossy_loss);
-        let average = LossLevel::of(average, lossy_loss);
-        let current = self.settled_loss_level;
-        if sample.min(average) > current {
-            sample.min(average)
-        } else if sample.max(average) < current {
-            sample.max(average)
+        let current = if self.settled_lossy_loss == lossy_loss {
+            self.settled_loss_level
+        } else {
+            LossLevel::Clean
+        };
+        let up = LossLevel::of(sample, lossy_loss).min(LossLevel::of(average, lossy_loss));
+        // Both at or under half a line is the larger of the two at or under it.
+        let down = LossLevel::of(2.0 * sample.max(average), lossy_loss);
+        if up > current {
+            up
+        } else if down < current {
+            down
         } else {
             current
         }
@@ -556,6 +571,7 @@ impl MpCandidateTable {
                 recent_loss: None,
                 last_loss_sample: None,
                 settled_loss_level: LossLevel::Clean,
+                settled_lossy_loss: LOSSY_PATH_LOSS,
                 data_packets: (0, false),
                 received: None,
                 acks: AckProgress::default(),
@@ -643,6 +659,7 @@ impl MpCandidateTable {
         // The level the lines in effect give the previous sample, so that one
         // changed since does not count as this sample's move.
         candidate.settled_loss_level = candidate.loss_level(lossy_loss);
+        candidate.settled_lossy_loss = lossy_loss;
         let sample = ((lost_packets - last_lost) as f64 / sent as f64).min(1.0);
         candidate.recent_loss = Some(match candidate.recent_loss {
             Some(loss) => loss + (sample - loss) / 3.0,

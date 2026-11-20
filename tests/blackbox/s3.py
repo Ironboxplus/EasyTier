@@ -2498,7 +2498,7 @@ def s49_lossy_uplink(run, args):
     """Per-path loss (PLAN-20261121-path-loss.md): A's uplink on a1 loses 15 % while B keeps sending to A
     on a1, so once A leaves a1 its path there mostly sends packets of ACK frames only. Those are no loss
     samples (RFC 9002: not in flight): A stays off a1 until the loss is gone, then comes back to the
-    faster NIC. At 6 % A stays on a1 under the default 10 % line and leaves at `lossy_percent` 3. A pings
+    faster NIC. At 5 % A stays on a1 under the default 10 % line and leaves at `lossy_percent` 3. A pings
     B's echo server the whole time, so both directions carry traffic."""
     def delay(net):
         # a1 is the faster NIC: A sends on it whenever it is clean.
@@ -2593,10 +2593,11 @@ def s49_lossy_uplink(run, args):
         run.evidence["back_on_a1_secs"] = round(time.time() - t0, 1)
         grey("loss gone")
 
-        # 6 %: under the default 10 % line A stays on a1; at lossy_percent 3 it leaves and stays off.
-        sh("tc", "qdisc", "replace", "dev", "a1", "root", "netem", "loss", "6%", ns="s3a")
-        samples = watch("loss_6_sending_nics", 30)
-        run.check("loss 6 %: A stays on a1 under the default line", all("a1" in nics for nics in samples),
+        # 5 %: under the default 10 % line A stays on a1; at lossy_percent 3 it leaves and stays off.
+        # (At 6 %, 64-packet samples put a path over the 10 % line within 30 s about one run in ten.)
+        sh("tc", "qdisc", "replace", "dev", "a1", "root", "netem", "loss", "5%", ns="s3a")
+        samples = watch("loss_5_sending_nics", 30)
+        run.check("loss 5 %: A stays on a1 under the default line", all("a1" in nics for nics in samples),
                   samples=samples)
         s = a.stats()
         on_a1 = addr(next((pa for pa in paths_of(s) if pa.get("selected") and pa.get("egress_device") == "a1"), {}))
@@ -2604,7 +2605,7 @@ def s49_lossy_uplink(run, args):
         t0 = time.time()
         run.wait_mp(a, lambda s: "a1" not in sending_nics(s), secs=30, what="A off a1 at lossy_percent 3")
         run.evidence["left_a1_at_3_secs"] = round(time.time() - t0, 1)
-        samples = watch("loss_6_at_3_sending_nics", 60)
+        samples = watch("loss_5_at_3_sending_nics", 60)
         back = [i for i, nics in enumerate(samples) if "a1" in nics]
         run.check("lossy_percent 3: A does not go back to a1 in 60 s", not back, first_back_after_s=back[:1])
         s, _ = grey("lossy_percent 3")
