@@ -533,6 +533,7 @@ impl PunchSymToConeHoleClient {
                     use_mp: request_mp,
                     requester_peer_id,
                     mp_provider: "udp-punch".into(),
+                    transaction_id: None,
                 },
             )
             .await;
