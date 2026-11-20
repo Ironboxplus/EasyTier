@@ -631,11 +631,14 @@ jobs:
           repository: ${{ matrix.ref && 'Ironboxplus/EasyTier' || github.repository }}
       # The binaries depend only on the Rust side: a push that changes the front end, the tests or
       # the CI files finds them in the cache and builds nothing.
+      # hashFiles matches hidden files too (@actions/glob excludeHiddenFiles: false), and et/.git
+      # differs on every checkout (the index records its times): without !et/.git/** every run
+      # had a new key and no binary was ever restored.
       - id: bin
         uses: actions/cache/restore@v4
         with:
           path: out
-          key: linux-bin-${{ matrix.arch }}-${{ needs.plan.outputs.tquic_ref }}-${{ needs.plan.outputs.netwatcher_ref }}-${{ hashFiles('et/**', '!et/.ci/**', '!et/.github/**', '!et/tests/**', '!et/easytier-web/**', '!et/easytier-gui/**', '!et/tauri-plugin-vpnservice/**', '!et/**/node_modules/**') }}
+          key: linux-bin-${{ matrix.arch }}-${{ needs.plan.outputs.tquic_ref }}-${{ needs.plan.outputs.netwatcher_ref }}-${{ hashFiles('et/**', '!et/.git/**', '!et/.ci/**', '!et/.github/**', '!et/tests/**', '!et/easytier-web/**', '!et/easytier-gui/**', '!et/tauri-plugin-vpnservice/**', '!et/**/node_modules/**') }}
       - if: steps.bin.outputs.cache-hit != 'true'
         uses: actions/checkout@v5
         with:
@@ -895,7 +898,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: et/target
-          key: ui-e2e-target-${{ needs.plan.outputs.tquic_ref }}-${{ needs.plan.outputs.netwatcher_ref }}-${{ hashFiles('et/**', '!et/.ci/**', '!et/.github/**', '!et/tests/**', '!et/easytier-web/frontend/**', '!et/easytier-web/frontend-lib/**', '!et/easytier-gui/**', '!et/tauri-plugin-vpnservice/**', '!et/**/node_modules/**') }}
+          key: ui-e2e-target-${{ needs.plan.outputs.tquic_ref }}-${{ needs.plan.outputs.netwatcher_ref }}-${{ hashFiles('et/**', '!et/.git/**', '!et/.ci/**', '!et/.github/**', '!et/tests/**', '!et/easytier-web/frontend/**', '!et/easytier-web/frontend-lib/**', '!et/easytier-gui/**', '!et/tauri-plugin-vpnservice/**', '!et/**/node_modules/**') }}
       - if: steps.target.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@v2
         with:
