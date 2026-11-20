@@ -80,10 +80,12 @@ describe('selectionInput', () => {
     recentLoss: null,
     firstHopLoss: null,
     unacked: false,
+    lossyPath: false,
     policy: null,
     ...over,
   })
-  const keys = (candidates: Candidate[], p = params) => selectionInput(candidates, p).paths.map(x => x.key)
+  const keys = (candidates: Candidate[], p = params, savedLossyLoss?: number) =>
+    selectionInput(candidates, p, savedLossyLoss).paths.map(x => x.key)
 
   it('keeps a lossy path out while a clean one is selectable', () => {
     const input = selectionInput([cand(1, { recentLoss: 0.4 }), cand(2)], params)
@@ -138,5 +140,58 @@ describe('selectionInput', () => {
   it('an unmeasured path ranks as the configured stand-in', () => {
     const input = selectionInput([cand(1, { propagationRttMicros: 0 })], selectionParams({ unmeasured_rtt_ms: 50 }))
     expect(input.paths[0].rttMicros).toBe(50_000)
+  })
+
+  it('a first hop is judged against a line of at least 10 %', () => {
+    // Its loss comes from a window of 100 pings: at a 3 % line, 4 lost pings would make it lossy.
+    const atThree = selectionParams({ lossy_percent: 3 })
+    expect(keys([cand(1, { firstHopLoss: 0.05 }), cand(2)], atThree)).toEqual(['1', '2'])
+    const twelve = selectionInput([cand(1, { firstHopLoss: 0.12 }), cand(2)], atThree)
+    expect(twelve.paths.map(p => p.key)).toEqual(['2'])
+    expect(twelve.leftOut.get('1')).toBe(LEFT_OUT_LOSSY_FIRST_HOP)
+    // A higher line still applies.
+    expect(keys([cand(1, { firstHopLoss: 0.15 }), cand(2)], selectionParams({ lossy_percent: 20 }))).toEqual(['1', '2'])
+  })
+
+  it('a very lossy path gives way to a lossy one', () => {
+    // Over max(30 %, the line) is the second level (XQUIC's loss_percent_thr_high).
+    const input = selectionInput([cand(1, { recentLoss: 0.12 }), cand(2, { recentLoss: 0.35 })], params)
+    expect(input.paths.map(p => p.key)).toEqual(['1'])
+    expect(input.leftOut.get('2')).toBe(LEFT_OUT_LOSSY_PATH)
+    // Exactly 30 % is still the first level.
+    expect(keys([cand(1, { recentLoss: 0.12 }), cand(2, { recentLoss: 0.3 })])).toEqual(['1', '2'])
+    // With the line over 30 %, the line is the second level's too.
+    expect(keys([cand(1, { recentLoss: 0.35 }), cand(2, { recentLoss: 0.45 })], selectionParams({ lossy_percent: 40 }))).toEqual(['1'])
+  })
+
+  it('under the saved line, the core reported which paths are lossy', () => {
+    // The core moves a path's level only when its last sample and its average agree, and down only
+    // at half the line: a path it holds out may average under the line, one it keeps may average over.
+    const saved = params.lossyLoss
+    const held = selectionInput([cand(1, { recentLoss: 0.08, lossyPath: true }), cand(2)], params, saved)
+    expect(held.paths.map(p => p.key)).toEqual(['2'])
+    expect(held.leftOut.get('1')).toBe(LEFT_OUT_LOSSY_PATH)
+    expect(keys([cand(1, { recentLoss: 0.12 }), cand(2)], params, saved)).toEqual(['1', '2'])
+    // The clean path excluded in the draft: of the two the core held out, the average splits the levels.
+    const exclude = { action: 'exclude' as const, prefer_weight: 0 }
+    const levels = [
+      cand(1, { recentLoss: 0.12, lossyPath: true }),
+      cand(2, { recentLoss: 0.35, lossyPath: true }),
+      cand(3, { policy: exclude }),
+    ]
+    expect(keys(levels, params, saved)).toEqual(['1'])
+  })
+
+  it('a moved line judges every path afresh by its average', () => {
+    const saved = params.lossyLoss
+    // Held out at 10 %, clean at 15 %.
+    expect(keys([cand(1, { recentLoss: 0.12, lossyPath: true }), cand(2)], selectionParams({ lossy_percent: 15 }), saved))
+      .toEqual(['1', '2'])
+    // Kept at 10 %, lossy at 5 %.
+    const atFive = selectionInput([cand(1, { recentLoss: 0.08 }), cand(2)], selectionParams({ lossy_percent: 5 }), saved)
+    expect(atFive.leftOut.get('1')).toBe(LEFT_OUT_LOSSY_PATH)
+    // At 20 %, 35 % is the second level and gives way to 25 %.
+    const twoLevels = [cand(1, { recentLoss: 0.25, lossyPath: true }), cand(2, { recentLoss: 0.35, lossyPath: true })]
+    expect(keys(twoLevels, selectionParams({ lossy_percent: 20 }), saved)).toEqual(['1'])
   })
 })

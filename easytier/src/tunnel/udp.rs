@@ -1,11 +1,7 @@
 use std::{
     fmt::Debug,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::{
-        Arc, Weak,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+    sync::{Arc, Weak},
 };
 
 use anyhow::Context;
@@ -18,12 +14,8 @@ use zerocopy::{AsBytes, FromBytes};
 
 use tokio::{
     net::UdpSocket,
-    sync::{
-        mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
-        watch,
-    },
+    sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
     task::JoinSet,
-    time::Instant,
 };
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{Instrument, instrument};
@@ -398,163 +390,6 @@ impl UdpConnection {
     }
 }
 
-/// Body length of a hole punch packet (the header's `conn_id` is its transaction id).
-pub const HOLE_PUNCH_PACKET_BODY_LEN: u16 = 16;
-
-struct UdpHolePunchObserverEntry {
-    source: Arc<watch::Sender<Option<SocketAddr>>>,
-    // Only a registration nobody has claimed expires here. Once an RPC took the observer, its guard
-    // owns the cleanup, through completion or cancellation.
-    expires_at: Option<Instant>,
-}
-
-/// Where a hole punch transaction's first packet came from, observed on the listener's own receive
-/// loop (no second receiver on the socket). Cloning shares the table.
-#[derive(Clone, Default)]
-pub struct UdpHolePunchObserverRegistry {
-    observers: Arc<DashMap<u32, UdpHolePunchObserverEntry>>,
-    closed: Arc<AtomicBool>,
-}
-
-impl Debug for UdpHolePunchObserverRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UdpHolePunchObserverRegistry")
-            .field("observers", &self.observers.len())
-            .field("closed", &self.closed.load(Ordering::Relaxed))
-            .finish()
-    }
-}
-
-impl UdpHolePunchObserverRegistry {
-    fn ensure_running(&self) -> std::io::Result<()> {
-        if self.closed.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "UDP listener closed",
-            ));
-        }
-        Ok(())
-    }
-
-    /// Keeps the first source of `transaction_id` even when its packet arrives before the RPC that
-    /// sends the punch packets claims it with [`Self::observe`].
-    pub fn prepare(&self, transaction_id: u32, timeout: Duration) -> std::io::Result<()> {
-        self.ensure_running()?;
-        match self.observers.entry(transaction_id) {
-            dashmap::mapref::entry::Entry::Vacant(entry) => {
-                entry.insert(UdpHolePunchObserverEntry {
-                    source: Arc::new(watch::channel(None).0),
-                    expires_at: Some(Instant::now() + timeout),
-                });
-                Ok(())
-            }
-            dashmap::mapref::entry::Entry::Occupied(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "UDP hole-punch transaction already observed",
-            )),
-        }
-    }
-
-    /// Drops the registrations nobody claimed in time.
-    pub fn expire_prepared(&self) {
-        let now = Instant::now();
-        self.observers
-            .retain(|_, entry| entry.expires_at.is_none_or(|deadline| deadline > now));
-    }
-
-    /// Claims `transaction_id`: the registration made by [`Self::prepare`], or a new one for a
-    /// requester that does not prepare. Dropping the observer unregisters it.
-    pub fn observe(&self, transaction_id: u32) -> std::io::Result<UdpHolePunchObserver> {
-        self.ensure_running()?;
-        let sender = match self.observers.entry(transaction_id) {
-            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
-                let Some(deadline) = entry.get_mut().expires_at.take() else {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::AlreadyExists,
-                        "UDP hole-punch transaction already observed",
-                    ));
-                };
-                if deadline <= Instant::now() {
-                    entry.remove();
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "UDP hole-punch registration expired",
-                    ));
-                }
-                entry.get().source.clone()
-            }
-            dashmap::mapref::entry::Entry::Vacant(entry) => {
-                let sender = Arc::new(watch::channel(None).0);
-                entry.insert(UdpHolePunchObserverEntry {
-                    source: sender.clone(),
-                    expires_at: None,
-                });
-                sender
-            }
-        };
-        Ok(UdpHolePunchObserver {
-            transaction_id,
-            observers: self.observers.clone(),
-            sender: Arc::downgrade(&sender),
-            source: sender.subscribe(),
-        })
-    }
-
-    fn record(&self, transaction_id: u32, source: SocketAddr) {
-        if let Some(entry) = self.observers.get(&transaction_id) {
-            entry.source.send_if_modified(|current| {
-                if current.is_some() {
-                    return false;
-                }
-                *current = Some(source);
-                true
-            });
-        }
-    }
-
-    /// The listener stopped receiving: nothing will be observed any more.
-    fn close(&self) {
-        self.closed.store(true, Ordering::Relaxed);
-        self.observers.clear();
-    }
-}
-
-/// The first source of one hole punch transaction's packets.
-pub struct UdpHolePunchObserver {
-    transaction_id: u32,
-    observers: Arc<DashMap<u32, UdpHolePunchObserverEntry>>,
-    sender: Weak<watch::Sender<Option<SocketAddr>>>,
-    source: watch::Receiver<Option<SocketAddr>>,
-}
-
-impl UdpHolePunchObserver {
-    pub fn source_addr(&self) -> Option<SocketAddr> {
-        *self.source.borrow()
-    }
-
-    pub async fn wait_for_source_addr(&mut self) -> std::io::Result<SocketAddr> {
-        loop {
-            if let Some(addr) = self.source_addr() {
-                return Ok(addr);
-            }
-            self.source.changed().await.map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "UDP hole-punch observer closed",
-                )
-            })?;
-        }
-    }
-}
-
-impl Drop for UdpHolePunchObserver {
-    fn drop(&mut self) {
-        self.observers.remove_if(&self.transaction_id, |_, entry| {
-            self.sender.ptr_eq(&Arc::downgrade(&entry.source))
-        });
-    }
-}
-
 #[derive(Clone)]
 struct UdpTunnelListenerData {
     local_url: url::Url,
@@ -562,7 +397,6 @@ struct UdpTunnelListenerData {
     sock_map: Arc<DashMap<SocketAddr, UdpConnection>>,
     conn_send: Sender<Box<dyn Tunnel>>,
     close_event_sender: UdpCloseEventSender,
-    hole_punch_observers: UdpHolePunchObserverRegistry,
 }
 
 impl UdpTunnelListenerData {
@@ -577,7 +411,6 @@ impl UdpTunnelListenerData {
             sock_map: Arc::new(DashMap::new()),
             conn_send,
             close_event_sender,
-            hole_punch_observers: UdpHolePunchObserverRegistry::default(),
         }
     }
 
@@ -707,11 +540,6 @@ impl UdpTunnelListenerData {
                 tracing::trace!(?e, "udp forward packet error");
             }
         } else {
-            // A punch packet of an active transaction tells where the peer's NAT really sends from.
-            if zc_packet.udp_payload().len() == HOLE_PUNCH_PACKET_BODY_LEN as usize {
-                self.hole_punch_observers
-                    .record(header.conn_id.get(), addr);
-            }
             tracing::trace!(?header, "udp forward packet ignore hole punch packet");
         }
     }
@@ -728,7 +556,6 @@ impl UdpTunnelListenerData {
                 }
             }
         }
-        self.hole_punch_observers.close();
     }
 }
 
@@ -771,10 +598,6 @@ impl UdpTunnelListener {
 
     pub fn get_socket(&self) -> Option<Arc<UdpSocket>> {
         self.socket.clone()
-    }
-
-    pub fn hole_punch_observers(&self) -> UdpHolePunchObserverRegistry {
-        self.data.hole_punch_observers.clone()
     }
 }
 
@@ -1454,127 +1277,5 @@ mod tests {
             .await
             .expect("Timeout waiting for v4 hole punch packet")
             .unwrap();
-    }
-
-    async fn punch_listener() -> (UdpTunnelListener, SocketAddr) {
-        let mut lis = UdpTunnelListener::new("udp://127.0.0.1:0".parse().unwrap());
-        lis.listen().await.unwrap();
-        let addr = SocketAddr::from(([127, 0, 0, 1], lis.local_url().port().unwrap()));
-        (lis, addr)
-    }
-
-    async fn send_punch(from: &UdpSocket, to: SocketAddr, tid: u32, body_len: u16) {
-        from.send_to(&new_hole_punch_packet(tid, body_len).into_bytes(), to)
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn hole_punch_observer_matches_transaction_and_packet_shape() {
-        let (lis, addr) = punch_listener().await;
-        let registry = lis.hole_punch_observers();
-        let mut observer = registry.observe(7).unwrap();
-        let mut other = registry.observe(8).unwrap();
-        let first = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let second = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-
-        // another transaction, a wrong body length, and a concurrent transaction come first
-        send_punch(&first, addr, 9, HOLE_PUNCH_PACKET_BODY_LEN).await;
-        send_punch(&first, addr, 7, 32).await;
-        send_punch(&second, addr, 8, HOLE_PUNCH_PACKET_BODY_LEN).await;
-        send_punch(&first, addr, 7, HOLE_PUNCH_PACKET_BODY_LEN).await;
-        let wait = Duration::from_secs(2);
-        assert_eq!(
-            timeout(wait, observer.wait_for_source_addr()).await.unwrap().unwrap(),
-            first.local_addr().unwrap()
-        );
-        assert_eq!(
-            timeout(wait, other.wait_for_source_addr()).await.unwrap().unwrap(),
-            second.local_addr().unwrap()
-        );
-        // the first source stays
-        send_punch(&second, addr, 7, HOLE_PUNCH_PACKET_BODY_LEN).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(observer.source_addr(), Some(first.local_addr().unwrap()));
-
-        assert_eq!(
-            registry.observe(7).err().map(|e| e.kind()),
-            Some(std::io::ErrorKind::AlreadyExists)
-        );
-        drop(observer);
-        assert_eq!(registry.observe(7).unwrap().source_addr(), None);
-    }
-
-    #[tokio::test]
-    async fn prepared_hole_punch_keeps_its_source_until_the_rpc_claims_it() {
-        let (lis, addr) = punch_listener().await;
-        let registry = lis.hole_punch_observers();
-        registry.prepare(0, Duration::from_secs(30)).unwrap();
-        assert_eq!(
-            registry.prepare(0, Duration::from_secs(30)).err().map(|e| e.kind()),
-            Some(std::io::ErrorKind::AlreadyExists)
-        );
-        let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        send_punch(&peer, addr, 0, HOLE_PUNCH_PACKET_BODY_LEN).await;
-
-        wait_for_condition(
-            || async {
-                registry
-                    .observers
-                    .get(&0)
-                    .is_some_and(|e| *e.source.borrow() == Some(peer.local_addr().unwrap()))
-            },
-            Duration::from_secs(2),
-        )
-        .await;
-        let observer = registry.observe(0).unwrap();
-        assert_eq!(observer.source_addr(), Some(peer.local_addr().unwrap()));
-        assert_eq!(
-            registry.observe(0).err().map(|e| e.kind()),
-            Some(std::io::ErrorKind::AlreadyExists)
-        );
-        drop(observer);
-        assert!(registry.observers.is_empty());
-    }
-
-    #[tokio::test]
-    async fn prepared_hole_punch_expires_without_removing_an_active_one() {
-        let registry = UdpHolePunchObserverRegistry::default();
-        for tid in [7, 8, 9] {
-            registry.prepare(tid, Duration::from_millis(200)).unwrap();
-        }
-        let observer = registry.observe(8).unwrap();
-
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(
-            registry.observe(7).err().map(|e| e.kind()),
-            Some(std::io::ErrorKind::TimedOut)
-        );
-        registry.expire_prepared();
-        assert!(!registry.observers.contains_key(&9));
-        assert!(registry.observers.contains_key(&8));
-        registry.prepare(9, Duration::from_secs(1)).unwrap();
-        drop(observer);
-        assert!(!registry.observers.contains_key(&8));
-    }
-
-    #[tokio::test]
-    async fn stopped_listener_ends_hole_punch_observation() {
-        let registry = UdpHolePunchObserverRegistry::default();
-        let mut observer = registry.observe(7).unwrap();
-        registry.prepare(8, Duration::from_secs(30)).unwrap();
-        registry.close();
-        assert_eq!(
-            registry.observe(8).err().map(|e| e.kind()),
-            Some(std::io::ErrorKind::BrokenPipe)
-        );
-        assert_eq!(
-            registry.prepare(9, Duration::from_secs(30)).err().map(|e| e.kind()),
-            Some(std::io::ErrorKind::BrokenPipe)
-        );
-        assert_eq!(
-            observer.wait_for_source_addr().await.err().map(|e| e.kind()),
-            Some(std::io::ErrorKind::UnexpectedEof)
-        );
     }
 }

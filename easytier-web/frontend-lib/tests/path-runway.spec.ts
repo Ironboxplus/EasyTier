@@ -97,6 +97,16 @@ describe('runway model: what is shown', () => {
     expect(view.out).toEqual([])
   })
 
+  it('a preview under the saved line keeps out what the core holds out as lossy', () => {
+    const p = peer()
+    // The core holds path 5 out while its average is back under the line: it waits for half the line.
+    p.paths![4].recent_loss = 0.08
+    const saved = DEFAULT_MP_SELECTION_CONFIG()
+    expect(idsOf(previewView(p, saved, 5, saved).out)).toEqual([5])
+    // A moved line judges it afresh: 8 % is under 9 %.
+    expect(previewView(p, withLossyPercent(saved, 9), 5, saved).out).toEqual([])
+  })
+
   it('the stand-in for an unmeasured path moves it on the axis', () => {
     const p = peer()
     p.paths!.push(path(6, 'udp-direct', '198.18.0.6:11010', 0))

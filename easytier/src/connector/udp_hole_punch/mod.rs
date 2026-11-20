@@ -142,20 +142,8 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
         #[cfg(not(feature = "mpquic"))]
         let mp_alt_listener_ips = Vec::new();
 
-        // Observe where the requester's punch packets come from before the listener's address is
-        // known to it. The echo tells the requester that the registration exists; MP punches
-        // through its own raw listener and never asks for one.
-        let transaction_id = match input.transaction_id {
-            Some(transaction_id) if !mp_accepted => {
-                self.common.prepare_hole_punch(&addr, transaction_id).await?;
-                Some(transaction_id)
-            }
-            _ => None,
-        };
-
         Ok(SelectPunchListenerResponse {
             listener_mapped_addr: Some(addr.into()),
-            transaction_id,
             mp_accepted,
             listener_local_addr: Some(local_addr.into()),
             mp_alt_listener_ips,
@@ -925,41 +913,6 @@ pub mod tests {
             .into_iter()
             .map(|task| task.dst_peer_id)
             .collect()
-    }
-
-    /// A requester that names its transaction while selecting gets the registration confirmed
-    /// (the echo); one that does not, as every older one, gets no echo and no registration.
-    #[tokio::test]
-    async fn select_punch_listener_registers_and_echoes_the_transaction() {
-        use crate::proto::{
-            peer_rpc::{SelectPunchListenerRequest, UdpHolePunchRpc},
-            rpc_types::controller::BaseController,
-        };
-
-        let server = super::UdpHolePunchServer::new(
-            create_mock_peer_manager_with_mock_stun(NatType::Restricted).await,
-        );
-        let select = |transaction_id| {
-            server.select_punch_listener(
-                BaseController::default(),
-                SelectPunchListenerRequest {
-                    prefer_port_mapping: true,
-                    transaction_id,
-                    ..Default::default()
-                },
-            )
-        };
-        let resp = select(Some(0)).await.unwrap();
-        assert_eq!(resp.transaction_id, Some(0));
-        let addr = std::net::SocketAddr::from(resp.listener_mapped_addr.unwrap());
-        assert!(server.common.prepare_hole_punch(&addr, 0).await.is_err());
-
-        let resp = select(None).await.unwrap();
-        assert_eq!(resp.transaction_id, None);
-        // nothing was registered for it, on whichever listener it got
-        let other = std::net::SocketAddr::from(resp.listener_mapped_addr.unwrap());
-        server.common.prepare_hole_punch(&other, 1).await.unwrap();
-        server.common.prepare_hole_punch(&addr, 2).await.unwrap();
     }
 
     #[rstest::rstest]
