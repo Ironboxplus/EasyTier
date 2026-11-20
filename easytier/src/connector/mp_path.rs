@@ -1636,9 +1636,39 @@ mod tests {
         for sent in [300_000, 400_000, 500_000] {
             table.record_traffic(&key, sent, 40_000, LOSSY_PATH_LOSS);
         }
-        assert!(!table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS), "three more clean samples clear it");
+        assert!(
+            table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS),
+            "three more clean samples leave it at 7.9%, over half the line"
+        );
+        for sent in [600_000, 700_000] {
+            table.record_traffic(&key, sent, 40_000, LOSSY_PATH_LOSS);
+        }
+        assert!(!table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS), "two more clear it");
         table.record_traffic(&key, 10, 0, LOSSY_PATH_LOSS);
         assert!(!table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS), "a counter reset keeps the average");
+    }
+
+    /// T4 revision: a lossy path is clean again only once its last sample and
+    /// its average are both at or under half the line. Clean samples with the
+    /// average still over 5% leave it lossy; a sample of 4% that takes the
+    /// average to 4.9% clears it.
+    #[test]
+    fn a_lossy_path_is_clean_again_only_at_half_the_line() {
+        let sp = spec();
+        let key = sp.key;
+        let mut table = MpCandidateTable::default();
+        table.upsert(sp, Instant::now());
+        table.set_state(&key, PathLifecycleState::AVAILABLE);
+        let lossy = |table: &MpCandidateTable| table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS);
+
+        table.record_traffic(&key, 1_000, 120, LOSSY_PATH_LOSS);
+        assert!(lossy(&table), "12%");
+        table.record_traffic(&key, 2_000, 120, LOSSY_PATH_LOSS);
+        assert!(lossy(&table), "a clean sample, the average at 8%");
+        table.record_traffic(&key, 3_000, 120, LOSSY_PATH_LOSS);
+        assert!(lossy(&table), "a clean sample, the average at 5.3%");
+        table.record_traffic(&key, 4_000, 160, LOSSY_PATH_LOSS);
+        assert!(!lossy(&table), "a sample of 4%, the average at 4.9%");
     }
 
     /// Challenges lost while a punched path is opening are not path loss.

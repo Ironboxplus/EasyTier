@@ -1,1 +1,1 @@
-test(~mpquic) | test(~loss_probes) | test(~probed)
+test(~mp_path) | test(~mp_session)

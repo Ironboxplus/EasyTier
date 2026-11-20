@@ -6745,11 +6745,12 @@ mod tests {
     }
 
     /// Test 4, down: a very lossy path (40%) gives way to a lossy one (12%).
-    /// A clean sample brings its average to 26.7%: sample and average are both
-    /// under 30% and it is back on the first level, still lossy, where the
-    /// lower RTT sends.
+    /// It comes down a level only once its sample and its average are both at
+    /// or under 15%, half the second line (T4 revision): clean samples bring
+    /// the average to 26.7%, then 17.8%, and it stays very lossy; at 11.9% it
+    /// is back on the first level, still lossy, where the lower RTT sends.
     #[test]
-    fn a_very_lossy_path_comes_down_a_level_once_its_sample_and_average_agree() {
+    fn a_very_lossy_path_comes_down_a_level_only_under_half_the_second_line() {
         let params = SelectionParams::default();
         let (mut candidates, keys) = established_paths(42041, 2);
         let (recovering, steady) = (keys[0], keys[1]);
@@ -6761,44 +6762,49 @@ mod tests {
             "a very lossy path gives way to a lossy one"
         );
 
-        feed_counters(&mut candidates, &recovering, &counters(5, 1_100, 400, 0), &params);
-        assert!(candidates.get(&recovering).unwrap().is_lossy(params.lossy_loss), "26.7% is still lossy");
+        for (sent, average) in [(1_100, "26.7%"), (1_200, "17.8%")] {
+            feed_counters(&mut candidates, &recovering, &counters(5, sent, 400, 0), &params);
+            assert_eq!(
+                selected_one(&candidates, &[steady], &params),
+                vec![steady],
+                "a clean sample and an average of {average}: still very lossy"
+            );
+        }
+        feed_counters(&mut candidates, &recovering, &counters(5, 1_300, 400, 0), &params);
+        assert!(candidates.get(&recovering).unwrap().is_lossy(params.lossy_loss), "11.9% is still lossy");
         assert_eq!(selected_one(&candidates, &[steady], &params), vec![recovering], "same level: by RTT");
     }
 
     /// Test 4, staying: sample and average disagree, and the level stays
     /// (RFC 8966 Appendix A.3: switch only when both the instantaneous and the
-    /// smoothed metric say so). The user lowers the line to 5%: a clean path
-    /// whose average is 8% but whose last sample was 2% stays clean. The user
-    /// raises it to 15%: a lossy path whose average is 12% but whose last
-    /// sample was 18% stays lossy.
+    /// smoothed metric say so). A clean path whose last sample was 20% but
+    /// whose average is 9.3% stays clean. A lossy path whose last sample was
+    /// 3%, under half the line, but whose average is 9% stays lossy.
     #[test]
     fn a_path_keeps_its_loss_level_while_its_sample_and_average_disagree() {
         let params = SelectionParams::default();
         let (mut candidates, keys) = established_paths(42051, 2);
         let (wavering, other) = (keys[0], keys[1]);
         feed_counters(&mut candidates, &other, &counters(20, 1_000, 0, 0), &params);
-        // Samples of 11%, then 2%: the average is 8%.
-        feed_counters(&mut candidates, &wavering, &counters(5, 1_000, 110, 0), &params);
-        feed_counters(&mut candidates, &wavering, &counters(5, 2_000, 130, 0), &params);
-        assert_eq!(selected_one(&candidates, &[other], &params), vec![wavering], "8% is clean at 10%");
+        // Samples of 4%, then 20%: the average is 9.3%.
+        feed_counters(&mut candidates, &wavering, &counters(5, 1_000, 40, 0), &params);
+        feed_counters(&mut candidates, &wavering, &counters(5, 2_000, 240, 0), &params);
         assert_eq!(
-            selected_one(&candidates, &[wavering], &lossy_percent(5)),
+            selected_one(&candidates, &[wavering], &params),
             vec![wavering],
-            "at 5% the average says lossy, the last sample says clean: it stays clean"
+            "the last sample says lossy, the average says clean: it stays clean"
         );
 
         let (mut candidates, keys) = established_paths(42061, 2);
         let (wavering, other) = (keys[0], keys[1]);
         feed_counters(&mut candidates, &other, &counters(20, 1_000, 0, 0), &params);
-        // Samples of 9%, then 18%: the average is 12%.
-        feed_counters(&mut candidates, &wavering, &counters(5, 1_000, 90, 0), &params);
-        feed_counters(&mut candidates, &wavering, &counters(5, 2_000, 270, 0), &params);
-        assert_eq!(selected_one(&candidates, &[wavering], &params), vec![other], "12% is lossy at 10%");
+        // Samples of 12%, then 3%: the average is 9%.
+        feed_counters(&mut candidates, &wavering, &counters(5, 1_000, 120, 0), &params);
+        feed_counters(&mut candidates, &wavering, &counters(5, 2_000, 150, 0), &params);
         assert_eq!(
-            selected_one(&candidates, &[other], &lossy_percent(15)),
+            selected_one(&candidates, &[other], &params),
             vec![other],
-            "at 15% the average says clean, the last sample says lossy: it stays lossy"
+            "the last sample is under half the line, the average is not: it stays lossy"
         );
     }
 
@@ -6820,6 +6826,78 @@ mod tests {
         feed_counters(&mut candidates, &light, &counters(20, 1_000, 120, 0), &params);
         feed_counters(&mut candidates, &heavy, &counters(5, 1_000, 300, 0), &params);
         assert_eq!(selected_one(&candidates, &[], &params), vec![heavy], "30% and 12%: same level, by RTT");
+    }
+
+    /// T4 revision (PLAN-20261121-path-loss.md, 2026-11-21): just over the
+    /// line the average sits close to it, and one good sample used to bring
+    /// the path back within seconds (s49, CI run 44789248007). Samples of 9%
+    /// and 15% put the average at 11%; a sample of 5 lost in 64 takes it to
+    /// 9.9%, sample and average both under the line, and the path stays out:
+    /// it is clean again only at half the line.
+    #[test]
+    fn a_path_just_over_the_line_stays_out_after_one_good_sample() {
+        let params = SelectionParams::default();
+        let (mut candidates, keys) = established_paths(42101, 2);
+        let (lossy, other) = (keys[0], keys[1]);
+        feed_counters(&mut candidates, &other, &counters(20, 1_000, 0, 0), &params);
+        feed_counters(&mut candidates, &lossy, &counters(5, 1_000, 90, 0), &params);
+        assert_eq!(selected_one(&candidates, &[lossy], &params), vec![lossy], "9% is clean");
+        feed_counters(&mut candidates, &lossy, &counters(5, 2_000, 240, 0), &params);
+        assert_eq!(
+            selected_one(&candidates, &[lossy], &params),
+            vec![other],
+            "a sample of 15% and an average of 11%: lossy"
+        );
+
+        feed_counters(&mut candidates, &lossy, &counters(5, 2_064, 245, 0), &params);
+        let loss = candidates.get(&lossy).unwrap().recent_loss.unwrap();
+        assert!(loss < 0.10, "the average is under the line: {loss}");
+        assert_eq!(
+            selected_one(&candidates, &[other], &params),
+            vec![other],
+            "one good sample does not bring it back"
+        );
+        let input = selection_input(&candidates, &[], &HashMap::new(), &params);
+        assert_eq!(input.left_out.get(&lossy), Some(&LEFT_OUT_LOSSY_PATH));
+    }
+
+    /// A level settled under another line does not carry over: when the user
+    /// moves `lossy_percent`, the path is judged afresh against the new line,
+    /// as one coming up from clean, so the change applies at once (it is the
+    /// user's intent, not noise the half-line way down guards against).
+    /// Samples of 9% and 18% (an average of 12%) make a path lossy at 10%. At
+    /// 15% its average is under the line: clean, and still clean after a tick
+    /// with a sample of 12%. Back at 10%, sample and average are both over the
+    /// line: lossy again.
+    #[test]
+    fn a_changed_line_judges_a_path_afresh() {
+        let params = SelectionParams::default();
+        let at_fifteen = lossy_percent(15);
+        let (mut candidates, keys) = established_paths(42111, 2);
+        let (lossy, other) = (keys[0], keys[1]);
+        feed_counters(&mut candidates, &other, &counters(20, 1_000, 0, 0), &params);
+        feed_counters(&mut candidates, &lossy, &counters(5, 1_000, 90, 0), &params);
+        feed_counters(&mut candidates, &lossy, &counters(5, 2_000, 270, 0), &params);
+        assert_eq!(selected_one(&candidates, &[lossy], &params), vec![other], "12% is lossy at 10%");
+
+        assert_eq!(
+            selected_one(&candidates, &[other], &at_fifteen),
+            vec![lossy],
+            "at 15% the average is under the line: clean"
+        );
+        feed_counters(&mut candidates, &other, &counters(20, 2_000, 0, 0), &at_fifteen);
+        feed_counters(&mut candidates, &lossy, &counters(5, 3_000, 390, 0), &at_fifteen);
+        assert_eq!(
+            selected_one(&candidates, &[lossy], &at_fifteen),
+            vec![lossy],
+            "the next tick at 15%: still clean"
+        );
+
+        assert_eq!(
+            selected_one(&candidates, &[lossy], &params),
+            vec![other],
+            "back at 10%, sample and average are over the line: lossy"
+        );
     }
 
     /// Test 5: a relay first hop's loss comes from a window of 100 pings
