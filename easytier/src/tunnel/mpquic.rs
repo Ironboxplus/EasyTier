@@ -192,7 +192,8 @@ const PATH_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// ET: how often a path flagged for loss probes (`MpPathTarget::probe_loss`)
 /// gets a PING. A PING is ack-eliciting, so each one is a data packet of the
 /// path's loss count (`tquic::PathStats::sent_data_count`), and 64 of them, a
-/// loss sample (`mp_path::LOSS_SAMPLE_MIN_PACKETS`), take 6.4 s. Chosen here:
+/// loss sample (`mp_path::LOSS_SAMPLE_MIN_PACKETS`), take 6.4 s at most (TQUIC
+/// may add a PTO probe after a PING, see the test). Chosen here:
 /// RFC 10069 Section 3.3 and XQUIC PING a path to tell whether it works, and
 /// neither gives a rate for measuring loss.
 const LOSS_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
@@ -5020,7 +5021,10 @@ mod tests {
     /// loss probes every `LOSS_PROBE_INTERVAL`, on standby too (a PING is a
     /// control frame, not data the scheduler holds back), and each PING is a
     /// data packet of the path's loss count. Unflagged, the idle standby path
-    /// sends none.
+    /// sends none. TQUIC may follow a PING with a PTO probe: the peer holds the
+    /// ACK of a lone ack-eliciting packet up to its max_ack_delay, which a path
+    /// opened after the handshake leaves out of its PTO
+    /// (`Connection::set_peer_trans_params` sets it on the first path only).
     #[test]
     fn a_path_flagged_for_loss_probes_is_pinged_on_standby() {
         RUNTIME.block_on(async {
@@ -5110,7 +5114,10 @@ mod tests {
             let (primary, probed) =
                 sent_in_a_second(&client_handle, client_primary_addr, client_secondary_addr).await;
             println!("flagged: {probed} data packets on the standby path in 1 s, {primary} on the idle primary");
-            assert!((5..=15).contains(&probed), "about ten PINGs a second, got {probed}");
+            assert!(
+                (5..=40).contains(&probed),
+                "ten PINGs a second, each maybe with a PTO probe, got {probed}"
+            );
 
             client_handle
                 .set_path_targets(vec![
@@ -5122,7 +5129,10 @@ mod tests {
             let (primary, idle) =
                 sent_in_a_second(&client_handle, client_primary_addr, client_secondary_addr).await;
             println!("unflagged: {idle} data packets on the standby path in 1 s, {primary} on the idle primary");
-            assert!(idle <= 1, "no probes once the flag is off, got {idle}");
+            assert!(
+                idle <= 2,
+                "no probes once the flag is off (the last PING's PTO probes aside), got {idle}"
+            );
 
             client_handle.shutdown();
             server_handle.shutdown();

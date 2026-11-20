@@ -15,7 +15,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # One group per commit: a fix pushed while a run is still going starts its own run beside it
+  # instead of cancelling it (runs are free and parallel; a re-run of the same commit replaces it).
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
 env:

@@ -2540,12 +2540,17 @@ def s49_lossy_uplink(run, args):
         return s, next((pa for pa in paths_of(s) if addr(pa) == a1_path), None)
 
     def watch(label, secs):
-        """The NICs A sends on, once a second for `secs`."""
-        samples, end = [], time.time() + secs
+        """The NICs A sends on, once a second for `secs`; the evidence also keeps each path's loss
+        average and why it is left out, so a move can be traced to its cause."""
+        samples, paths, end = [], [], time.time() + secs
         while time.time() < end:
-            samples.append(sorted(sending_nics(a.stats())))
+            s = a.stats()
+            samples.append(sorted(sending_nics(s)))
+            paths.append([[pa.get("egress_device"), addr(pa)[0], pa.get("selected"), pa.get("recent_loss"),
+                           pa.get("not_selected_reason")] for pa in paths_of(s)])
             time.sleep(1)
         run.evidence[label] = samples
+        run.evidence[label + "_paths"] = paths
         return samples
 
     # 100 datagrams of 1000 bytes a second to B's echo server and back, in 10 s rounds.
