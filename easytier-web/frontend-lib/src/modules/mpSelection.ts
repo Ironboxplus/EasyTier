@@ -165,6 +165,10 @@ export const LEFT_OUT_UNACKED = 'unacked'
 
 /** EasyTier ping loss at which a first hop counts as unreachable. */
 const UNREACHABLE_FIRST_HOP_LOSS = 1
+/** `mp_path::LOSSY_PATH_LOSS`: the least line a first hop is judged against. */
+const LOSSY_PATH_LOSS = 0.1
+/** `mp_path::VERY_LOSSY_PATH_LOSS` (XQUIC's `loss_percent_thr_high`): the second loss level's line, or the first line if that is higher. */
+const VERY_LOSSY_PATH_LOSS = 0.3
 
 /** One established path with what `selection_input` reads of it. */
 export interface Candidate {
@@ -180,6 +184,8 @@ export interface Candidate {
   /** Loss of a relay path's physical first hop. */
   firstHopLoss: number | null
   unacked: boolean
+  /** The core left the path out as `lossy-path`: its own loss is on a lossy level under the saved line. */
+  lossyPath: boolean
   policy: Pick<MpPathPolicy, 'action' | 'prefer_weight'> | null
 }
 
@@ -190,20 +196,45 @@ export interface SelectionInput {
   leftOut: Map<string, string>
 }
 
-type Health = 0 | 1 | 2 // clean, lossy, unreachable
+type FirstHopHealth = 0 | 1 | 2 // clean, lossy, unreachable
+type LossLevel = 0 | 1 | 2 // clean, lossy, very lossy
+/** `SelectionClass`, best first: a worse class gives way only to a better one. */
+type SelectionClass = 0 | 1 | 2 | 3 // clean, lossy, very lossy, unreachable
 
-const firstHopHealth = (loss: number, lossyLoss: number): Health =>
-  loss >= UNREACHABLE_FIRST_HOP_LOSS ? 2 : loss > lossyLoss ? 1 : 0
+/** `FirstHopHealth::lossy_line`: a first hop's loss comes from a window of 100 pings, too few for a line under 10 %. */
+const firstHopHealth = (loss: number, lossyLoss: number): FirstHopHealth =>
+  loss >= UNREACHABLE_FIRST_HOP_LOSS ? 2 : loss > Math.max(lossyLoss, LOSSY_PATH_LOSS) ? 1 : 0
+
+const lossLevelOf = (loss: number, lossyLoss: number): LossLevel =>
+  loss > Math.max(lossyLoss, VERY_LOSSY_PATH_LOSS) ? 2 : loss > lossyLoss ? 1 : 0
+
+/**
+ * A path's own loss level (`PathCandidate::loss_level`). Under the line the
+ * core's report was made with, its level is the core's: it moves a level only
+ * when the last sample and the average agree, and down only at half the line,
+ * so a path it holds out (`lossy-path`) may average under the line and one it
+ * keeps may average over it; the average tells the two lossy levels apart. A
+ * moved line has the core judge every path afresh, as coming up from clean,
+ * which needs the last sample over the line too: the status has no last
+ * sample, so the preview judges by the average alone.
+ */
+function lossLevel(c: Candidate, params: SelectionParams, savedLossyLoss: number | undefined): LossLevel {
+  if (c.recentLoss == null) return 0
+  if (params.lossyLoss === savedLossyLoss) return c.lossyPath ? Math.max(1, lossLevelOf(c.recentLoss, params.lossyLoss)) as LossLevel : 0
+  return lossLevelOf(c.recentLoss, params.lossyLoss)
+}
 
 /**
  * The established paths the selector may choose: `exclude`/`pause` take a
  * path out, `pin` goes to the selector, `prefer` becomes an RTT advantage; a
  * lossy, unacked or unreachable-first-hop path stays out while a better class
- * of path is selectable.
+ * of path is selectable. `savedLossyLoss` is the loss line the core's report
+ * (`Candidate.lossyPath`) was made with; without it every path is judged by
+ * its average.
  */
-export function selectionInput(candidates: Candidate[], params: SelectionParams): SelectionInput {
+export function selectionInput(candidates: Candidate[], params: SelectionParams, savedLossyLoss?: number): SelectionInput {
   const input: SelectionInput = { paths: [], pinned: new Set(), leftOut: new Map() }
-  const selectable: { path: SelectorPath, cls: Health, reason: string }[] = []
+  const selectable: { path: SelectorPath, cls: SelectionClass, reason: string }[] = []
   for (const c of candidates) {
     let preferWeight = 1
     if (c.policy) {
@@ -221,12 +252,13 @@ export function selectionInput(candidates: Candidate[], params: SelectionParams)
       params,
     )
     path.biasMicros += preferBiasMicros(path.rttMicros, preferWeight)
-    const firstHop: Health = c.firstHopLoss == null ? 0 : firstHopHealth(c.firstHopLoss, params.lossyLoss)
-    let cls: Health
+    const firstHop: FirstHopHealth = c.firstHopLoss == null ? 0 : firstHopHealth(c.firstHopLoss, params.lossyLoss)
+    const level = lossLevel(c, params, savedLossyLoss)
+    let cls: SelectionClass
     let reason: string
-    if (firstHop === 2) [cls, reason] = [2, LEFT_OUT_LOSSY_FIRST_HOP]
-    else if (c.unacked) [cls, reason] = [2, LEFT_OUT_UNACKED]
-    else if (c.recentLoss != null && c.recentLoss > params.lossyLoss) [cls, reason] = [1, LEFT_OUT_LOSSY_PATH]
+    if (firstHop === 2) [cls, reason] = [3, LEFT_OUT_LOSSY_FIRST_HOP]
+    else if (c.unacked) [cls, reason] = [3, LEFT_OUT_UNACKED]
+    else if (level > 0) [cls, reason] = [level, LEFT_OUT_LOSSY_PATH]
     else [cls, reason] = [firstHop, LEFT_OUT_LOSSY_FIRST_HOP]
     selectable.push({ path, cls, reason })
   }

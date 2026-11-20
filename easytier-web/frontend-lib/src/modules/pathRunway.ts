@@ -100,6 +100,7 @@ function candidateOf(peerId: number | string, p: MpPathStatus): Candidate {
     recentLoss: p.recent_loss ?? null,
     firstHopLoss: p.first_hop_loss ?? null,
     unacked: p.not_selected_reason === LEFT_OUT_UNACKED,
+    lossyPath: p.not_selected_reason === LEFT_OUT_LOSSY_PATH,
     policy: action ? { action: action as 'pin', prefer_weight: 2 } : null,
   }
 }
@@ -173,11 +174,20 @@ export function reportedView(peer: MpPeerStatus, selection?: MpSelectionConfig |
   return arrange(placed, micros(peer.switch_threshold_micros), tier)
 }
 
-/** What the selection would do under the draft `selection` and `kmax`: a preview while a handle moves. */
-export function previewView(peer: MpPeerStatus, selection: MpSelectionConfig, kmax: number): RunwayView {
+/**
+ * What the selection would do under the draft `selection` and `kmax`: a
+ * preview while a handle moves. `saved` is the selection the core's report
+ * was made with (the built-in one if absent).
+ */
+export function previewView(
+  peer: MpPeerStatus,
+  selection: MpSelectionConfig,
+  kmax: number,
+  saved?: MpSelectionConfig | null,
+): RunwayView {
   const params = selectionParams(selection)
   const statuses = runwayPaths(peer)
-  const input = selectionInput(statuses.map(p => candidateOf(peer.peer_id, p)), params)
+  const input = selectionInput(statuses.map(p => candidateOf(peer.peer_id, p)), params, selectionParams(saved).lossyLoss)
   const current = statuses.filter(p => p.selected).map(p => pathKey(peer.peer_id, p))
   const chosen = new Set(selectPaths(input.paths, current, kmax, input.pinned, params))
   const placed = place(peer, params, (c, p) => {

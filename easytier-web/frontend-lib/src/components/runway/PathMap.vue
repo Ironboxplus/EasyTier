@@ -71,7 +71,7 @@ const savedSelection = computed<MpSelectionConfig>(() => props.mpConfig?.selecti
 const savedKmax = computed(() => props.mpConfig?.kmax ?? 1)
 const draft = ref<{ selection: MpSelectionConfig, kmax: number } | null>(null)
 const view = computed(() => draft.value
-  ? previewView(props.peer, draft.value.selection, draft.value.kmax)
+  ? previewView(props.peer, draft.value.selection, draft.value.kmax, savedSelection.value)
   : reportedView(props.peer, savedSelection.value))
 const kmaxShown = computed(() => draft.value?.kmax ?? savedKmax.value)
 
