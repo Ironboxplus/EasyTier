@@ -180,7 +180,10 @@ jobs:
       - name: Run ${{ matrix.set }} partition ${{ matrix.shard }}
         run: |
           sudo prlimit --pid $$ --nofile=1048576:1048576
-          sudo -E env "PATH=$PATH" cargo nextest run \
+          # The runner's sudo (sudo-rs on current images) ignores -E, so root's cargo shim
+          # found no toolchain: hand rustup and cargo their homes explicitly.
+          sudo env "PATH=$PATH" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            "CARGO_TERM_COLOR=$CARGO_TERM_COLOR" cargo nextest run \
             --archive-file tests-${{ matrix.set }}.tar.zst \
             --workspace-remap "$GITHUB_WORKSPACE/et" \
             --partition "hash:${{ matrix.shard }}/$SHARDS" \
