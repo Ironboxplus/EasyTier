@@ -741,7 +741,8 @@ pub(crate) struct MpControlTickResult {
 /// plan W4).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PathSelectionDiagnostics {
-    /// The byte-based loss average of the path itself (`PathCandidate::recent_loss`).
+    /// The loss average of the path itself, the share of its data packets
+    /// lost (`PathCandidate::recent_loss`).
     pub(crate) recent_loss: Option<f64>,
     /// EasyTier ping loss of a relay path's physical first hop.
     pub(crate) first_hop_loss: Option<f64>,
@@ -916,11 +917,16 @@ fn record_path_telemetry(
     candidates: &mut MpCandidateTable,
     key: &PathKey,
     path: &MpPathTelemetry,
-    _params: &SelectionParams,
+    params: &SelectionParams,
     now: Instant,
 ) {
     candidates.observe_measurements(key, path_measurements_from_telemetry(path));
-    candidates.record_traffic(key, path.sent_bytes, path.lost_bytes);
+    candidates.record_traffic(
+        key,
+        path.sent_data_packets,
+        path.lost_data_packets,
+        params.lossy_loss,
+    );
     candidates.record_received(key, path.recv_bytes);
     candidates.record_acks(key, path.sent_bytes, path.acked_bytes, path.srtt_micros, now);
 }
@@ -1070,9 +1076,37 @@ fn build_path_targets(
                 remote_addr: key.remote_addr,
                 rate,
                 standby,
+                probe_loss: false,
             })
         })
         .collect()
+}
+
+/// ET: flags the paths left out as lossy for loss probes
+/// (`MpPathTarget::probe_loss`): left out, a path sends no data, and one that
+/// only acknowledges what the peer sends on it gets no loss sample
+/// (`MpCandidateTable::record_traffic`), so without them its loss would never
+/// be measured again. RFC 10069 Section 3.3 suggests PING frames to find out
+/// in time when a path can be switched back to; ET measures the path's loss
+/// by them as well. Only while a selected path sent data since the last
+/// tick: in an idle session the probes would be all it sends.
+fn mark_loss_probes(
+    targets: &mut [MpPathTarget],
+    candidates: &MpCandidateTable,
+    selected: &[PathKey],
+    left_out: &HashMap<PathKey, &'static str>,
+) {
+    let busy = selected
+        .iter()
+        .any(|key| candidates.get(key).is_some_and(|candidate| candidate.sent_data()));
+    for target in targets.iter_mut() {
+        target.probe_loss = busy
+            && left_out.iter().any(|(key, reason)| {
+                *reason == LEFT_OUT_LOSSY_PATH
+                    && key.local_addr == target.local_addr
+                    && key.remote_addr == target.remote_addr
+            });
+    }
 }
 
 /// The budgeted resources a path passes through: the NIC it leaves by (a
@@ -1130,6 +1164,19 @@ pub(crate) const LEFT_OUT_LOSSY_PATH: &str = "lossy-path";
 pub(crate) const LEFT_OUT_LOSSY_FIRST_HOP: &str = "lossy-first-hop";
 pub(crate) const LEFT_OUT_UNACKED: &str = "unacked";
 
+/// How a path ranks in `selection_input`, best first (the derive order): a
+/// worse class gives way only to a better one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SelectionClass {
+    Clean,
+    /// Its own loss is `LossLevel::Lossy`, or its relay first hop is lossy.
+    Lossy,
+    /// Its own loss is `LossLevel::VeryLossy`.
+    VeryLossy,
+    /// Its sent bytes go unacknowledged, or its relay first hop answers no ping.
+    Unreachable,
+}
+
 /// What the selector chooses from, with the user's path policies.
 #[derive(Default)]
 struct SelectionInput {
@@ -1155,13 +1202,17 @@ struct SelectionInput {
 /// excluded or paused is no candidate, and letting it keep the lossy paths
 /// out left no path at all.
 ///
+/// ET: a path's own loss has XQUIC's two levels (`mp_path::LossLevel`): a
+/// very lossy path gives way to a lossy one the way a lossy one gives way to
+/// a clean one, and both are left out as `lossy-path`.
+///
 /// ET: a relay path also counts as lossy when its physical first hop loses
 /// EasyTier pings (`first_hop_loss`), and as unreachable when the first hop
-/// answers none: a relay path that carries little cannot gather the byte-based
-/// `recent_loss`, yet its first hop is pinged all the time (MP weak-network
-/// plan R3). Like the lossy case, a worse class gives way only to a better
-/// one: any path that is not unreachable keeps an unreachable one out, so the
-/// session never ends up with no path at all.
+/// answers none: a relay path that carries little cannot gather the
+/// `recent_loss` of its data packets, yet its first hop is pinged all the
+/// time (MP weak-network plan R3). Like the lossy case, a worse class gives
+/// way only to a better one: any path that is not unreachable keeps an
+/// unreachable one out, so the session never ends up with no path at all.
 ///
 /// ET: a path whose sent bytes get no acknowledgement (`is_unacked`) counts
 /// as unreachable too, the way Linux MPTCP stops using a stale subflow while
@@ -1173,7 +1224,7 @@ fn selection_input(
     first_hop_loss: &HashMap<PeerId, f64>,
     params: &SelectionParams,
 ) -> SelectionInput {
-    use super::mp_path::FirstHopHealth;
+    use super::mp_path::{FirstHopHealth, LossLevel};
 
     let mut input = SelectionInput::default();
     // (path, the worse of its own and its first hop's class, why it gives way)
@@ -1212,16 +1263,21 @@ fn selection_input(
             .relay_metadata
             .and_then(|metadata| first_hop_loss.get(&metadata.egress_first_hop_peer_id))
             .map_or(FirstHopHealth::Clean, |&loss| {
-                FirstHopHealth::from_loss(loss, params.lossy_loss)
+                FirstHopHealth::from_loss(loss, FirstHopHealth::lossy_line(params.lossy_loss))
             });
         let (class, reason) = if first_hop == FirstHopHealth::Unreachable {
-            (FirstHopHealth::Unreachable, LEFT_OUT_LOSSY_FIRST_HOP)
+            (SelectionClass::Unreachable, LEFT_OUT_LOSSY_FIRST_HOP)
         } else if candidate.is_unacked() {
-            (FirstHopHealth::Unreachable, LEFT_OUT_UNACKED)
-        } else if candidate.is_lossy(params.lossy_loss) {
-            (FirstHopHealth::Lossy, LEFT_OUT_LOSSY_PATH)
+            (SelectionClass::Unreachable, LEFT_OUT_UNACKED)
         } else {
-            (first_hop, LEFT_OUT_LOSSY_FIRST_HOP)
+            match candidate.loss_level(params.lossy_loss) {
+                LossLevel::VeryLossy => (SelectionClass::VeryLossy, LEFT_OUT_LOSSY_PATH),
+                LossLevel::Lossy => (SelectionClass::Lossy, LEFT_OUT_LOSSY_PATH),
+                LossLevel::Clean if first_hop == FirstHopHealth::Lossy => {
+                    (SelectionClass::Lossy, LEFT_OUT_LOSSY_FIRST_HOP)
+                }
+                LossLevel::Clean => (SelectionClass::Clean, LEFT_OUT_LOSSY_FIRST_HOP),
+            }
         };
         selectable.push((path, class, reason));
     }
@@ -3753,13 +3809,15 @@ impl MpSessionManager {
 
         let targets = {
             let candidates = candidate_slot.lock().await;
-            build_path_targets(
+            let mut targets = build_path_targets(
                 &candidates,
                 &selected,
                 rate_driven,
                 budgets,
                 path_policies,
-            )
+            );
+            mark_loss_probes(&mut targets, &candidates, &selected, &input.left_out);
+            targets
         };
         let targets = clamp_targets_to_peer_rx_cap(targets, self.peer_rx_cap_bps(peer_id).await);
         handle.set_path_targets(targets.clone()).await?;
@@ -3941,7 +3999,8 @@ impl MpSessionManager {
             return 0;
         };
         let first_hop_loss = self.first_hop_loss_snapshot();
-        let lossy_loss = self.selection_params().await.lossy_loss;
+        let lossy_loss =
+            super::mp_path::FirstHopHealth::lossy_line(self.selection_params().await.lossy_loss);
         let candidates = slot.lock().await;
         candidates
             .live_of_kind(super::mp_path::CarrierKind::RelayNextHop)
@@ -4972,6 +5031,7 @@ mod tests {
                 remote_addr: path.remote_addr,
                 rate: Some(target_bits_per_sec),
                 standby: false,
+                probe_loss: false,
             }])
             .await
             .unwrap();
@@ -6296,8 +6356,9 @@ mod tests {
         lossy_and_clean_paths_losing(40_000)
     }
 
-    /// As above, the "lossy" path having lost `lost_bytes` of 100 000 sent.
-    fn lossy_and_clean_paths_losing(lost_bytes: u64) -> (MpCandidateTable, PathKey, PathKey) {
+    /// As above, the "lossy" path having lost `lost_packets` of 100 000 data
+    /// packets sent.
+    fn lossy_and_clean_paths_losing(lost_packets: u64) -> (MpCandidateTable, PathKey, PathKey) {
         let mut candidates = MpCandidateTable::default();
         let mut add = |local: &str, remote: &str| {
             let (path, _) = channel_path_pair(local.parse().unwrap(), remote.parse().unwrap());
@@ -6312,7 +6373,12 @@ mod tests {
         };
         let lossy = add("127.0.0.1:40931", "127.0.0.1:40932");
         let clean = add("127.0.0.1:40933", "127.0.0.1:40934");
-        candidates.record_traffic(&lossy, 100_000, lost_bytes);
+        candidates.record_traffic(
+            &lossy,
+            100_000,
+            lost_packets,
+            crate::connector::mp_path::LOSSY_PATH_LOSS,
+        );
         (candidates, lossy, clean)
     }
 
@@ -6461,7 +6527,7 @@ mod tests {
     }
 
     /// Two established relay paths over first hops 11 (20 ms) and 12 (60 ms),
-    /// neither with a byte-based loss sample (they carry next to nothing).
+    /// neither with a loss sample (they carry next to nothing).
     fn two_relay_paths() -> (MpCandidateTable, PathKey, PathKey) {
         let mut candidates = MpCandidateTable::default();
         let mut add = |local: &str, remote: &str, first_hop: PeerId, rtt_micros: u64| {
@@ -6485,7 +6551,7 @@ mod tests {
     }
 
     /// MP weak-network plan R3, E2/E3: the relay path over the first hop that
-    /// answers no ping has no byte-based loss sample and the better RTT, and
+    /// answers no ping has no loss sample of its own and the better RTT, and
     /// was selected. Its first hop's ping loss now keeps it out while another
     /// path can carry, and never leaves the session without a path.
     #[test]
@@ -6526,8 +6592,13 @@ mod tests {
         assert_eq!(input.left_out.get(&near), Some(&LEFT_OUT_LOSSY_FIRST_HOP));
         assert!(!input.left_out.contains_key(&far));
 
-        // Its own byte-based loss comes first.
-        candidates.record_traffic(&near, 100_000, 40_000);
+        // Its own loss comes first.
+        candidates.record_traffic(
+            &near,
+            100_000,
+            40_000,
+            crate::connector::mp_path::LOSSY_PATH_LOSS,
+        );
         let input = selection_input(&candidates, &[], &HashMap::from([(11, 0.3)]), &SelectionParams::default());
         assert_eq!(input.left_out.get(&near), Some(&LEFT_OUT_LOSSY_PATH));
     }
@@ -6595,13 +6666,6 @@ mod tests {
         select_paths(&input.paths, incumbents, 1, &input.pinned, params)
     }
 
-    fn lossy_percent(percent: u32) -> SelectionParams {
-        SelectionParams::from_config(Some(&crate::proto::common::MpSelectionConfig {
-            lossy_percent: percent,
-            ..Default::default()
-        }))
-    }
-
     /// Incident 2026-11-20 (PLAN-20261121-path-loss.md test 2): the direct path
     /// lost 10.3% of what it sent and gave way. Left out, it kept carrying the
     /// peer's data and sent back only packets of ACK frames: their bytes made
@@ -6644,6 +6708,13 @@ mod tests {
         assert_eq!(loss(&candidates), None, "63 data packets are no sample");
         feed_counters(&mut candidates, &keys[0], &counters(5, 64, 13, 0), &params);
         assert!((loss(&candidates).unwrap() - 13.0 / 64.0).abs() < 1e-9);
+    }
+
+    fn lossy_percent(percent: u32) -> SelectionParams {
+        SelectionParams::from_config(Some(&crate::proto::common::MpSelectionConfig {
+            lossy_percent: percent,
+            ..Default::default()
+        }))
     }
 
     /// Test 4, up: a lossy path moves to the second level (above 30%, XQUIC's
@@ -6846,6 +6917,8 @@ mod tests {
             sent_bytes: 1_000,
             recv_bytes: 1_000,
             lost_bytes: 0,
+            sent_data_packets: 1,
+            lost_data_packets: 0,
             acked_bytes: 1_000,
             max_inflight_bytes: 1_000,
             cwnd_bytes: 10_000,
@@ -7057,12 +7130,14 @@ mod tests {
             remote_addr: remote,
             rate: Some(60_000_000),
             standby: false,
+            probe_loss: false,
         };
         let unmanaged = MpPathTarget {
             local_addr: local,
             remote_addr: remote,
             rate: None,
             standby: false,
+            probe_loss: false,
         };
 
         // No peer cap known: unchanged.
@@ -7128,6 +7203,7 @@ mod tests {
                     remote_addr: key.remote_addr,
                     rate: Some(60_000_000),
                     standby: false,
+                    probe_loss: false,
                 }],
                 candidate_count: 1,
                 eligible_count: 1,

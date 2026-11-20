@@ -189,6 +189,14 @@ fn removal_takes_last_usable_path(
 /// when it is needed again.
 const PATH_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// ET: how often a path flagged for loss probes (`MpPathTarget::probe_loss`)
+/// gets a PING. A PING is ack-eliciting, so each one is a data packet of the
+/// path's loss count (`tquic::PathStats::sent_data_count`), and 64 of them, a
+/// loss sample (`mp_path::LOSS_SAMPLE_MIN_PACKETS`), take 6.4 s. Chosen here:
+/// RFC 10069 Section 3.3 and XQUIC PING a path to tell whether it works, and
+/// neither gives a rate for measuring loss.
+const LOSS_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// PING every validated path whose sent bytes did not move since the last
 /// round; `last_sent` carries each path's count to the next round.
 fn keepalive_idle_paths(
@@ -1056,6 +1064,9 @@ pub(crate) struct MpPathTarget {
     /// A usable path the optimizer did not select: TQUIC sends data on it
     /// only when no selected path is left (`Connection::set_path_standby`).
     pub(crate) standby: bool,
+    /// The path was left out for its loss: the driver PINGs it every
+    /// `LOSS_PROBE_INTERVAL`, so its loss keeps being measured.
+    pub(crate) probe_loss: bool,
 }
 
 /// `MpPathTarget.rate` (bits/sec) -> TQUIC's `set_path_target_rate`/
@@ -1132,6 +1143,12 @@ pub(crate) struct MpPathTelemetry {
     pub(crate) recv_bytes: u64,
     /// `tquic::PathStats::lost_data_bytes`: lost PMTU probes are not path loss.
     pub(crate) lost_bytes: u64,
+    /// `tquic::PathStats::sent_data_count`: the data packets sent, i.e. the
+    /// in-flight packets other than PMTU probes. A packet of ACK frames only
+    /// is none (RFC 9002 Section 2).
+    pub(crate) sent_data_packets: u64,
+    /// `tquic::PathStats::lost_data_count`: the data packets declared lost.
+    pub(crate) lost_data_packets: u64,
     /// `tquic::PathStats::acked_bytes`, whatever the congestion control.
     pub(crate) acked_bytes: u64,
     /// High-water mark of `Recovery::bytes_in_flight` for this path
@@ -1193,6 +1210,8 @@ pub(crate) fn path_telemetry_from_stats(
         sent_bytes: stats.sent_bytes,
         recv_bytes: stats.recv_bytes,
         lost_bytes: stats.lost_data_bytes,
+        sent_data_packets: stats.sent_data_count,
+        lost_data_packets: stats.lost_data_count,
         acked_bytes: stats.acked_bytes,
         max_inflight_bytes: stats.max_inflight,
         cwnd_bytes: stats.final_cwnd,
@@ -1792,6 +1811,10 @@ async fn drive(cfg: DriverCfg) -> anyhow::Result<()> {
     // Which TQUIC path each path spec stands for, see `specs_to_retire_for_events`.
     let mut bound_paths = BoundPaths::new();
     let mut keepalive_next = Instant::now() + PATH_KEEPALIVE_INTERVAL;
+    // The paths the last `SetPathTargets` flagged for loss probes, and when
+    // they are next due; also checked at the end of each loop turn.
+    let mut loss_probe_paths: Vec<(SocketAddr, SocketAddr)> = Vec::new();
+    let mut loss_probe_next = Instant::now();
     // The last path failed and QUIC keeps the connection: it waits for a
     // replacement until this deadline, then closes with NO_VIABLE_PATH. The
     // failed paths are abandoned once a replacement has validated.
@@ -2089,6 +2112,11 @@ async fn drive(cfg: DriverCfg) -> anyhow::Result<()> {
                                     "skipped stale MP path target updates; the next control tick will reconcile"
                                 );
                             }
+                            loss_probe_paths = targets
+                                .iter()
+                                .filter(|target| target.probe_loss)
+                                .map(|target| (target.local_addr, target.remote_addr))
+                                .collect();
                             targets
                                 .iter()
                                 .try_for_each(|target| {
@@ -2383,6 +2411,26 @@ async fn drive(cfg: DriverCfg) -> anyhow::Result<()> {
             {
                 keepalive_idle_paths(conn, &path_specs, &mut keepalive_last_sent);
             }
+        }
+
+        if !loss_probe_paths.is_empty() {
+            if Instant::now() >= loss_probe_next {
+                loss_probe_next = Instant::now() + LOSS_PROBE_INTERVAL;
+                if let Some(ci) = conn_index
+                    && let Some(conn) = endpoint.conn_get_mut(ci)
+                {
+                    // A PING is a control frame: a standby path sends it too.
+                    for &(local, remote) in &loss_probe_paths {
+                        let _ = conn.ping(Some(tquic::FourTuple { local, remote }));
+                    }
+                }
+            }
+            // The next probe is due without any packet arriving to wake us.
+            next_wake.set(Some(
+                next_wake
+                    .get()
+                    .map_or(loss_probe_next, |wake| wake.min(loss_probe_next)),
+            ));
         }
 
         // Move this driver's egress queues on before generating more, so the
@@ -3993,6 +4041,8 @@ mod tests {
             sent_bytes: 10_000,
             recv_bytes: 9_000,
             lost_bytes: 100,
+            sent_data_packets: 9,
+            lost_data_packets: 1,
             acked_bytes: 8_000,
             max_inflight_bytes: 15_000,
             cwnd_bytes: 60_000,
@@ -4018,6 +4068,7 @@ mod tests {
             remote_addr: "127.0.0.1:32019".parse().unwrap(),
             rate: Some(50_000_000),
             standby: false,
+            probe_loss: false,
         }];
         let driver_expected = expected.clone();
         let driver = tokio::spawn(async move {
@@ -4040,12 +4091,14 @@ mod tests {
             remote_addr: "127.0.0.1:32020".parse().unwrap(),
             rate: Some(50_000_000),
             standby: false,
+            probe_loss: false,
         };
         let retired = MpPathTarget {
             local_addr: "127.0.0.1:31021".parse().unwrap(),
             remote_addr: "127.0.0.1:32021".parse().unwrap(),
             rate: Some(25_000_000),
             standby: false,
+            probe_loss: false,
         };
 
         let retained = registered_path_targets(vec![live, retired], |local, remote| {

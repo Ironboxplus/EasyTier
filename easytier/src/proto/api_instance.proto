@@ -404,8 +404,8 @@ message MpPathStatus {
   // The path's propagation delay (TQUIC's 300 s windowed minimum RTT), 0
   // until the first sample.
   uint64 windowed_min_rtt_micros = 32;
-  // Moving average of the share of bytes lost on this path; unset until
-  // enough has been sent.
+  // Moving average of the share of data packets lost on this path (packets
+  // of ACK frames only are not counted); unset until enough has been sent.
   optional double recent_loss = 33;
   // EasyTier ping loss of a relay path's physical first hop.
   optional double first_hop_loss = 34;

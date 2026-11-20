@@ -313,10 +313,17 @@ pub(crate) struct PathCandidate {
     pub(crate) state: PathLifecycleState,
     pub(crate) measurements: PathMeasurements,
     pub(crate) last_seen: Instant,
-    /// TQUIC's cumulative (sent, lost) bytes at the last sample.
+    /// TQUIC's cumulative (sent, lost) data packets at the last sample.
     traffic_counters: (u64, u64),
-    /// Moving average of the share of bytes lost (see `record_traffic`).
+    /// Moving average of the share of data packets lost (see `record_traffic`).
     pub(crate) recent_loss: Option<f64>,
+    /// The share of data packets lost in the last sample alone.
+    last_loss_sample: Option<f64>,
+    /// The loss level the last sample settled on (see `loss_level`).
+    settled_loss_level: LossLevel,
+    /// TQUIC's cumulative data packets sent at the last control tick, and
+    /// whether they grew since the tick before (see `sent_data`).
+    data_packets: (u64, bool),
     /// TQUIC's cumulative received bytes when the path was first sampled as
     /// usable, and whether more arrived since (see `record_received`).
     received: Option<(u64, bool)>,
@@ -358,14 +365,19 @@ fn unacked_limit(srtt_micros: u64) -> Duration {
 /// less loss is usable: the default scheduler sends on the lowest-RTT path
 /// whatever it loses, and no rate weighs loss in.
 pub(crate) const LOSSY_PATH_LOSS: f64 = 0.10;
+/// Loss above which a lossy path gives way to one that is merely lossy: the
+/// default of XQUIC's `loss_percent_thr_high` (`xqc_conn.c`), above which
+/// `xqc_path_get_perf_class` puts a path in its lowest class.
+pub(crate) const VERY_LOSSY_PATH_LOSS: f64 = 0.30;
 /// EasyTier ping loss of a first-hop connection at which it counts as
 /// unreachable: every ping of the loss window went unanswered.
 pub(crate) const UNREACHABLE_FIRST_HOP_LOSS: f64 = 1.0;
 
 /// ET: how a relay path's physical first hop is doing, from the loss rate of
 /// EasyTier's own pings on the connection to it (`PeerConn::loss_rate`). A
-/// relay path with little traffic cannot gather the byte-based `recent_loss`
-/// (`LOSS_SAMPLE_MIN_BYTES`), but its first hop is pinged all the time.
+/// relay path with little traffic cannot gather the `recent_loss` of its data
+/// packets (`LOSS_SAMPLE_MIN_PACKETS`), but its first hop is pinged all the
+/// time.
 /// "Unreachable" is a relay whose probes get no answer, which iroh and
 /// Tailscale leave out of the ranking (MP_WEAK_NETWORK plan R2); "lossy"
 /// reuses [`LOSSY_PATH_LOSS`]. The derive order is the preference order.
@@ -377,8 +389,18 @@ pub(crate) enum FirstHopHealth {
 }
 
 impl FirstHopHealth {
+    /// ET: the loss above which a first hop counts as lossy when paths give
+    /// way above `lossy_loss` (`SelectionParams::lossy_loss`): never under
+    /// [`LOSSY_PATH_LOSS`]. A first hop's loss comes from a window of 100
+    /// pings (`peers/peer_conn_ping.rs`), too few for a line of a few
+    /// percent: at 3%, four lost pings would make a relay lossy. A line above
+    /// it still applies.
+    pub(crate) fn lossy_line(lossy_loss: f64) -> f64 {
+        lossy_loss.max(LOSSY_PATH_LOSS)
+    }
+
     /// `lossy_loss` is the loss above which a hop counts as lossy
-    /// (`SelectionParams::lossy_loss`, [`LOSSY_PATH_LOSS`] by default).
+    /// (see `lossy_line`, [`LOSSY_PATH_LOSS`] by default).
     pub(crate) fn from_loss(loss: f64, lossy_loss: f64) -> Self {
         if loss >= UNREACHABLE_FIRST_HOP_LOSS {
             Self::Unreachable
@@ -420,13 +442,74 @@ impl FirstHopQuality {
         FirstHopHealth::from_loss(self.loss, LOSSY_PATH_LOSS)
     }
 }
-/// Bytes a sample needs before it moves the loss average.
-const LOSS_SAMPLE_MIN_BYTES: u64 = 64 * 1024;
+
+/// How lossy a path itself is, in XQUIC's two levels (`xqc_path_get_perf_class`
+/// with `loss_percent_thr_low` and `_high`): above `lossy_loss` it is lossy,
+/// above [`VERY_LOSSY_PATH_LOSS`] (or `lossy_loss` if that is higher) very
+/// lossy. The derive order is the preference order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum LossLevel {
+    #[default]
+    Clean,
+    Lossy,
+    VeryLossy,
+}
+
+impl LossLevel {
+    fn of(loss: f64, lossy_loss: f64) -> Self {
+        if loss > lossy_loss.max(VERY_LOSSY_PATH_LOSS) {
+            Self::VeryLossy
+        } else if loss > lossy_loss {
+            Self::Lossy
+        } else {
+            Self::Clean
+        }
+    }
+}
+
+/// Data packets a sample needs before it moves the loss average. ET: the 64
+/// KiB a byte sample needed were about 55 full-size packets, so the evidence
+/// a sample takes stays the same, while a path carrying a few dozen small
+/// packets a second gets a sample sooner.
+const LOSS_SAMPLE_MIN_PACKETS: u64 = 64;
 
 impl PathCandidate {
-    /// `lossy_loss`: see [`FirstHopHealth::from_loss`].
+    /// `lossy_loss`: see [`FirstHopHealth::from_loss`]. (The selection reads
+    /// the level itself, `loss_level`.)
+    #[cfg(test)]
     pub(crate) fn is_lossy(&self, lossy_loss: f64) -> bool {
-        self.recent_loss.is_some_and(|loss| loss > lossy_loss)
+        self.loss_level(lossy_loss) > LossLevel::Clean
+    }
+
+    /// The path's loss level against the first line `lossy_loss`. It moves
+    /// only when the last sample and the average both put the path on another
+    /// level, and then only as far as the nearer of the two: RFC 8966
+    /// Appendix A.3 switches routes only when both the instantaneous and the
+    /// smoothed metric say so. XQUIC classifies by the loss rate alone; ET
+    /// adds this because a path whose loss sits right on the line is common
+    /// (incident 2026-11-20: 8-10% against a 10% line). The level is worked
+    /// out against the lines given here, so a changed `lossy_loss` applies at
+    /// once.
+    pub(crate) fn loss_level(&self, lossy_loss: f64) -> LossLevel {
+        let (Some(sample), Some(average)) = (self.last_loss_sample, self.recent_loss) else {
+            return self.settled_loss_level;
+        };
+        let sample = LossLevel::of(sample, lossy_loss);
+        let average = LossLevel::of(average, lossy_loss);
+        let current = self.settled_loss_level;
+        if sample.min(average) > current {
+            sample.min(average)
+        } else if sample.max(average) < current {
+            sample.max(average)
+        } else {
+            current
+        }
+    }
+
+    /// The path sent data packets between the last two control ticks (see
+    /// `MpCandidateTable::record_traffic`).
+    pub(crate) fn sent_data(&self) -> bool {
+        self.data_packets.1
     }
 
     /// The path was validated and sampled as usable, and nothing has arrived
@@ -471,6 +554,9 @@ impl MpCandidateTable {
                 last_seen: now,
                 traffic_counters: (0, 0),
                 recent_loss: None,
+                last_loss_sample: None,
+                settled_loss_level: LossLevel::Clean,
+                data_packets: (0, false),
                 received: None,
                 acks: AckProgress::default(),
             }),
@@ -511,31 +597,60 @@ impl MpCandidateTable {
         }
     }
 
-    /// Feeds TQUIC's cumulative sent/lost byte counters into the path's loss
-    /// average: once at least `LOSS_SAMPLE_MIN_BYTES` were sent since the
-    /// last sample, its loss share moves the average by a third.
-    pub(crate) fn record_traffic(&mut self, key: &PathKey, sent_bytes: u64, lost_bytes: u64) {
+    /// Feeds TQUIC's cumulative counters of data packets sent and declared
+    /// lost (`tquic::PathStats::sent_data_count`, `lost_data_count`) into the
+    /// path's loss average: once at least `LOSS_SAMPLE_MIN_PACKETS` were sent
+    /// since the last sample, its loss share moves the average by a third.
+    ///
+    /// A packet of ACK frames only is no data packet (RFC 9002 Section 2: not
+    /// in flight), so a path that only acknowledges what the peer sends on it
+    /// gets no sample and keeps its average. It used to count the bytes of
+    /// every packet sent against the bytes of data lost: left out for its
+    /// loss, a path that kept receiving sent nothing but ACKs, whose samples
+    /// read 0 and pulled the average back under the line every few seconds
+    /// (incident 2026-11-20). XQUIC's loss rate has the same denominator
+    /// (`XQC_CAN_IN_FLIGHT` packets).
+    ///
+    /// `lossy_loss` is the first loss line (`PathCandidate::loss_level`).
+    /// Called once a control tick, it also notes whether the path sent data
+    /// packets since the last one (`PathCandidate::sent_data`).
+    pub(crate) fn record_traffic(
+        &mut self,
+        key: &PathKey,
+        sent_packets: u64,
+        lost_packets: u64,
+        lossy_loss: f64,
+    ) {
         let Some(candidate) = self.entries.get_mut(key) else {
             return;
         };
+        candidate.data_packets = (sent_packets, sent_packets > candidate.data_packets.0);
         let (last_sent, last_lost) = candidate.traffic_counters;
         // Challenges lost while a punched path is still opening are not
         // what the path loses once it carries data: sample from then on.
-        if !candidate.state.is_established() || sent_bytes < last_sent || lost_bytes < last_lost {
+        if !candidate.state.is_established()
+            || sent_packets < last_sent
+            || lost_packets < last_lost
+        {
             // (Or a new TQUIC path behind the same key: start over.)
-            candidate.traffic_counters = (sent_bytes, lost_bytes);
+            candidate.traffic_counters = (sent_packets, lost_packets);
             return;
         }
-        let sent = sent_bytes - last_sent;
-        if sent < LOSS_SAMPLE_MIN_BYTES {
+        let sent = sent_packets - last_sent;
+        if sent < LOSS_SAMPLE_MIN_PACKETS {
             return;
         }
-        let sample = ((lost_bytes - last_lost) as f64 / sent as f64).min(1.0);
+        // The level the lines in effect give the previous sample, so that one
+        // changed since does not count as this sample's move.
+        candidate.settled_loss_level = candidate.loss_level(lossy_loss);
+        let sample = ((lost_packets - last_lost) as f64 / sent as f64).min(1.0);
         candidate.recent_loss = Some(match candidate.recent_loss {
             Some(loss) => loss + (sample - loss) / 3.0,
             None => sample,
         });
-        candidate.traffic_counters = (sent_bytes, lost_bytes);
+        candidate.last_loss_sample = Some(sample);
+        candidate.settled_loss_level = candidate.loss_level(lossy_loss);
+        candidate.traffic_counters = (sent_packets, lost_packets);
     }
 
     /// Feeds TQUIC's cumulative received-byte counter. The first sample of a
@@ -1500,8 +1615,8 @@ mod tests {
         assert_eq!(table.get(&key).unwrap().state, PathLifecycleState::Dead);
     }
 
-    /// The loss average moves only on samples of enough bytes, and a reset
-    /// counter (a new TQUIC path) starts it over.
+    /// The loss average moves only on samples of enough data packets, and a
+    /// reset counter (a new TQUIC path) starts it over.
     #[test]
     fn loss_average_tracks_sampled_traffic() {
         let sp = spec();
@@ -1511,18 +1626,18 @@ mod tests {
         let loss = |table: &MpCandidateTable| table.get(&key).unwrap().recent_loss;
 
         table.set_state(&key, PathLifecycleState::AVAILABLE);
-        table.record_traffic(&key, 1_000, 500);
-        assert_eq!(loss(&table), None, "too few bytes for a sample");
-        table.record_traffic(&key, 100_000, 40_000);
+        table.record_traffic(&key, 63, 30, LOSSY_PATH_LOSS);
+        assert_eq!(loss(&table), None, "too few data packets for a sample");
+        table.record_traffic(&key, 100_000, 40_000, LOSSY_PATH_LOSS);
         assert!((loss(&table).unwrap() - 0.4).abs() < 1e-9, "first sample sets it");
         assert!(table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS));
-        table.record_traffic(&key, 200_000, 40_000);
+        table.record_traffic(&key, 200_000, 40_000, LOSSY_PATH_LOSS);
         assert!((loss(&table).unwrap() - 0.4 * 2.0 / 3.0).abs() < 1e-9, "a clean sample pulls it down a third");
         for sent in [300_000, 400_000, 500_000] {
-            table.record_traffic(&key, sent, 40_000);
+            table.record_traffic(&key, sent, 40_000, LOSSY_PATH_LOSS);
         }
         assert!(!table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS), "three more clean samples clear it");
-        table.record_traffic(&key, 10, 0);
+        table.record_traffic(&key, 10, 0, LOSSY_PATH_LOSS);
         assert!(!table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS), "a counter reset keeps the average");
     }
 
@@ -1533,10 +1648,10 @@ mod tests {
         let key = sp.key;
         let mut table = MpCandidateTable::default();
         table.upsert(sp, Instant::now());
-        table.record_traffic(&key, 90_000, 60_000);
+        table.record_traffic(&key, 90_000, 60_000, LOSSY_PATH_LOSS);
         assert_eq!(table.get(&key).unwrap().recent_loss, None);
         table.set_state(&key, PathLifecycleState::AVAILABLE);
-        table.record_traffic(&key, 190_000, 61_000);
+        table.record_traffic(&key, 190_000, 61_000, LOSSY_PATH_LOSS);
         assert!((table.get(&key).unwrap().recent_loss.unwrap() - 0.01).abs() < 1e-9);
     }
 

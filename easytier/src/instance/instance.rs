@@ -2875,6 +2875,8 @@ mod tests {
                 sent_bytes: 100,
                 recv_bytes: 90,
                 lost_bytes: 0,
+                sent_data_packets: 1,
+                lost_data_packets: 0,
                 acked_bytes: 90,
                 max_inflight_bytes: 200,
                 cwnd_bytes: 12_000,
