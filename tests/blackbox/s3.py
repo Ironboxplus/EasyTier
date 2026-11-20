@@ -2505,19 +2505,28 @@ def s49_lossy_uplink(run, args):
         sh("tc", "qdisc", "replace", "dev", "ra1", "root", "netem", "delay", "5ms", ns="s3ra")
         sh("tc", "qdisc", "replace", "dev", "ra2", "root", "netem", "delay", "20ms", ns="s3ra")
 
-    # Without the punch provider a1 has one path, the direct one, and its loss is what the checks read.
+    # Direct paths and the relay only.
     net, a, b = pair(run, "direct", nics=2, net_setup=delay,
                      mp_extra={"kmax": 1, "data_plane": {"enabled": True},
                                "providers": ["udp-direct", "relay-next-hop"]})
     run.wait_ping("s3a", B_VIP)
 
-    def a1_paths(s):
-        return [pa for pa in paths_of(s) if kind_is(pa, "udp", "direct") and pa.get("egress_device") == "a1"]
+    def addr(pa):
+        return (pa.get("path") or {}).get("local_addr"), (pa.get("path") or {}).get("remote_addr")
+
+    def summary(pa):
+        return pa and {"kind": pa.get("carrier_kind"), "nic": pa.get("egress_device"), "addr": addr(pa),
+                       **{k: pa.get(k) for k in ("lifecycle_state", "validation_state", "selected", "recent_loss",
+                                                 "not_selected_reason", "sent_bytes")}}
 
     st = run.wait_mp(a, lambda s: len([pa for pa in paths_of(s) if is_validated(pa) and kind_is(pa, "udp", "direct")])
                      >= 2 and sending_nics(s) == {"a1"}, secs=180, what="two direct paths, A sending on a1")
     base_start = proc_start_ticks(a)
     base_paths = path_identity(st)
+    # The a1 path A sends on: the one whose loss the grey checks read (a1 may have other direct paths
+    # that never carry data, and so have no loss average).
+    a1_path = addr(next(pa for pa in paths_of(st) if pa.get("selected")))
+    run.evidence["a1_path"] = a1_path
     run.evidence["grey"] = []
 
     def grey(step):
@@ -2525,12 +2534,10 @@ def s49_lossy_uplink(run, args):
         s = a.stats()
         now = path_identity(s)
         run.evidence["grey"].append({"step": step, "start": proc_start_ticks(a), "selected": selected_paths(s),
-                                     "a1": [{k: pa.get(k) for k in ("recent_loss", "not_selected_reason", "selected",
-                                                                     "lifecycle_state", "sent_bytes")}
-                                            for pa in a1_paths(s)]})
+                                     "paths": [summary(pa) for pa in paths_of(s)]})
         run.check(f"{step}: same process", proc_start_ticks(a) == base_start and a.proc.poll() is None)
         run.check(f"{step}: no path replaced", base_paths <= now, missing=sorted(base_paths - now))
-        return s
+        return s, next((pa for pa in paths_of(s) if addr(pa) == a1_path), None)
 
     def watch(label, secs):
         """The NICs A sends on, once a second for `secs`."""
@@ -2557,7 +2564,7 @@ def s49_lossy_uplink(run, args):
     pinger.start()
     try:
         time.sleep(5)
-        s = grey("baseline")
+        s, _ = grey("baseline")
         run.check("baseline: A sends on a1", sending_nics(s) == {"a1"}, selected=selected_paths(s))
 
         # 15 % loss on A's a1 egress only: B's traffic to A on a1 is untouched.
@@ -2568,14 +2575,11 @@ def s49_lossy_uplink(run, args):
         samples = watch("loss_15_sending_nics", 120)
         back = [i for i, nics in enumerate(samples) if "a1" in nics]
         run.check("loss 15 %: A does not go back to a1 in 120 s", not back, first_back_after_s=back[:1])
-        s = grey("loss 15 %")
-        a1 = a1_paths(s)
-        run.check("loss 15 %: a1 is left out as lossy",
-                  bool(a1) and all(pa.get("not_selected_reason") == "lossy-path" for pa in a1),
-                  a1=run.evidence["grey"][-1]["a1"])
-        run.check("loss 15 %: a1's loss average is at least 8 %",
-                  bool(a1) and all(float(pa.get("recent_loss") or 0) >= 0.08 for pa in a1),
-                  a1=run.evidence["grey"][-1]["a1"])
+        _, path = grey("loss 15 %")
+        run.check("loss 15 %: the a1 path is left out as lossy",
+                  path is not None and path.get("not_selected_reason") == "lossy-path", path=summary(path))
+        run.check("loss 15 %: the a1 path's loss average is at least 8 %",
+                  path is not None and float(path.get("recent_loss") or 0) >= 0.08, path=summary(path))
 
         # The loss is gone: A is back on the faster NIC.
         sh("tc", "qdisc", "del", "dev", "a1", "root", ns="s3a", check=False)
@@ -2589,6 +2593,8 @@ def s49_lossy_uplink(run, args):
         samples = watch("loss_6_sending_nics", 30)
         run.check("loss 6 %: A stays on a1 under the default line", all("a1" in nics for nics in samples),
                   samples=samples)
+        s = a.stats()
+        on_a1 = addr(next((pa for pa in paths_of(s) if pa.get("selected") and pa.get("egress_device") == "a1"), {}))
         a.mp_set(selection={"lossy_percent": 3})
         t0 = time.time()
         run.wait_mp(a, lambda s: "a1" not in sending_nics(s), secs=30, what="A off a1 at lossy_percent 3")
@@ -2596,10 +2602,10 @@ def s49_lossy_uplink(run, args):
         samples = watch("loss_6_at_3_sending_nics", 60)
         back = [i for i, nics in enumerate(samples) if "a1" in nics]
         run.check("lossy_percent 3: A does not go back to a1 in 60 s", not back, first_back_after_s=back[:1])
-        s = grey("lossy_percent 3")
-        run.check("lossy_percent 3: a1 is left out as lossy",
-                  all(pa.get("not_selected_reason") == "lossy-path" for pa in a1_paths(s)),
-                  a1=run.evidence["grey"][-1]["a1"])
+        s, _ = grey("lossy_percent 3")
+        path = next((pa for pa in paths_of(s) if addr(pa) == on_a1), None)
+        run.check("lossy_percent 3: the a1 path is left out as lossy",
+                  path is not None and path.get("not_selected_reason") == "lossy-path", path=summary(path))
     finally:
         stop_ping.set()
         pinger.join(timeout=30)

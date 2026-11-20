@@ -1,1 +1,1 @@
-test(~mp_path) | test(~mp_session) | test(~mpquic) | test(~mp_optimizer) | test(~mp_stats)
+test(~mp_path) | test(~mp_session) | test(~mpquic) | test(~mp_optimizer) | test(~mp_stats) | test(~mp_runtime_snapshot) | test(~relay_path_stats_export)
