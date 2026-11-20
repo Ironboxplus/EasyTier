@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+import "common.proto";
+import "acl.proto";
+
+// Same package as api_config.proto -- this file only exists to let both
+// api_config.proto and api_manage.proto depend on `InstanceConfigPatch`
+// without depending on each other. `InstanceConfigPatch`'s own patch
+// messages (`PortForwardPatch`, `AclPatch`, ...) live here too, since they
+// have no reason to be split across two files of the same package.
+//
+// Do not import api_manage.proto or api_config.proto from this file: the
+// whole point of the split is that both of those already need to import
+// this one (api_config.proto for its own `PatchConfigRequest`, api_manage.proto
+// for MP_SQM_PLAN.md S2.0's `PatchNetworkInstanceConfigRequest`), and a file
+// cannot import back from something that imports it.
+package api.config;
+
+enum ConfigPatchAction {
+  ADD = 0;
+  REMOVE = 1;
+  CLEAR = 2;
+}
+
+message InstanceConfigPatch {
+  optional string hostname = 1;
+  optional common.Ipv4Inet ipv4 = 2;
+  optional common.Ipv6Inet ipv6 = 3;
+  repeated PortForwardPatch port_forwards = 4;
+  optional AclPatch acl = 5;
+  repeated ProxyNetworkPatch proxy_networks = 6;
+  repeated RoutePatch routes = 7;
+  repeated ExitNodePatch exit_nodes = 8;
+  repeated UrlPatch mapped_listeners = 9;
+  repeated UrlPatch connectors = 10;
+  optional bool ipv6_public_addr_provider = 11;
+  optional bool ipv6_public_addr_auto = 12;
+  optional string ipv6_public_addr_prefix = 13;
+  optional bool disable_relay_data = 14;
+  // Fork-only fields live at 1001+; the old 15/16/17 are retired (upstream
+  // owns them).
+  reserved 15, 16, 17;
+  common.MpConfig mp = 1001;
+  // Runtime-selectable transport after TCP hole punching: auto, faketcp, tcp.
+  optional string tcp_hole_punch_mode = 1002;
+  // Global egress send-rate ceiling in bits/s (MP_SQM_PLAN.md S2.1); same
+  // hot-appliable convention as `mp` above. `0` cancels the limit.
+  optional uint64 egress_wire_limit_bps = 1003;
+}
+
+message PortForwardPatch {
+  ConfigPatchAction action = 1;
+  common.PortForwardConfigPb cfg = 2;
+}
+
+message StringPatch {
+  ConfigPatchAction action = 1;
+  string value = 2;
+}
+
+message UrlPatch {
+  ConfigPatchAction action = 1;
+  common.Url url = 2;
+}
+
+message AclPatch {
+  optional acl.Acl acl = 1;
+  repeated StringPatch tcp_whitelist = 2;
+  repeated StringPatch udp_whitelist = 3;
+}
+
+message ProxyNetworkPatch {
+  ConfigPatchAction action = 1;
+  common.Ipv4Inet cidr = 2;
+  optional common.Ipv4Inet mapped_cidr = 3;
+}
+
+message RoutePatch {
+  ConfigPatchAction action = 1;
+  common.Ipv4Inet cidr = 2;
+}
+
+message ExitNodePatch {
+  ConfigPatchAction action = 1;
+  common.IpAddr node = 2;
+}
