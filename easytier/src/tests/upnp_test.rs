@@ -1509,9 +1509,16 @@ async fn upnp_fixture_cleanup_keeps_unrelated_daemons_alive() {
     let dir = tempfile::tempdir().unwrap();
     // Linux names the process from the executable path. This harmless sentinel
     // has the same name as the daemon; a system-wide pkill would kill it too.
+    // A script rather than a copy of /bin/sleep: where sleep is a multi-call
+    // binary (uutils coreutils), a copy named miniupnpd exits at once as an
+    // unknown program. A script's process is named after the script.
     let executable = dir.path().join("miniupnpd");
-    std::fs::copy("/bin/sleep", &executable).unwrap();
-    let mut sentinel = TestDaemon::new(Command::new(executable).arg("30").spawn().unwrap());
+    std::fs::write(&executable, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut sentinel = TestDaemon::new(Command::new(executable).spawn().unwrap());
     let pid = sentinel.0.as_ref().unwrap().id();
     wait_for_condition(
         || async {
