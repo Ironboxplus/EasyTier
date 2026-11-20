@@ -5021,10 +5021,15 @@ mod tests {
     /// loss probes every `LOSS_PROBE_INTERVAL`, on standby too (a PING is a
     /// control frame, not data the scheduler holds back), and each PING is a
     /// data packet of the path's loss count. Unflagged, the idle standby path
-    /// sends none. TQUIC may follow a PING with a PTO probe: the peer holds the
-    /// ACK of a lone ack-eliciting packet up to its max_ack_delay, which a path
-    /// opened after the handshake leaves out of its PTO
-    /// (`Connection::set_peer_trans_params` sets it on the first path only).
+    /// sends none. TQUIC follows each PING on such a path with a PTO probe (20
+    /// data packets a second in CI run 44789248007): the peer holds the ACK of
+    /// a lone ack-eliciting packet up to its max_ack_delay, which a path opened
+    /// after the handshake leaves out of its PTO
+    /// (`Connection::set_peer_trans_params` gives it to the first path only,
+    /// and `Recovery::get_pto_time_and_space` adds it for `SpaceId::Data`
+    /// alone).
+    /// That is TQUIC's to fix; TQUIC counts no PING frames and the driver
+    /// exposes no count of its PINGs, so the bounds take the probes in.
     #[test]
     fn a_path_flagged_for_loss_probes_is_pinged_on_standby() {
         RUNTIME.block_on(async {

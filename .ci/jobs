@@ -1,1 +1,1 @@
-test blackbox:s49_lossy_uplink blackbox:s34_hot_selection
+test tquic blackbox:s49_lossy_uplink blackbox:s34_hot_selection blackbox:s32_path_policy blackbox:s32_multi_egress blackbox:s32_relay_then_punch blackbox:s32_relay_beside_punch blackbox:s32_dataplane blackbox:s40_relay_failover_empty_peer
