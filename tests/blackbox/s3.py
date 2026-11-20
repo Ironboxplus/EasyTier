@@ -2494,6 +2494,119 @@ def s48_stun_mismatch(run, args):
     run.payload("over the connection from the mismatched mapping", 4 << 20)
 
 
+def s49_lossy_uplink(run, args):
+    """Per-path loss (PLAN-20261121-path-loss.md): A's uplink on a1 loses 15 % while B keeps sending to A
+    on a1, so once A leaves a1 its path there mostly sends packets of ACK frames only. Those are no loss
+    samples (RFC 9002: not in flight): A stays off a1 until the loss is gone, then comes back to the
+    faster NIC. At 6 % A stays on a1 under the default 10 % line and leaves at `lossy_percent` 3. A pings
+    B's echo server the whole time, so both directions carry traffic."""
+    def delay(net):
+        # a1 is the faster NIC: A sends on it whenever it is clean.
+        sh("tc", "qdisc", "replace", "dev", "ra1", "root", "netem", "delay", "5ms", ns="s3ra")
+        sh("tc", "qdisc", "replace", "dev", "ra2", "root", "netem", "delay", "20ms", ns="s3ra")
+
+    # Without the punch provider a1 has one path, the direct one, and its loss is what the checks read.
+    net, a, b = pair(run, "direct", nics=2, net_setup=delay,
+                     mp_extra={"kmax": 1, "data_plane": {"enabled": True},
+                               "providers": ["udp-direct", "relay-next-hop"]})
+    run.wait_ping("s3a", B_VIP)
+
+    def a1_paths(s):
+        return [pa for pa in paths_of(s) if kind_is(pa, "udp", "direct") and pa.get("egress_device") == "a1"]
+
+    st = run.wait_mp(a, lambda s: len([pa for pa in paths_of(s) if is_validated(pa) and kind_is(pa, "udp", "direct")])
+                     >= 2 and sending_nics(s) == {"a1"}, secs=180, what="two direct paths, A sending on a1")
+    base_start = proc_start_ticks(a)
+    base_paths = path_identity(st)
+    run.evidence["grey"] = []
+
+    def grey(step):
+        """The same process and the same paths throughout: only the selection moves."""
+        s = a.stats()
+        now = path_identity(s)
+        run.evidence["grey"].append({"step": step, "start": proc_start_ticks(a), "selected": selected_paths(s),
+                                     "a1": [{k: pa.get(k) for k in ("recent_loss", "not_selected_reason", "selected",
+                                                                     "lifecycle_state", "sent_bytes")}
+                                            for pa in a1_paths(s)]})
+        run.check(f"{step}: same process", proc_start_ticks(a) == base_start and a.proc.poll() is None)
+        run.check(f"{step}: no path replaced", base_paths <= now, missing=sorted(base_paths - now))
+        return s
+
+    def watch(label, secs):
+        """The NICs A sends on, once a second for `secs`."""
+        samples, end = [], time.time() + secs
+        while time.time() < end:
+            samples.append(sorted(sending_nics(a.stats())))
+            time.sleep(1)
+        run.evidence[label] = samples
+        return samples
+
+    # 100 datagrams of 1000 bytes a second to B's echo server and back, in 10 s rounds.
+    stop_ping, pings = threading.Event(), []
+
+    def ping_loop():
+        while not stop_ping.is_set():
+            try:
+                r = run.client("s3a", "ping", B_VIP, 10, 1000, 1000)
+                pings.append({"count": r["count"], "lost": r["lost"]})
+            except Exception as e:
+                pings.append({"error": str(e)[:200]})
+                time.sleep(1)
+
+    pinger = threading.Thread(target=ping_loop, daemon=True)
+    pinger.start()
+    try:
+        time.sleep(5)
+        s = grey("baseline")
+        run.check("baseline: A sends on a1", sending_nics(s) == {"a1"}, selected=selected_paths(s))
+
+        # 15 % loss on A's a1 egress only: B's traffic to A on a1 is untouched.
+        sh("tc", "qdisc", "replace", "dev", "a1", "root", "netem", "loss", "15%", ns="s3a")
+        t0 = time.time()
+        run.wait_mp(a, lambda s: "a1" not in sending_nics(s), secs=30, what="A off a1 at 15 % uplink loss")
+        run.evidence["left_a1_secs"] = round(time.time() - t0, 1)
+        samples = watch("loss_15_sending_nics", 120)
+        back = [i for i, nics in enumerate(samples) if "a1" in nics]
+        run.check("loss 15 %: A does not go back to a1 in 120 s", not back, first_back_after_s=back[:1])
+        s = grey("loss 15 %")
+        a1 = a1_paths(s)
+        run.check("loss 15 %: a1 is left out as lossy",
+                  bool(a1) and all(pa.get("not_selected_reason") == "lossy-path" for pa in a1),
+                  a1=run.evidence["grey"][-1]["a1"])
+        run.check("loss 15 %: a1's loss average is at least 8 %",
+                  bool(a1) and all(float(pa.get("recent_loss") or 0) >= 0.08 for pa in a1),
+                  a1=run.evidence["grey"][-1]["a1"])
+
+        # The loss is gone: A is back on the faster NIC.
+        sh("tc", "qdisc", "del", "dev", "a1", "root", ns="s3a", check=False)
+        t0 = time.time()
+        run.wait_mp(a, lambda s: "a1" in sending_nics(s), secs=90, what="A back on a1 once the loss is gone")
+        run.evidence["back_on_a1_secs"] = round(time.time() - t0, 1)
+        grey("loss gone")
+
+        # 6 %: under the default 10 % line A stays on a1; at lossy_percent 3 it leaves and stays off.
+        sh("tc", "qdisc", "replace", "dev", "a1", "root", "netem", "loss", "6%", ns="s3a")
+        samples = watch("loss_6_sending_nics", 30)
+        run.check("loss 6 %: A stays on a1 under the default line", all("a1" in nics for nics in samples),
+                  samples=samples)
+        a.mp_set(selection={"lossy_percent": 3})
+        t0 = time.time()
+        run.wait_mp(a, lambda s: "a1" not in sending_nics(s), secs=30, what="A off a1 at lossy_percent 3")
+        run.evidence["left_a1_at_3_secs"] = round(time.time() - t0, 1)
+        samples = watch("loss_6_at_3_sending_nics", 60)
+        back = [i for i, nics in enumerate(samples) if "a1" in nics]
+        run.check("lossy_percent 3: A does not go back to a1 in 60 s", not back, first_back_after_s=back[:1])
+        s = grey("lossy_percent 3")
+        run.check("lossy_percent 3: a1 is left out as lossy",
+                  all(pa.get("not_selected_reason") == "lossy-path" for pa in a1_paths(s)),
+                  a1=run.evidence["grey"][-1]["a1"])
+    finally:
+        stop_ping.set()
+        pinger.join(timeout=30)
+        run.evidence["pings"] = pings
+        sh("tc", "qdisc", "del", "dev", "a1", "root", ns="s3a", check=False)
+
+
 SCENARIOS = {f.__name__: f for f in [
     s31_legacy, s31_native_punch, s31_cli_compat, s31_faketcp_numbers, s32_cc_matrix, s32_rate_limit, s32_brutal_loss, s32_sqm,
     s32_relay_then_punch, s32_relay_beside_punch, s32_multi_egress, s32_punch_rate,
@@ -2501,7 +2614,7 @@ SCENARIOS = {f.__name__: f for f in [
     s33_churn, s33_soak, s33_route_loop, s3x_vs_official, s3x_harsh, s34_hot_selection,
     s40_relay_failover_empty_peer, s41_recv_limit_liveness, s42_quic_tunnel_etq1, s43_proxy_flows,
     s44_flow_pinning, s45_tcp_punch_keepalive, s46_sym_punch, s47_mixed_fork_versions,
-    s48_stun_mismatch]}
+    s48_stun_mismatch, s49_lossy_uplink]}
 
 
 def main():

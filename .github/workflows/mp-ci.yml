@@ -56,7 +56,7 @@ jobs:
           # "blackbox:<scenario>" runs only the named black-box scenarios (and the blackbox job).
           picked=$(for j in $jobs; do case $j in blackbox:*) printf "%s " "${j#blackbox:}";; esac; done)
           if [ -n "$picked" ]; then jobs="$jobs blackbox "; scenarios=$picked
-          else scenarios="s31_legacy s31_native_punch s31_cli_compat s31_faketcp_numbers s32_cc_matrix s32_rate_limit s32_brutal_loss s32_sqm s32_multi_egress s32_relay_then_punch s32_punch_rate s32_relay_beside_punch s32_path_policy s32_dataplane s32_reliable_class s32_oversize s32_split_proxy s3x_harsh s3x_vs_official s32_mwan3 s33_churn s33_soak s33_route_loop s34_hot_selection s40_relay_failover_empty_peer s41_recv_limit_liveness s42_quic_tunnel_etq1 s43_proxy_flows s44_flow_pinning s45_tcp_punch_keepalive s46_sym_punch s47_mixed_fork_versions"; fi
+          else scenarios="s31_legacy s31_native_punch s31_cli_compat s31_faketcp_numbers s32_cc_matrix s32_rate_limit s32_brutal_loss s32_sqm s32_multi_egress s32_relay_then_punch s32_punch_rate s32_relay_beside_punch s32_path_policy s32_dataplane s32_reliable_class s32_oversize s32_split_proxy s3x_harsh s3x_vs_official s32_mwan3 s33_churn s33_soak s33_route_loop s34_hot_selection s40_relay_failover_empty_peer s41_recv_limit_liveness s42_quic_tunnel_etq1 s43_proxy_flows s44_flow_pinning s45_tcp_punch_keepalive s46_sym_punch s47_mixed_fork_versions s49_lossy_uplink"; fi
           # s48_stun_mismatch tests T3-3 (#2680), which ships in the next batch (P2b), not in this one.
           json=$(for x in $scenarios; do printf '"%s",' "$x"; done)
           echo "scenarios=[${json%,}]" >> "$GITHUB_OUTPUT"
@@ -181,7 +181,10 @@ jobs:
       - name: Run ${{ matrix.set }} partition ${{ matrix.shard }}
         run: |
           sudo prlimit --pid $$ --nofile=1048576:1048576
-          sudo -E env "PATH=$PATH" cargo nextest run \
+          # The runner's sudo (sudo-rs on current images) ignores -E, so root's cargo shim
+          # found no toolchain: hand rustup and cargo their homes explicitly.
+          sudo env "PATH=$PATH" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            "CARGO_TERM_COLOR=$CARGO_TERM_COLOR" cargo nextest run \
             --archive-file tests-${{ matrix.set }}.tar.zst \
             --workspace-remap "$GITHUB_WORKSPACE/et" \
             --partition "hash:${{ matrix.shard }}/$SHARDS" \

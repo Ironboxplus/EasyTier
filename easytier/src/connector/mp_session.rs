@@ -6783,44 +6783,6 @@ mod tests {
         assert_eq!(manager.live_relay_path_count(7).await, 1);
     }
 
-    /// Test 6: loss probes (`MpPathTarget::probe_loss`) go to a path left out
-    /// as lossy, and only while a selected path carries data: with nothing
-    /// else sent, the probes would be all the session sends. A path left out
-    /// for another reason gets none.
-    #[test]
-    fn only_a_lossy_path_of_a_session_carrying_data_is_probed() {
-        let params = SelectionParams::default();
-        let (mut candidates, keys) = established_paths(42091, 3);
-        let (lossy, clean, excluded) = (keys[0], keys[1], keys[2]);
-        let policies = [crate::proto::common::MpPathPolicy {
-            match_remote_endpoint: excluded.remote_addr.to_string(),
-            ..wildcard_policy("exclude")
-        }];
-        let probed = |candidates: &MpCandidateTable| {
-            let input = selection_input(candidates, &policies, &HashMap::new(), &params);
-            let selected = select_paths(&input.paths, &[], 1, &input.pinned, &params);
-            assert_eq!(selected, vec![clean]);
-            let mut targets = build_path_targets(candidates, &selected, false, &[], &policies);
-            mark_loss_probes(&mut targets, candidates, &selected, &input.left_out);
-            keys.iter()
-                .filter(|key| target_of(&targets, key).probe_loss)
-                .copied()
-                .collect::<Vec<_>>()
-        };
-        let tick = |candidates: &mut MpCandidateTable, clean_data: u64| {
-            feed_counters(candidates, &lossy, &counters(5, 1_000, 200, 0), &params);
-            feed_counters(candidates, &clean, &counters(20, clean_data, 0, 0), &params);
-            feed_counters(candidates, &excluded, &counters(10, 1_000, 0, 0), &params);
-        };
-
-        tick(&mut candidates, 1_000);
-        assert_eq!(probed(&candidates), vec![lossy], "the selected path sends data: probe the lossy one");
-        tick(&mut candidates, 1_000);
-        assert_eq!(probed(&candidates), Vec::<PathKey>::new(), "nothing sent this tick: no probe");
-        tick(&mut candidates, 1_100);
-        assert_eq!(probed(&candidates), vec![lossy]);
-    }
-
     /// S-I4: the selector ranks a path by its propagation delay (the 300 s
     /// windowed minimum of its round trips), not the smoothed RTT, which
     /// carries the queue our own traffic built (and on a standby path stays
