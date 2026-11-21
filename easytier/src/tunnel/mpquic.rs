@@ -198,28 +198,38 @@ const PATH_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// neither gives a rate for measuring loss.
 const LOSS_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// PING every validated path whose sent bytes did not move since the last
-/// round; `last_sent` carries each path's count to the next round.
+/// The validated paths to PING: those whose sent bytes did not move since the
+/// last round; `last_sent` carries each path's count to the next round.
+fn paths_to_keep_alive(
+    paths: &[((SocketAddr, SocketAddr), PathHealth)],
+    _interval: std::time::Duration,
+    last_sent: &mut HashMap<(SocketAddr, SocketAddr), u64>,
+) -> Vec<(SocketAddr, SocketAddr)> {
+    let mut sent_now = HashMap::with_capacity(paths.len());
+    let mut due = Vec::new();
+    for &(spec, health) in paths {
+        let PathHealth::Validated { sent_bytes, .. } = health else {
+            continue;
+        };
+        if last_sent.get(&spec) == Some(&sent_bytes) {
+            due.push(spec);
+        }
+        sent_now.insert(spec, sent_bytes);
+    }
+    *last_sent = sent_now;
+    due
+}
+
+/// PING the paths [`paths_to_keep_alive`] picks.
 fn keepalive_idle_paths(
     conn: &mut tquic::Connection,
     path_specs: &[(SocketAddr, SocketAddr)],
     last_sent: &mut HashMap<(SocketAddr, SocketAddr), u64>,
 ) {
-    let mut sent_now = HashMap::with_capacity(path_specs.len());
-    for &(local, remote) in path_specs {
-        if !path_is_validated(conn, local, remote) {
-            continue;
-        }
-        let Ok(stats) = conn.get_path_stats(local, remote) else {
-            continue;
-        };
-        let sent = stats.sent_bytes;
-        if last_sent.get(&(local, remote)) == Some(&sent) {
-            let _ = conn.ping(Some(tquic::FourTuple { local, remote }));
-        }
-        sent_now.insert((local, remote), sent);
+    let health = path_health(conn, path_specs);
+    for (local, remote) in paths_to_keep_alive(&health, PATH_KEEPALIVE_INTERVAL, last_sent) {
+        let _ = conn.ping(Some(tquic::FourTuple { local, remote }));
     }
-    *last_sent = sent_now;
 }
 
 /// What the driver can tell about one of its paths by looking at it.
@@ -231,6 +241,8 @@ enum PathHealth {
     Validated {
         /// Time since a packet last arrived on it.
         idle: std::time::Duration,
+        /// `tquic::PathStats::sent_bytes`.
+        sent_bytes: u64,
     },
 }
 
@@ -248,7 +260,7 @@ fn paths_to_retire(
     for &(spec, health) in paths {
         match health {
             PathHealth::Pending => {}
-            PathHealth::Validated { idle } if idle >= idle_timeout => dead.push(spec),
+            PathHealth::Validated { idle, .. } if idle >= idle_timeout => dead.push(spec),
             PathHealth::Validated { .. } => alive += 1,
         }
     }
@@ -258,12 +270,12 @@ fn paths_to_retire(
     dead
 }
 
-/// The paths of `path_specs` that went silent for `PATH_IDLE_TIMEOUT`, see
-/// [`paths_to_retire`].
-fn black_hole_paths(
+/// [`PathHealth`] of each of `path_specs`, for the judgements that look at
+/// the paths one by one ([`paths_to_retire`], [`paths_to_keep_alive`]).
+fn path_health(
     conn: &mut tquic::Connection,
     path_specs: &[(SocketAddr, SocketAddr)],
-) -> Vec<(SocketAddr, SocketAddr)> {
+) -> Vec<((SocketAddr, SocketAddr), PathHealth)> {
     let mut health = Vec::with_capacity(path_specs.len());
     for &(local, remote) in path_specs {
         let state = if conn
@@ -275,13 +287,23 @@ fn black_hole_paths(
         } else if let Ok(stats) = conn.get_path_stats(local, remote) {
             PathHealth::Validated {
                 idle: std::time::Duration::from_micros(stats.idle_time),
+                sent_bytes: stats.sent_bytes,
             }
         } else {
             PathHealth::Pending
         };
         health.push(((local, remote), state));
     }
-    paths_to_retire(&health, PATH_IDLE_TIMEOUT)
+    health
+}
+
+/// The paths of `path_specs` that went silent for `PATH_IDLE_TIMEOUT`, see
+/// [`paths_to_retire`].
+fn black_hole_paths(
+    conn: &mut tquic::Connection,
+    path_specs: &[(SocketAddr, SocketAddr)],
+) -> Vec<(SocketAddr, SocketAddr)> {
+    paths_to_retire(&path_health(conn, path_specs), PATH_IDLE_TIMEOUT)
 }
 
 /// QUIC transport error NO_VIABLE_PATH (draft-ietf-quic-multipath).
@@ -4186,8 +4208,13 @@ mod tests {
     }
 
     fn validated(idle_ms: u64) -> PathHealth {
+        validated_sending(idle_ms, 0)
+    }
+
+    fn validated_sending(idle_ms: u64, sent_bytes: u64) -> PathHealth {
         PathHealth::Validated {
             idle: std::time::Duration::from_millis(idle_ms),
+            sent_bytes,
         }
     }
 
