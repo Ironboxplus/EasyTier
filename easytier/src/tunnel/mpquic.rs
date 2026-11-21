@@ -183,11 +183,17 @@ fn removal_takes_last_usable_path(
             .any(|spec| *spec != target && usable(conn, *spec))
 }
 
-/// How often a validated path that sent nothing gets a keep-alive PING. NATs
-/// drop idle UDP mappings after 30 s or more (RFC 4787 asks for 2 min), and a
-/// path the optimizer holds idle (paused, excluded, not pinned) must still work
-/// when it is needed again.
+/// How long a validated path may receive nothing before it gets a keep-alive
+/// PING (see [`paths_to_keep_alive`]). NATs drop idle UDP mappings after 30 s
+/// or more (RFC 4787 asks for 2 min), and a path the optimizer holds idle
+/// (paused, excluded, not pinned) must still work when it is needed again.
 const PATH_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How often the driver checks for paths whose keep-alive is due. Silence is
+/// measured against `PATH_KEEPALIVE_INTERVAL`, so checking every interval would
+/// PING after up to two of them; at this period a PING follows within a second
+/// of the silence reaching the interval.
+const PATH_KEEPALIVE_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// ET: how often a path flagged for loss probes (`MpPathTarget::probe_loss`)
 /// gets a PING. A PING is ack-eliciting, so each one is a data packet of the
@@ -198,36 +204,30 @@ const PATH_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// neither gives a rate for measuring loss.
 const LOSS_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// The validated paths to PING: those whose sent bytes did not move since the
-/// last round; `last_sent` carries each path's count to the next round.
+/// The validated paths that received nothing for `interval`: their keep-alive
+/// PING is due. noq does the same: a path's keep-alive timer restarts when a
+/// packet arrives on it (`reset_keep_alive` in `on_packet_authenticated`,
+/// `noq-proto/src/connection/mod.rs`) and fires a `ping_path` when it runs
+/// out. The PING has to be acknowledged within `max_ack_delay` (RFC 9000
+/// Section 13.2.1), so both ends send on the path and both NAT mappings are
+/// refreshed (RFC 4787 REQ-6). Judging by what the path sent instead (the rule
+/// until 2026-11-21) skipped a path whose ACKs answered the peer's PINGs: one
+/// PING in three rounds, 45 s.
 fn paths_to_keep_alive(
     paths: &[((SocketAddr, SocketAddr), PathHealth)],
-    _interval: std::time::Duration,
-    last_sent: &mut HashMap<(SocketAddr, SocketAddr), u64>,
+    interval: std::time::Duration,
 ) -> Vec<(SocketAddr, SocketAddr)> {
-    let mut sent_now = HashMap::with_capacity(paths.len());
-    let mut due = Vec::new();
-    for &(spec, health) in paths {
-        let PathHealth::Validated { sent_bytes, .. } = health else {
-            continue;
-        };
-        if last_sent.get(&spec) == Some(&sent_bytes) {
-            due.push(spec);
-        }
-        sent_now.insert(spec, sent_bytes);
-    }
-    *last_sent = sent_now;
-    due
+    paths
+        .iter()
+        .filter(|(_, health)| matches!(health, PathHealth::Validated { idle } if *idle >= interval))
+        .map(|&(spec, _)| spec)
+        .collect()
 }
 
 /// PING the paths [`paths_to_keep_alive`] picks.
-fn keepalive_idle_paths(
-    conn: &mut tquic::Connection,
-    path_specs: &[(SocketAddr, SocketAddr)],
-    last_sent: &mut HashMap<(SocketAddr, SocketAddr), u64>,
-) {
+fn keepalive_idle_paths(conn: &mut tquic::Connection, path_specs: &[(SocketAddr, SocketAddr)]) {
     let health = path_health(conn, path_specs);
-    for (local, remote) in paths_to_keep_alive(&health, PATH_KEEPALIVE_INTERVAL, last_sent) {
+    for (local, remote) in paths_to_keep_alive(&health, PATH_KEEPALIVE_INTERVAL) {
         let _ = conn.ping(Some(tquic::FourTuple { local, remote }));
     }
 }
@@ -241,8 +241,6 @@ enum PathHealth {
     Validated {
         /// Time since a packet last arrived on it.
         idle: std::time::Duration,
-        /// `tquic::PathStats::sent_bytes`.
-        sent_bytes: u64,
     },
 }
 
@@ -260,7 +258,7 @@ fn paths_to_retire(
     for &(spec, health) in paths {
         match health {
             PathHealth::Pending => {}
-            PathHealth::Validated { idle, .. } if idle >= idle_timeout => dead.push(spec),
+            PathHealth::Validated { idle } if idle >= idle_timeout => dead.push(spec),
             PathHealth::Validated { .. } => alive += 1,
         }
     }
@@ -287,7 +285,6 @@ fn path_health(
         } else if let Ok(stats) = conn.get_path_stats(local, remote) {
             PathHealth::Validated {
                 idle: std::time::Duration::from_micros(stats.idle_time),
-                sent_bytes: stats.sent_bytes,
             }
         } else {
             PathHealth::Pending
@@ -1830,10 +1827,9 @@ async fn drive(cfg: DriverCfg) -> anyhow::Result<()> {
     let mut autorate_last_tick = Instant::now();
     // Checked at the end of each loop turn, no timer branch of its own (see
     // the autorate note above).
-    let mut keepalive_last_sent = HashMap::new();
     // Which TQUIC path each path spec stands for, see `specs_to_retire_for_events`.
     let mut bound_paths = BoundPaths::new();
-    let mut keepalive_next = Instant::now() + PATH_KEEPALIVE_INTERVAL;
+    let mut keepalive_next = Instant::now() + PATH_KEEPALIVE_CHECK;
     // The paths the last `SetPathTargets` flagged for loss probes, and when
     // they are next due; also checked at the end of each loop turn.
     let mut loss_probe_paths: Vec<(SocketAddr, SocketAddr)> = Vec::new();
@@ -2428,11 +2424,11 @@ async fn drive(cfg: DriverCfg) -> anyhow::Result<()> {
         }
 
         if Instant::now() >= keepalive_next {
-            keepalive_next = Instant::now() + PATH_KEEPALIVE_INTERVAL;
+            keepalive_next = Instant::now() + PATH_KEEPALIVE_CHECK;
             if let Some(ci) = conn_index
                 && let Some(conn) = endpoint.conn_get_mut(ci)
             {
-                keepalive_idle_paths(conn, &path_specs, &mut keepalive_last_sent);
+                keepalive_idle_paths(conn, &path_specs);
             }
         }
 
@@ -4208,13 +4204,8 @@ mod tests {
     }
 
     fn validated(idle_ms: u64) -> PathHealth {
-        validated_sending(idle_ms, 0)
-    }
-
-    fn validated_sending(idle_ms: u64, sent_bytes: u64) -> PathHealth {
         PathHealth::Validated {
             idle: std::time::Duration::from_millis(idle_ms),
-            sent_bytes,
         }
     }
 
@@ -4236,50 +4227,42 @@ mod tests {
         assert!(paths_to_retire(&paths, PATH_IDLE_TIMEOUT).is_empty());
     }
 
-    /// The keep-alive round the driver runs, `last_sent` being what it carries
-    /// from one round to the next.
-    fn keep_alive_round(
-        paths: &[((SocketAddr, SocketAddr), PathHealth)],
-        last_sent: &mut HashMap<(SocketAddr, SocketAddr), u64>,
-    ) -> Vec<(SocketAddr, SocketAddr)> {
-        paths_to_keep_alive(paths, PATH_KEEPALIVE_INTERVAL, last_sent)
-    }
-
     /// A validated path is PINGed once nothing arrived on it for
     /// `PATH_KEEPALIVE_INTERVAL`, as noq's per-path keep-alive timer, which a
     /// received packet restarts (`reset_keep_alive` in `on_packet_authenticated`).
     #[test]
     fn a_path_is_pinged_when_nothing_arrived_on_it_for_the_keepalive_interval() {
-        let mut last_sent = HashMap::from([(spec(1), 1_000), (spec(2), 1_000), (spec(3), 1_000)]);
         let paths = [
-            (spec(1), validated_sending(15_000, 1_000)),
-            (spec(2), validated_sending(14_900, 1_000)),
+            (spec(1), validated(15_000)),
+            (spec(2), validated(14_900)),
             (spec(3), PathHealth::Pending),
         ];
-        assert_eq!(keep_alive_round(&paths, &mut last_sent), vec![spec(1)]);
+        assert_eq!(
+            paths_to_keep_alive(&paths, PATH_KEEPALIVE_INTERVAL),
+            vec![spec(1)]
+        );
     }
 
     /// 2026-11-21: the packets of ACK frames a path sends in answer to the
     /// peer's PINGs moved its sent bytes, so each round saw a path in use and
     /// skipped it: a PING went out only every third round, 45 s, as long as
-    /// the path's idle timeout.
+    /// the path's idle timeout. Only what arrives on the path counts now.
     #[test]
     fn a_path_that_only_answered_pings_is_pinged_though_its_sent_bytes_moved() {
-        let mut last_sent = HashMap::new();
-        let paths = [(spec(1), validated_sending(15_000, 1_000))];
-        keep_alive_round(&paths, &mut last_sent);
-        // 35 bytes of ACK frames answered the peer's PING.
-        let paths = [(spec(1), validated_sending(15_000, 1_035))];
-        assert_eq!(keep_alive_round(&paths, &mut last_sent), vec![spec(1)]);
+        // Nothing arrived for 15 s; whatever was sent meanwhile is not looked at.
+        let paths = [(spec(1), validated(15_000))];
+        assert_eq!(
+            paths_to_keep_alive(&paths, PATH_KEEPALIVE_INTERVAL),
+            vec![spec(1)]
+        );
     }
 
     /// A path that sent nothing for the interval but heard the peer a second
     /// ago is alive on both sides' NAT mappings: its keep-alive is not due.
     #[test]
     fn a_path_the_peer_just_pinged_is_not_pinged() {
-        let mut last_sent = HashMap::from([(spec(1), 1_000)]);
-        let paths = [(spec(1), validated_sending(1_000, 1_000))];
-        assert!(keep_alive_round(&paths, &mut last_sent).is_empty());
+        let paths = [(spec(1), validated(1_000))];
+        assert!(paths_to_keep_alive(&paths, PATH_KEEPALIVE_INTERVAL).is_empty());
     }
 
     fn opened(spec: (SocketAddr, SocketAddr), serial: u64) -> tquic::PathLifecycleEvent {
