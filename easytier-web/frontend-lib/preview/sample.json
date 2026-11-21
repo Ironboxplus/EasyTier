@@ -1,0 +1,553 @@
+{
+  "mp_egress_resources": [
+    {
+      "achieved_bps": "8453",
+      "autorate_estimate_bps": "1000000",
+      "cake": {
+        "avg_delay_us": 9000,
+        "backlog_bytes": "4200",
+        "bandwidth_bps": "1000000",
+        "base_delay_us": 400,
+        "bulk_flows": 1,
+        "dropped_packets": "12",
+        "interval_us": 100000,
+        "memory_limit": 125000,
+        "memory_peak": 31000,
+        "memory_used": 4200,
+        "overlimit_drops": "0",
+        "peak_delay_us": 43000,
+        "qlen_packets": 3,
+        "sent_bytes": "191883",
+        "sent_packets": "159",
+        "sparse_flows": 2,
+        "stream_aqm_drops": "5",
+        "stream_overlimit_drops": "0",
+        "target_us": 5000,
+        "unresponsive_flows": 0,
+        "way_collisions": 0
+      },
+      "capacity_bps": "1000000",
+      "ceiling_source": "autorate",
+      "egress_device": "以太网",
+      "path_count": 5,
+      "queue_delay_micros": "43110",
+      "resource": "wan:198.51.100.39",
+      "resource_kind": "wan",
+      "wan": "198.51.100.39",
+      "ceiling_bps": "1000000",
+      "autorate_measured": true
+    }
+  ],
+  "mp_peers": [
+    {
+      "active_paths": [
+        {
+          "carrier_id": "2077545523024",
+          "local_addr": "192.168.101.42:62363",
+          "remote_addr": "203.0.113.42:55156"
+        },
+        {
+          "carrier_id": "2077566948128",
+          "local_addr": "192.168.101.42:51268",
+          "remote_addr": "203.0.113.19:60966"
+        },
+        {
+          "carrier_id": "2077617081968",
+          "local_addr": "192.168.101.42:62767",
+          "remote_addr": "203.0.113.19:56178"
+        },
+        {
+          "carrier_id": "2077613172112",
+          "local_addr": "192.168.101.42:49402",
+          "remote_addr": "203.0.113.42:52148"
+        }
+      ],
+      "allocated_bps": "375810",
+      "candidate_count": 5,
+      "data_plane": {
+        "classes": [
+          {
+            "class": "et_control",
+            "mode": "datagram",
+            "rx_bytes": "8541",
+            "rx_packets": "62",
+            "tx_bytes": "8668",
+            "tx_packets": "65"
+          },
+          {
+            "class": "tcp",
+            "mode": "reliable_stream"
+          },
+          {
+            "class": "udp",
+            "mode": "datagram",
+            "tx_bytes": "89363",
+            "tx_packets": "377"
+          },
+          {
+            "class": "icmp",
+            "mode": "datagram",
+            "tx_bytes": "540",
+            "tx_packets": "5"
+          },
+          {
+            "class": "proxy",
+            "mode": "reliable_stream",
+            "open_streams": 1,
+            "rx_bytes": "4951",
+            "rx_packets": "47",
+            "tx_bytes": "2899",
+            "tx_packets": "39"
+          },
+          {
+            "class": "other",
+            "mode": "datagram",
+            "rx_bytes": "36578",
+            "rx_packets": "199"
+          }
+        ],
+        "max_datagram_bytes": 1417,
+        "negotiated": "datagram",
+        "recommended_mtu": 1368
+      },
+      "decision": {
+        "challenger_paths": [
+          {
+            "carrier_id": "2077545523024",
+            "local_addr": "192.168.101.42:62363",
+            "remote_addr": "203.0.113.42:55156"
+          },
+          {
+            "carrier_id": "2077566948128",
+            "local_addr": "192.168.101.42:51268",
+            "remote_addr": "203.0.113.19:60966"
+          },
+          {
+            "carrier_id": "2077617081968",
+            "local_addr": "192.168.101.42:62767",
+            "remote_addr": "203.0.113.19:56178"
+          },
+          {
+            "carrier_id": "2077613172112",
+            "local_addr": "192.168.101.42:49402",
+            "remote_addr": "203.0.113.42:52148"
+          }
+        ],
+        "incumbent_paths": [
+          {
+            "carrier_id": "2077545523024",
+            "local_addr": "192.168.101.42:62363",
+            "remote_addr": "203.0.113.42:55156"
+          },
+          {
+            "carrier_id": "2077566948128",
+            "local_addr": "192.168.101.42:51268",
+            "remote_addr": "203.0.113.19:60966"
+          },
+          {
+            "carrier_id": "2077617081968",
+            "local_addr": "192.168.101.42:62767",
+            "remote_addr": "203.0.113.19:56178"
+          },
+          {
+            "carrier_id": "2077613172112",
+            "local_addr": "192.168.101.42:49402",
+            "remote_addr": "203.0.113.42:52148"
+          }
+        ],
+        "reason": "same-active-set-refresh",
+        "required_rounds": 3,
+        "utility_delta": 0.01709413430516865
+      },
+      "desired_congestion_control": "engine-default",
+      "effective_congestion_control": "engine-default",
+      "effective_engine": "tquic",
+      "effective_recovery": "tquic-rfc9002",
+      "eligible_count": 5,
+      "faketcp_upgrade": {},
+      "graph": {
+        "edges": [
+          {
+            "capacity_bps": "1000000",
+            "flow_bps": "375810",
+            "kind": "local-capacity",
+            "source": "source",
+            "target": "local:wan:198.51.100.39"
+          },
+          {
+            "capacity_bps": "284514",
+            "flow_bps": "284514",
+            "kind": "remote-capacity",
+            "saturated": true,
+            "source": "remote:remote-endpoint:203.0.113.42",
+            "target": "sink"
+          },
+          {
+            "capacity_bps": "91296",
+            "flow_bps": "91296",
+            "kind": "remote-capacity",
+            "saturated": true,
+            "source": "remote:remote-endpoint:203.0.113.19",
+            "target": "sink"
+          },
+          {
+            "capacity_bps": "284514",
+            "flow_bps": "281427",
+            "kind": "path-ingress",
+            "path": {
+              "carrier_id": "2077545523024",
+              "local_addr": "192.168.101.42:62363",
+              "remote_addr": "203.0.113.42:55156"
+            },
+            "source": "local:wan:198.51.100.39",
+            "target": "path:2077545523024:192.168.101.42:62363->203.0.113.42:55156"
+          },
+          {
+            "capacity_bps": "284514",
+            "flow_bps": "281427",
+            "kind": "path-egress",
+            "path": {
+              "carrier_id": "2077545523024",
+              "local_addr": "192.168.101.42:62363",
+              "remote_addr": "203.0.113.42:55156"
+            },
+            "source": "path:2077545523024:192.168.101.42:62363->203.0.113.42:55156",
+            "target": "remote:remote-endpoint:203.0.113.42"
+          },
+          {
+            "capacity_bps": "2353",
+            "kind": "path-ingress",
+            "path": {
+              "carrier_id": "2077566948128",
+              "local_addr": "192.168.101.42:51268",
+              "remote_addr": "203.0.113.19:60966"
+            },
+            "source": "local:wan:198.51.100.39",
+            "target": "path:2077566948128:192.168.101.42:51268->203.0.113.19:60966"
+          },
+          {
+            "capacity_bps": "2353",
+            "kind": "path-egress",
+            "path": {
+              "carrier_id": "2077566948128",
+              "local_addr": "192.168.101.42:51268",
+              "remote_addr": "203.0.113.19:60966"
+            },
+            "source": "path:2077566948128:192.168.101.42:51268->203.0.113.19:60966",
+            "target": "remote:remote-endpoint:203.0.113.19"
+          },
+          {
+            "capacity_bps": "91296",
+            "flow_bps": "91296",
+            "kind": "path-ingress",
+            "path": {
+              "carrier_id": "2077617081968",
+              "local_addr": "192.168.101.42:62767",
+              "remote_addr": "203.0.113.19:56178"
+            },
+            "saturated": true,
+            "source": "local:wan:198.51.100.39",
+            "target": "path:2077617081968:192.168.101.42:62767->203.0.113.19:56178"
+          },
+          {
+            "capacity_bps": "91296",
+            "flow_bps": "91296",
+            "kind": "path-egress",
+            "path": {
+              "carrier_id": "2077617081968",
+              "local_addr": "192.168.101.42:62767",
+              "remote_addr": "203.0.113.19:56178"
+            },
+            "saturated": true,
+            "source": "path:2077617081968:192.168.101.42:62767->203.0.113.19:56178",
+            "target": "remote:remote-endpoint:203.0.113.19"
+          },
+          {
+            "capacity_bps": "3087",
+            "flow_bps": "3087",
+            "kind": "path-ingress",
+            "path": {
+              "carrier_id": "2077613172112",
+              "local_addr": "192.168.101.42:49402",
+              "remote_addr": "203.0.113.42:52148"
+            },
+            "saturated": true,
+            "source": "local:wan:198.51.100.39",
+            "target": "path:2077613172112:192.168.101.42:49402->203.0.113.42:52148"
+          },
+          {
+            "capacity_bps": "3087",
+            "flow_bps": "3087",
+            "kind": "path-egress",
+            "path": {
+              "carrier_id": "2077613172112",
+              "local_addr": "192.168.101.42:49402",
+              "remote_addr": "203.0.113.42:52148"
+            },
+            "saturated": true,
+            "source": "path:2077613172112:192.168.101.42:49402->203.0.113.42:52148",
+            "target": "remote:remote-endpoint:203.0.113.42"
+          }
+        ],
+        "nodes": [
+          {
+            "id": "source",
+            "kind": "source"
+          },
+          {
+            "id": "sink",
+            "kind": "sink"
+          },
+          {
+            "id": "local:wan:198.51.100.39",
+            "kind": "local-resource"
+          },
+          {
+            "id": "remote:remote-endpoint:203.0.113.42",
+            "kind": "remote-resource"
+          },
+          {
+            "id": "remote:remote-endpoint:203.0.113.19",
+            "kind": "remote-resource"
+          },
+          {
+            "id": "path:2077545523024:192.168.101.42:62363->203.0.113.42:55156",
+            "kind": "path"
+          },
+          {
+            "id": "path:2077566948128:192.168.101.42:51268->203.0.113.19:60966",
+            "kind": "path"
+          },
+          {
+            "id": "path:2077617081968:192.168.101.42:62767->203.0.113.19:56178",
+            "kind": "path"
+          },
+          {
+            "id": "path:2077613172112:192.168.101.42:49402->203.0.113.42:52148",
+            "kind": "path"
+          }
+        ],
+        "total_flow_bps": "375810"
+      },
+      "path_mode": "n>1",
+      "paths": [
+        {
+          "app_limited": true,
+          "bandwidth_model_valid": true,
+          "btlbw_bps": "3087",
+          "bytes_in_flight": "2521",
+          "carrier_kind": "fake-tcp-punch",
+          "congestion_control_state": "probe-rtt",
+          "cwnd_bytes": "2400",
+          "delivery_rate_bps": "130",
+          "egress_device": "以太网",
+          "lifecycle_state": "active",
+          "local_resource": "wan:198.51.100.39",
+          "local_resource_kind": "wan",
+          "loss_rate": 0.2882066053484338,
+          "lost_bytes": "8805",
+          "min_rtt_micros": "17834",
+          "observed_public_addr": "198.51.100.39:3111",
+          "pacing_rate_bps": "24696",
+          "path": {
+            "carrier_id": "2077613172112",
+            "local_addr": "192.168.101.42:49402",
+            "remote_addr": "203.0.113.42:52148"
+          },
+          "recv_bytes": "17627",
+          "remote_resource": "remote-endpoint:203.0.113.42",
+          "remote_resource_kind": "remote-endpoint",
+          "sample_age_micros": "446196",
+          "sent_bytes": "30584",
+          "srtt_micros": "22713",
+          "target_rate_bps": "32768",
+          "validation_state": "validated"
+        },
+        {
+          "app_limited": true,
+          "bandwidth_model_valid": true,
+          "btlbw_bps": "2353",
+          "bytes_in_flight": "2335",
+          "carrier_kind": "fake-tcp-punch",
+          "congestion_control_state": "probe-rtt",
+          "cwnd_bytes": "2400",
+          "delivery_rate_bps": "342",
+          "egress_device": "以太网",
+          "lifecycle_state": "active",
+          "local_resource": "wan:198.51.100.39",
+          "local_resource_kind": "wan",
+          "loss_rate": 0.17371318089450943,
+          "lost_bytes": "8805",
+          "min_rtt_micros": "22254",
+          "observed_public_addr": "198.51.100.39:9391",
+          "pacing_rate_bps": "18824",
+          "path": {
+            "carrier_id": "2077566948128",
+            "local_addr": "192.168.101.42:51268",
+            "remote_addr": "203.0.113.19:60966"
+          },
+          "recv_bytes": "42081",
+          "remote_resource": "remote-endpoint:203.0.113.19",
+          "remote_resource_kind": "remote-endpoint",
+          "sample_age_micros": "1505195",
+          "sent_bytes": "50720",
+          "srtt_micros": "26817",
+          "target_rate_bps": "32768",
+          "validation_state": "validated"
+        },
+        {
+          "bandwidth_model_valid": true,
+          "btlbw_bps": "18472",
+          "bytes_in_flight": "2500",
+          "carrier_kind": "fake-tcp-punch",
+          "congestion_control_state": "probe-bandwidth",
+          "cwnd_bytes": "5258",
+          "delivery_rate_bps": "17",
+          "egress_device": "以太网",
+          "lifecycle_state": "backup",
+          "local_resource": "wan:198.51.100.39",
+          "local_resource_kind": "wan",
+          "loss_rate": 0.45582665921648974,
+          "lost_bytes": "8805",
+          "min_rtt_micros": "35204",
+          "observed_public_addr": "198.51.100.39:3251",
+          "pacing_rate_bps": "110832",
+          "path": {
+            "carrier_id": "2077566750400",
+            "local_addr": "192.168.101.42:62045",
+            "remote_addr": "203.0.113.4:64438"
+          },
+          "recv_bytes": "10044",
+          "remote_resource": "remote-endpoint:203.0.113.4",
+          "remote_resource_kind": "remote-endpoint",
+          "sample_age_micros": "259810",
+          "sent_bytes": "17632",
+          "srtt_micros": "47613",
+          "target_rate_bps": "32768",
+          "validation_state": "validated"
+        },
+        {
+          "bandwidth_model_valid": true,
+          "btlbw_bps": "284514",
+          "bytes_in_flight": "7566",
+          "carrier_kind": "udp-punch",
+          "congestion_control_state": "probe-bandwidth",
+          "cwnd_bytes": "13179",
+          "delivery_rate_bps": "3260",
+          "egress_device": "以太网",
+          "lifecycle_state": "active",
+          "local_resource": "wan:198.51.100.39",
+          "local_resource_kind": "wan",
+          "min_rtt_micros": "20455",
+          "observed_public_addr": "198.51.100.39:3130",
+          "pacing_rate_bps": "2845136",
+          "path": {
+            "carrier_id": "2077545523024",
+            "local_addr": "192.168.101.42:62363",
+            "remote_addr": "203.0.113.42:55156"
+          },
+          "recv_bytes": "16895",
+          "remote_resource": "remote-endpoint:203.0.113.42",
+          "remote_resource_kind": "remote-endpoint",
+          "sample_age_micros": "358964",
+          "sent_bytes": "48072",
+          "srtt_micros": "23356",
+          "target_rate_bps": "281427",
+          "validation_state": "validated"
+        },
+        {
+          "bandwidth_model_valid": true,
+          "btlbw_bps": "91296",
+          "bytes_in_flight": "4200",
+          "carrier_kind": "udp-punch",
+          "congestion_control_state": "probe-bandwidth",
+          "cwnd_bytes": "7683",
+          "delivery_rate_bps": "1171",
+          "egress_device": "以太网",
+          "lifecycle_state": "active",
+          "local_resource": "wan:198.51.100.39",
+          "local_resource_kind": "wan",
+          "min_rtt_micros": "21454",
+          "observed_public_addr": "198.51.100.39:3206",
+          "pacing_rate_bps": "912960",
+          "path": {
+            "carrier_id": "2077617081968",
+            "local_addr": "192.168.101.42:62767",
+            "remote_addr": "203.0.113.19:56178"
+          },
+          "recv_bytes": "13363",
+          "remote_resource": "remote-endpoint:203.0.113.19",
+          "remote_resource_kind": "remote-endpoint",
+          "sample_age_micros": "638058",
+          "sent_bytes": "29059",
+          "srtt_micros": "64564",
+          "target_rate_bps": "91296",
+          "validation_state": "validated"
+        }
+      ],
+      "peer_id": "1180185564",
+      "scheduler_state": "active-multipath",
+      "utility": {
+        "normalized_throughput": 0.9531502832997703,
+        "normalized_weighted_delay": 0.5187369218427729,
+        "path_count_cost": 0.04,
+        "total": 0.17720668072849868
+      }
+    },
+    {
+      "candidate_count": 2,
+      "desired_congestion_control": "engine-default",
+      "effective_congestion_control": "engine-default",
+      "effective_engine": "tquic",
+      "effective_recovery": "tquic-rfc9002",
+      "path_mode": "n>1",
+      "paths": [
+        {
+          "carrier_kind": "relay-next-hop",
+          "congestion_control_state": "unknown",
+          "egress_first_hop_peer_id": "466566748",
+          "first_hop_peer_id": "466566748",
+          "lifecycle_state": "dead",
+          "local_resource": "relay-next-hop:466566748:131",
+          "local_resource_kind": "user-defined",
+          "path": {
+            "carrier_id": "2077591849776",
+            "local_addr": "[fd4d:5000:a861:d4a0:b3e0:575f:1bcf:3e5c]:44443",
+            "remote_addr": "[fd4d:5000:b3e0:575f:a861:d4a0:1bcf:3e5c]:44443"
+          },
+          "remote_resource": "relay-peer:3017824095",
+          "remote_resource_kind": "user-defined",
+          "route_generation": "131"
+        },
+        {
+          "carrier_kind": "relay-next-hop",
+          "congestion_control_state": "unknown",
+          "egress_first_hop_peer_id": "1491551938",
+          "first_hop_peer_id": "1491551938",
+          "lifecycle_state": "validating",
+          "local_resource": "relay-next-hop:1491551938:131",
+          "local_resource_kind": "user-defined",
+          "path": {
+            "carrier_id": "2077600302208",
+            "local_addr": "[fd4d:5000:a861:d4a0:b3e0:575f:58e7:46c2]:44443",
+            "remote_addr": "[fd4d:5000:b3e0:575f:a861:d4a0:58e7:46c2]:44443"
+          },
+          "remote_resource": "relay-peer:3017824095",
+          "remote_resource_kind": "user-defined",
+          "route_generation": "131"
+        }
+      ],
+      "peer_id": "3017824095",
+      "scheduler_state": "active-multipath"
+    },
+    {
+      "desired_congestion_control": "engine-default",
+      "effective_congestion_control": "engine-default",
+      "effective_engine": "tquic",
+      "effective_recovery": "tquic-rfc9002",
+      "path_mode": "n=1",
+      "peer_id": "4075477500",
+      "scheduler_state": "no-choice-single-path"
+    }
+  ]
+}

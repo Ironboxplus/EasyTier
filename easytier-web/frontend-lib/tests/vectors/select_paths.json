@@ -1,0 +1,1298 @@
+{
+ "_comment": "Shared by mpSelection.spec.ts and mp_optimizer.rs (shared_vectors_agree_with_the_selector). Times are microseconds; path ids are carrier ids; params are the MpSelectionConfig subset.",
+ "transport_bias": [
+  {
+   "kind": "udp-direct",
+   "remote": "192.0.2.1:9",
+   "expect": [
+    "primary",
+    0
+   ]
+  },
+  {
+   "kind": "udp-direct",
+   "remote": "[2001:db8::1]:9",
+   "expect": [
+    "primary",
+    -3000
+   ]
+  },
+  {
+   "kind": "relay-next-hop",
+   "remote": "[fd4d:5000::1]:9",
+   "expect": [
+    "backup",
+    0
+   ]
+  },
+  {
+   "kind": "relay-next-hop",
+   "remote": "192.0.2.1:9",
+   "expect": [
+    "backup",
+    0
+   ]
+  },
+  {
+   "kind": "faketcp-punch",
+   "remote": "192.0.2.1:9",
+   "expect": [
+    "primary",
+    0
+   ]
+  },
+  {
+   "kind": "udp-punch",
+   "remote": "[2001:db8::1]:9",
+   "expect": [
+    "primary",
+    -3000
+   ]
+  },
+  {
+   "kind": "manual",
+   "remote": "192.0.2.1:9",
+   "expect": [
+    "primary",
+    0
+   ]
+  },
+  {
+   "kind": "udp-direct",
+   "remote": "[2001:db8::1]:9",
+   "expect": [
+    "primary",
+    0
+   ],
+   "rules": [
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "v6",
+     "tier": "primary",
+     "rtt_bias_ms": 0
+    }
+   ]
+  },
+  {
+   "kind": "udp-direct",
+   "remote": "192.0.2.1:9",
+   "expect": [
+    "primary",
+    0
+   ],
+   "rules": [
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "v6",
+     "tier": "primary",
+     "rtt_bias_ms": 0
+    }
+   ]
+  },
+  {
+   "kind": "udp-direct",
+   "remote": "[2001:db8::1]:9",
+   "expect": [
+    "primary",
+    -9000
+   ],
+   "rules": [
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "",
+     "tier": "backup",
+     "rtt_bias_ms": 7
+    },
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "v6",
+     "tier": "primary",
+     "rtt_bias_ms": -9
+    }
+   ]
+  },
+  {
+   "kind": "udp-direct",
+   "remote": "192.0.2.1:9",
+   "expect": [
+    "backup",
+    7000
+   ],
+   "rules": [
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "",
+     "tier": "backup",
+     "rtt_bias_ms": 7
+    },
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "v6",
+     "tier": "primary",
+     "rtt_bias_ms": -9
+    }
+   ]
+  },
+  {
+   "kind": "udp-punch",
+   "remote": "[2001:db8::1]:9",
+   "expect": [
+    "primary",
+    -3000
+   ],
+   "rules": [
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "",
+     "tier": "backup",
+     "rtt_bias_ms": 7
+    },
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "v6",
+     "tier": "primary",
+     "rtt_bias_ms": -9
+    }
+   ]
+  },
+  {
+   "kind": "relay-next-hop",
+   "remote": "192.0.2.1:9",
+   "expect": [
+    "backup",
+    0
+   ],
+   "rules": [
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "",
+     "tier": "backup",
+     "rtt_bias_ms": 7
+    },
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "v6",
+     "tier": "primary",
+     "rtt_bias_ms": -9
+    }
+   ]
+  },
+  {
+   "kind": "relay-next-hop",
+   "remote": "192.0.2.1:9",
+   "expect": [
+    "primary",
+    -5000
+   ],
+   "rules": [
+    {
+     "carrier_kind": "relay-next-hop",
+     "ip_family": "",
+     "tier": "primary",
+     "rtt_bias_ms": -5
+    }
+   ]
+  },
+  {
+   "kind": "udp-direct",
+   "remote": "192.0.2.1:9",
+   "expect": [
+    "primary",
+    0
+   ],
+   "rules": [
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "v5",
+     "tier": "primary",
+     "rtt_bias_ms": 1
+    },
+    {
+     "carrier_kind": "udp-direct",
+     "ip_family": "",
+     "tier": "middle",
+     "rtt_bias_ms": 1
+    }
+   ]
+  }
+ ],
+ "prefer_bias": [
+  {
+   "rtt_micros": 30000,
+   "weight": 2.0,
+   "expect": -15000
+  },
+  {
+   "rtt_micros": 30000,
+   "weight": 0.5,
+   "expect": 30000
+  },
+  {
+   "rtt_micros": 30000,
+   "weight": 1.0,
+   "expect": 0
+  },
+  {
+   "rtt_micros": 30000,
+   "weight": 0.0,
+   "expect": 0
+  },
+  {
+   "rtt_micros": 25,
+   "weight": 3.0,
+   "expect": -17
+  },
+  {
+   "rtt_micros": 5,
+   "weight": 0.4,
+   "expect": 8
+  }
+ ],
+ "switching_threshold": [
+  {
+   "rtt_micros": 20000,
+   "expect": 5000
+  },
+  {
+   "rtt_micros": 200000,
+   "expect": 20000
+  },
+  {
+   "rtt_micros": 12400,
+   "params": {
+    "switch_min_ms": 2
+   },
+   "expect": 2000
+  },
+  {
+   "rtt_micros": 200000,
+   "params": {
+    "switch_percent": 50
+   },
+   "expect": 100000
+  },
+  {
+   "rtt_micros": 100000,
+   "params": {
+    "switch_min_ms": 2
+   },
+   "expect": 10000
+  }
+ ],
+ "select": [
+  {
+   "name": "primary beats backup whatever the rtt",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 100000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "backup",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "primary beats backup at 1000 ms vs 1 ms",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 1000000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "backup",
+     "rtt_micros": 1000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "same tier, 20 ms current, challenger 18 ms",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 20000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 18000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "same tier, 20 ms current, challenger 16 ms",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 20000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 16000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "same tier, 20 ms current, challenger 15 ms",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 20000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 15000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2
+   ]
+  },
+  {
+   "name": "same tier, 20 ms current, challenger 14 ms",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 20000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 14000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2
+   ]
+  },
+  {
+   "name": "same tier, 200 ms current, challenger 185 ms",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 200000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 185000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "same tier, 200 ms current, challenger 181 ms",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 200000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 181000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "same tier, 200 ms current, challenger 180 ms",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 200000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 180000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2
+   ]
+  },
+  {
+   "name": "a loaded path keeps its place by propagation delay",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 47000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 117000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "a slow incumbent is left",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 150000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 117000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2
+   ]
+  },
+  {
+   "name": "no current path: the best",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 20000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2
+   ]
+  },
+  {
+   "name": "a dead incumbent is no stickiness",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 90000,
+     "bias_micros": 0
+    },
+    {
+     "id": 3,
+     "tier": "primary",
+     "rtt_micros": 80000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    3
+   ]
+  },
+  {
+   "name": "unmeasured counts as 333 ms: 300 ms wins",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 300000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 0,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "unmeasured counts as 333 ms: 400 ms loses",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 400000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 0,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2
+   ]
+  },
+  {
+   "name": "unmeasured as 50 ms beats 100 ms",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 100000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 0,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2
+   ],
+   "params": {
+    "unmeasured_rtt_ms": 50
+   }
+  },
+  {
+   "name": "unmeasured default does not beat 100 ms",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 100000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 0,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "kmax 2 takes the two best",
+   "kmax": 2,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 30000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    },
+    {
+     "id": 3,
+     "tier": "primary",
+     "rtt_micros": 20000,
+     "bias_micros": 0
+    },
+    {
+     "id": 4,
+     "tier": "backup",
+     "rtt_micros": 1000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2,
+    3
+   ]
+  },
+  {
+   "name": "kmax 3 takes three",
+   "kmax": 3,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 30000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    },
+    {
+     "id": 3,
+     "tier": "primary",
+     "rtt_micros": 20000,
+     "bias_micros": 0
+    },
+    {
+     "id": 4,
+     "tier": "backup",
+     "rtt_micros": 1000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2,
+    3,
+    1
+   ]
+  },
+  {
+   "name": "kmax 8: the relay does not fill places",
+   "kmax": 8,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 30000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    },
+    {
+     "id": 3,
+     "tier": "primary",
+     "rtt_micros": 20000,
+     "bias_micros": 0
+    },
+    {
+     "id": 4,
+     "tier": "backup",
+     "rtt_micros": 1000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2,
+    3,
+    1
+   ]
+  },
+  {
+   "name": "only a backup left: it carries",
+   "kmax": 2,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 4,
+     "tier": "backup",
+     "rtt_micros": 1000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    4
+   ]
+  },
+  {
+   "name": "equal rtt: the lower carrier id",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    },
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "set member kept inside the threshold",
+   "kmax": 2,
+   "current": [
+    1,
+    2
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 30000,
+     "bias_micros": 0
+    },
+    {
+     "id": 3,
+     "tier": "primary",
+     "rtt_micros": 27000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1,
+    2
+   ]
+  },
+  {
+   "name": "set member replaced at the threshold",
+   "kmax": 2,
+   "current": [
+    1,
+    2
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 30000,
+     "bias_micros": 0
+    },
+    {
+     "id": 3,
+     "tier": "primary",
+     "rtt_micros": 25000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1,
+    3
+   ]
+  },
+  {
+   "name": "lowering kmax drops the worst at once",
+   "kmax": 1,
+   "current": [
+    1,
+    2
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 30000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "a relay incumbent leaves once a direct path exists",
+   "kmax": 1,
+   "current": [
+    9
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 200000,
+     "bias_micros": 0
+    },
+    {
+     "id": 9,
+     "tier": "backup",
+     "rtt_micros": 5000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "a pinned path is the whole set",
+   "kmax": 3,
+   "current": [
+    1
+   ],
+   "pinned": [
+    2
+   ],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 5000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 90000,
+     "bias_micros": 0
+    },
+    {
+     "id": 3,
+     "tier": "primary",
+     "rtt_micros": 6000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2
+   ]
+  },
+  {
+   "name": "a pin on a relay beats a direct path",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [
+    9
+   ],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 5000,
+     "bias_micros": 0
+    },
+    {
+     "id": 9,
+     "tier": "backup",
+     "rtt_micros": 90000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    9
+   ]
+  },
+  {
+   "name": "two pins beyond kmax",
+   "kmax": 1,
+   "current": [],
+   "pinned": [
+    2,
+    3
+   ],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 5000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 90000,
+     "bias_micros": 0
+    },
+    {
+     "id": 3,
+     "tier": "primary",
+     "rtt_micros": 6000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    3,
+    2
+   ]
+  },
+  {
+   "name": "a pin that is no candidate is ignored",
+   "kmax": 1,
+   "current": [],
+   "pinned": [
+    7
+   ],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 5000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 90000,
+     "bias_micros": 0
+    },
+    {
+     "id": 3,
+     "tier": "primary",
+     "rtt_micros": 6000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "ipv6 advantage as bias wins within 3 ms",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 12000,
+     "bias_micros": -3000
+    }
+   ],
+   "expect": [
+    2
+   ]
+  },
+  {
+   "name": "ipv6 advantage as bias loses at 20 ms",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 20000,
+     "bias_micros": -3000
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "v6 bias of zero lets v4 win",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 12000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "a relay made primary competes by rtt",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 20000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2
+   ]
+  },
+  {
+   "name": "a relay made primary shares with kmax 2",
+   "kmax": 2,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 20000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 10000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2,
+    1
+   ]
+  },
+  {
+   "name": "a demoted kind yields to other primaries",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "backup",
+     "rtt_micros": 5000,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 50000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2
+   ]
+  },
+  {
+   "name": "a demoted kind carries alone",
+   "kmax": 1,
+   "current": [],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "backup",
+     "rtt_micros": 5000,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "default threshold keeps 12.4 ms against 9.2 ms",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 12400,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 9200,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    1
+   ]
+  },
+  {
+   "name": "a 2 ms threshold replaces 12.4 ms by 9.2 ms",
+   "kmax": 1,
+   "current": [
+    1
+   ],
+   "pinned": [],
+   "paths": [
+    {
+     "id": 1,
+     "tier": "primary",
+     "rtt_micros": 12400,
+     "bias_micros": 0
+    },
+    {
+     "id": 2,
+     "tier": "primary",
+     "rtt_micros": 9200,
+     "bias_micros": 0
+    }
+   ],
+   "expect": [
+    2
+   ],
+   "params": {
+    "switch_min_ms": 2
+   }
+  }
+ ]
+}
