@@ -1,1 +1,1 @@
-test(~spurious_losses_are_not_path_loss) | test(~a_path_whose_declared_losses)
+test(~mp_path) | test(~mp_session) | test(~tunnel::mpquic::tests::session_handle_forwards_path_telemetry)

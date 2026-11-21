@@ -1169,6 +1169,10 @@ pub(crate) struct MpPathTelemetry {
     pub(crate) sent_data_packets: u64,
     /// `tquic::PathStats::lost_data_count`: the data packets declared lost.
     pub(crate) lost_data_packets: u64,
+    /// `tquic::PathStats::spurious_lost_data_count`: the data packets declared lost
+    /// that were acknowledged after all, so `lost_data_packets` less this is the
+    /// real loss.
+    pub(crate) spurious_lost_data_packets: u64,
     /// `tquic::PathStats::acked_bytes`, whatever the congestion control.
     pub(crate) acked_bytes: u64,
     /// High-water mark of `Recovery::bytes_in_flight` for this path
@@ -1232,6 +1236,7 @@ pub(crate) fn path_telemetry_from_stats(
         lost_bytes: stats.lost_data_bytes,
         sent_data_packets: stats.sent_data_count,
         lost_data_packets: stats.lost_data_count,
+        spurious_lost_data_packets: stats.spurious_lost_data_count,
         acked_bytes: stats.acked_bytes,
         max_inflight_bytes: stats.max_inflight,
         cwnd_bytes: stats.final_cwnd,
@@ -4062,6 +4067,7 @@ mod tests {
             lost_bytes: 100,
             sent_data_packets: 9,
             lost_data_packets: 1,
+            spurious_lost_data_packets: 0,
             acked_bytes: 8_000,
             max_inflight_bytes: 15_000,
             cwnd_bytes: 60_000,

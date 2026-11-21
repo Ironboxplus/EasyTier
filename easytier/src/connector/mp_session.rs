@@ -925,6 +925,7 @@ fn record_path_telemetry(
         key,
         path.sent_data_packets,
         path.lost_data_packets,
+        path.spurious_lost_data_packets,
         params.lossy_loss,
     );
     candidates.record_received(key, path.recv_bytes);
@@ -6377,6 +6378,7 @@ mod tests {
             &lossy,
             100_000,
             lost_packets,
+            0,
             crate::connector::mp_path::LOSSY_PATH_LOSS,
         );
         (candidates, lossy, clean)
@@ -6672,6 +6674,7 @@ mod tests {
             &near,
             100_000,
             40_000,
+            0,
             crate::connector::mp_path::LOSSY_PATH_LOSS,
         );
         let input = selection_input(&candidates, &[], &HashMap::from([(11, 0.3)]), &SelectionParams::default());
@@ -7072,6 +7075,7 @@ mod tests {
             lost_bytes: 0,
             sent_data_packets: 1,
             lost_data_packets: 0,
+            spurious_lost_data_packets: 0,
             acked_bytes: 1_000,
             max_inflight_bytes: 1_000,
             cwnd_bytes: 10_000,
