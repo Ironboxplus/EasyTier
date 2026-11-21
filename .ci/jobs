@@ -1,1 +1,1 @@
-tquic test blackbox:s49_lossy_uplink blackbox:s32_sqm blackbox:s32_dataplane blackbox:s32_reliable_class blackbox:s32_oversize blackbox:s3x_harsh
+blackbox:s32_reliable_class

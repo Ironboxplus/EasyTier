@@ -925,11 +925,10 @@ fn record_path_telemetry(
         key,
         path.sent_data_packets,
         path.lost_data_packets,
-        path.spurious_lost_data_packets,
         params.lossy_loss,
     );
     candidates.record_received(key, path.recv_bytes);
-    candidates.record_acks(key, path.sent_data_packets, path.acked_bytes, path.srtt_micros, now);
+    candidates.record_acks(key, path.sent_bytes, path.acked_bytes, path.srtt_micros, now);
 }
 
 async fn path_telemetry_with_deadline<F>(
@@ -6378,7 +6377,6 @@ mod tests {
             &lossy,
             100_000,
             lost_packets,
-            0,
             crate::connector::mp_path::LOSSY_PATH_LOSS,
         );
         (candidates, lossy, clean)
@@ -6482,81 +6480,6 @@ mod tests {
         // A new TQUIC path behind the same key starts over.
         candidates.record_acks(&clean, 500, 0, 20_000, at(62_000));
         assert!(!candidates.get(&clean).unwrap().is_unacked());
-    }
-
-    /// A path that only answers the peer's keepalive PINGs sends packets of
-    /// ACK frames, which the peer never acknowledges (RFC 9002 Section 2): its
-    /// sent bytes grow, its acked bytes do not, and it was judged unacked after
-    /// a second (2026-11-21: the idle spare paths 2/3 of the time on .99). Only
-    /// data packets count as sent; ones really left unacknowledged still do.
-    #[test]
-    fn a_path_that_only_answers_pings_is_not_unacked() {
-        let (mut candidates, _lossy, clean) = lossy_and_clean_paths();
-        let params = SelectionParams::default();
-        let start = Instant::now();
-        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
-        let telemetry = |sent_bytes: u64, sent_data_count: u64, acked_bytes: u64| {
-            let stats = tquic::PathStats {
-                sent_bytes,
-                sent_data_count,
-                acked_bytes,
-                srtt: 20_000,
-                ..Default::default()
-            };
-            crate::tunnel::mpquic::path_telemetry_from_stats(
-                clean.local_addr,
-                clean.remote_addr,
-                tquic::PathState::Validated,
-                &stats,
-            )
-        };
-
-        // 35 bytes of ACK frames per answered PING: no data packet, no ack.
-        record_path_telemetry(&mut candidates, &clean, &telemetry(10_000, 100, 9_000), &params, at(0));
-        record_path_telemetry(&mut candidates, &clean, &telemetry(10_035, 100, 9_000), &params, at(500));
-        record_path_telemetry(&mut candidates, &clean, &telemetry(10_070, 100, 9_000), &params, at(1_600));
-        assert!(!candidates.get(&clean).unwrap().is_unacked());
-
-        // Data packets sent and none acknowledged for over a second.
-        record_path_telemetry(&mut candidates, &clean, &telemetry(11_000, 110, 9_000), &params, at(2_000));
-        record_path_telemetry(&mut candidates, &clean, &telemetry(12_000, 120, 9_000), &params, at(3_100));
-        assert!(candidates.get(&clean).unwrap().is_unacked());
-    }
-
-    /// From TQUIC's counters to the path's loss level: 20% of the packets
-    /// declared lost, 19 of every 20 of those acknowledged after all, is a
-    /// clean path (2026-11-21: ET left a direct path for the relay over
-    /// reordering it had caused itself).
-    #[test]
-    fn a_path_whose_declared_losses_arrived_after_all_is_not_lossy() {
-        let (mut candidates, _lossy, clean) = lossy_and_clean_paths();
-        let params = SelectionParams::default();
-        let telemetry = |sent: u64, lost: u64, spurious: u64| {
-            let stats = tquic::PathStats {
-                sent_data_count: sent,
-                lost_data_count: lost,
-                spurious_lost_data_count: spurious,
-                ..Default::default()
-            };
-            crate::tunnel::mpquic::path_telemetry_from_stats(
-                clean.local_addr,
-                clean.remote_addr,
-                tquic::PathState::Validated,
-                &stats,
-            )
-        };
-        let now = Instant::now();
-        record_path_telemetry(&mut candidates, &clean, &telemetry(1_000, 200, 190), &params, now);
-        assert!(!candidates.get(&clean).unwrap().is_lossy(params.lossy_loss));
-        record_path_telemetry(&mut candidates, &clean, &telemetry(2_000, 400, 380), &params, now);
-        assert!(!candidates.get(&clean).unwrap().is_lossy(params.lossy_loss));
-
-        // Really lost packets still make it lossy: samples of 19.8% pull the
-        // average over the line.
-        for (sent, lost, spurious) in [(3_000, 600, 382), (4_000, 800, 384), (5_000, 1_000, 386)] {
-            record_path_telemetry(&mut candidates, &clean, &telemetry(sent, lost, spurious), &params, now);
-        }
-        assert!(candidates.get(&clean).unwrap().is_lossy(params.lossy_loss));
     }
 
     /// The incident on a lossy mobile uplink under Brutal: both punched paths
@@ -6674,7 +6597,6 @@ mod tests {
             &near,
             100_000,
             40_000,
-            0,
             crate::connector::mp_path::LOSSY_PATH_LOSS,
         );
         let input = selection_input(&candidates, &[], &HashMap::from([(11, 0.3)]), &SelectionParams::default());
@@ -7075,7 +6997,6 @@ mod tests {
             lost_bytes: 0,
             sent_data_packets: 1,
             lost_data_packets: 0,
-            spurious_lost_data_packets: 0,
             acked_bytes: 1_000,
             max_inflight_bytes: 1_000,
             cwnd_bytes: 10_000,

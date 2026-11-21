@@ -413,8 +413,7 @@ impl DataPlanePolicy {
     /// Classify a plaintext inner IP packet (a Data packet from the local
     /// NIC). Returns the class and the packet's flow hash (`InnerIp::flow_hash`;
     /// 0 when the packet is not IP): `reliable_stream` maps it to a stream, and
-    /// the queues in front of QUIC isolate the flow by it (the egress queue
-    /// below QUIC no longer does: a path's packets stay in order there).
+    /// the egress queue below QUIC isolates the flow by it.
     pub fn classify_ip(&self, packet: &[u8]) -> (TrafficClass, u32) {
         let Some(inner) = parse_inner_ip(packet) else {
             return (TrafficClass::Other, 0);

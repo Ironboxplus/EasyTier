@@ -390,6 +390,7 @@ impl DatagramSender {
         let queue = EgressCake::of(carrier);
         queue.enqueue(
             carrier,
+            info.send_meta.flow_hash,
             QueuedPacket {
                 carrier: Arc::downgrade(carrier),
                 id,
@@ -448,24 +449,19 @@ impl DatagramSender {
 /// congestion-controlled data of its connection holds back: Linux's TCP small
 /// queues (`tcp_small_queue_check`) allow a socket two packets or one
 /// millisecond of its pacing rate (`pacing_rate >> 10`), whichever is more.
-/// Here the rate is the egress's shaping rate. The data plane bounds what it
-/// hands to QUIC's datagram queue by the same limit (`DataPlaneDriver::
-/// handoff_limit`).
-pub(super) fn small_queue_limit(mtu: usize, shaping_bytes_per_sec: u64) -> u64 {
+/// Here the rate is the egress's shaping rate.
+fn small_queue_limit(mtu: usize, shaping_bytes_per_sec: u64) -> u64 {
     (2 * mtu as u64).max(shaping_bytes_per_sec / 1_000)
 }
 
 impl tquic::PacketSendHandler for DatagramSender {
-    /// TCP small queues for the connection's application data
+    /// TCP small queues for the connection's congestion-controlled data
     /// (MP_FIX_PHASES.md S-I12): a path that already has its share waiting in
-    /// CAKE takes no more STREAM bytes or datagrams, so the backlog lives in
-    /// the queues in front of QUIC (`stream_queue`, `pre_quic_cake`), where
-    /// COBALT manages it per inner flow, and not in CAKE, where it would delay
-    /// every other flow on the egress. Datagrams used to bypass the gate; a
-    /// queue below QUIC holds packets that are numbered already, so what
-    /// waits there must stay small and in order (`egress_cake`). ACK, PING,
-    /// probes and the delay measurements are never gated. The queue wakes the
-    /// driver when it can send again.
+    /// CAKE takes no more STREAM bytes, so a stream's backlog lives in the
+    /// stream queues, where COBALT manages it, and not in CAKE, where it
+    /// would delay every other flow on the egress. Datagrams bypass the gate
+    /// (the egress queue is their AQM), and ACK, PING and probes are never
+    /// gated. The queue wakes the driver when it can send again.
     fn can_send_data(&self, local: SocketAddr, remote: SocketAddr, bytes: usize) -> bool {
         let Ok(registry) = self.registry.read() else {
             return true;

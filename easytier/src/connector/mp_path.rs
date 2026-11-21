@@ -313,9 +313,8 @@ pub(crate) struct PathCandidate {
     pub(crate) state: PathLifecycleState,
     pub(crate) measurements: PathMeasurements,
     pub(crate) last_seen: Instant,
-    /// TQUIC's cumulative (sent, lost, lost but acknowledged after all) data
-    /// packets at the last sample.
-    traffic_counters: (u64, u64, u64),
+    /// TQUIC's cumulative (sent, lost) data packets at the last sample.
+    traffic_counters: (u64, u64),
     /// Moving average of the share of data packets lost (see `record_traffic`).
     pub(crate) recent_loss: Option<f64>,
     /// The share of data packets lost in the last sample alone.
@@ -337,9 +336,9 @@ pub(crate) struct PathCandidate {
     acks: AckProgress,
 }
 
-/// TQUIC's cumulative (data packets sent, bytes acked) of a path at the last
-/// sample where its acked count moved, and since when packets sent after that
-/// went without any acknowledgement.
+/// TQUIC's cumulative (sent, acked) bytes of a path at the last sample where
+/// its acked count moved, and since when bytes sent after that went without
+/// any acknowledgement.
 #[derive(Debug, Clone, Copy, Default)]
 struct AckProgress {
     sent: u64,
@@ -568,7 +567,7 @@ impl MpCandidateTable {
                 state: PathLifecycleState::Validating,
                 measurements: PathMeasurements::default(),
                 last_seen: now,
-                traffic_counters: (0, 0, 0),
+                traffic_counters: (0, 0),
                 recent_loss: None,
                 last_loss_sample: None,
                 settled_loss_level: LossLevel::Clean,
@@ -580,24 +579,15 @@ impl MpCandidateTable {
         }
     }
 
-    /// Feeds TQUIC's cumulative count of data packets sent
-    /// (`tquic::PathStats::sent_data_count`) and acked bytes of an
+    /// Feeds TQUIC's cumulative sent and acked byte counters of an
     /// established path (see `PathCandidate::is_unacked`). The clock starts
-    /// at the first sample that shows packets sent since the acked count last
+    /// at the first sample that shows bytes sent since the acked count last
     /// moved, not at that acknowledgement: a path that was simply idle is
     /// not unacked the moment it sends again.
-    ///
-    /// Only the packets the peer must acknowledge count as sent (RFC 9000
-    /// Section 13.2.1): a packet of ACK frames is never acknowledged by
-    /// itself (RFC 9002 Section 2). Counting every byte sent, a path that
-    /// only answered the peer's PINGs was unacked after a second
-    /// (2026-11-21, `_closeout/stall99/ackonly`). Linux MPTCP's stale subflow
-    /// check likewise looks only at subflows with unacknowledged data
-    /// (`mptcp_pm_chk_stale`, net/mptcp/pm.c).
     pub(crate) fn record_acks(
         &mut self,
         key: &PathKey,
-        sent_data_packets: u64,
+        sent_bytes: u64,
         acked_bytes: u64,
         srtt_micros: u64,
         now: Instant,
@@ -606,35 +596,27 @@ impl MpCandidateTable {
             return;
         };
         let acks = &mut candidate.acks;
-        let restarted = sent_data_packets < acks.sent || acked_bytes < acks.acked;
+        let restarted = sent_bytes < acks.sent || acked_bytes < acks.acked;
         if !candidate.state.is_established() || restarted || acked_bytes > acks.acked {
             // (A restart is a new TQUIC path behind the same key.)
             *acks = AckProgress {
-                sent: sent_data_packets,
+                sent: sent_bytes,
                 acked: acked_bytes,
                 unacked_since: None,
                 unacked: false,
             };
             return;
         }
-        if sent_data_packets > acks.sent {
+        if sent_bytes > acks.sent {
             let since = *acks.unacked_since.get_or_insert(now);
             acks.unacked = now.saturating_duration_since(since) >= unacked_limit(srtt_micros);
         }
     }
 
-    /// Feeds TQUIC's cumulative counters of data packets sent, declared lost
-    /// and declared lost but acknowledged after all (`tquic::PathStats::
-    /// sent_data_count`, `lost_data_count`, `spurious_lost_data_count`) into
-    /// the path's loss average: once at least `LOSS_SAMPLE_MIN_PACKETS` were
-    /// sent since the last sample, its loss share moves the average by a
-    /// third. The share is the packets lost less the spurious ones: a packet
-    /// that arrived late was reordered, not lost, and `lost_data_count` never
-    /// takes it back. quic-go takes it out of its lost-packet statistic
-    /// (`detectSpuriousLosses`), picoquic counts them per path
-    /// (`nb_spurious`), XQUIC apart (`ctl_spurious_loss_count`). One
-    /// recognised in a later sample than its loss lowers that sample, which
-    /// stops at zero: the average evens it out.
+    /// Feeds TQUIC's cumulative counters of data packets sent and declared
+    /// lost (`tquic::PathStats::sent_data_count`, `lost_data_count`) into the
+    /// path's loss average: once at least `LOSS_SAMPLE_MIN_PACKETS` were sent
+    /// since the last sample, its loss share moves the average by a third.
     ///
     /// A packet of ACK frames only is no data packet (RFC 9002 Section 2: not
     /// in flight), so a path that only acknowledges what the peer sends on it
@@ -653,23 +635,21 @@ impl MpCandidateTable {
         key: &PathKey,
         sent_packets: u64,
         lost_packets: u64,
-        spurious_packets: u64,
         lossy_loss: f64,
     ) {
         let Some(candidate) = self.entries.get_mut(key) else {
             return;
         };
         candidate.data_packets = (sent_packets, sent_packets > candidate.data_packets.0);
-        let (last_sent, last_lost, last_spurious) = candidate.traffic_counters;
+        let (last_sent, last_lost) = candidate.traffic_counters;
         // Challenges lost while a punched path is still opening are not
         // what the path loses once it carries data: sample from then on.
         if !candidate.state.is_established()
             || sent_packets < last_sent
             || lost_packets < last_lost
-            || spurious_packets < last_spurious
         {
             // (Or a new TQUIC path behind the same key: start over.)
-            candidate.traffic_counters = (sent_packets, lost_packets, spurious_packets);
+            candidate.traffic_counters = (sent_packets, lost_packets);
             return;
         }
         let sent = sent_packets - last_sent;
@@ -680,15 +660,14 @@ impl MpCandidateTable {
         // changed since does not count as this sample's move.
         candidate.settled_loss_level = candidate.loss_level(lossy_loss);
         candidate.settled_lossy_loss = lossy_loss;
-        let really_lost = (lost_packets - last_lost).saturating_sub(spurious_packets - last_spurious);
-        let sample = (really_lost as f64 / sent as f64).min(1.0);
+        let sample = ((lost_packets - last_lost) as f64 / sent as f64).min(1.0);
         candidate.recent_loss = Some(match candidate.recent_loss {
             Some(loss) => loss + (sample - loss) / 3.0,
             None => sample,
         });
         candidate.last_loss_sample = Some(sample);
         candidate.settled_loss_level = candidate.loss_level(lossy_loss);
-        candidate.traffic_counters = (sent_packets, lost_packets, spurious_packets);
+        candidate.traffic_counters = (sent_packets, lost_packets);
     }
 
     /// Feeds TQUIC's cumulative received-byte counter. The first sample of a
@@ -1664,25 +1643,25 @@ mod tests {
         let loss = |table: &MpCandidateTable| table.get(&key).unwrap().recent_loss;
 
         table.set_state(&key, PathLifecycleState::AVAILABLE);
-        table.record_traffic(&key, 63, 30, 0, LOSSY_PATH_LOSS);
+        table.record_traffic(&key, 63, 30, LOSSY_PATH_LOSS);
         assert_eq!(loss(&table), None, "too few data packets for a sample");
-        table.record_traffic(&key, 100_000, 40_000, 0, LOSSY_PATH_LOSS);
+        table.record_traffic(&key, 100_000, 40_000, LOSSY_PATH_LOSS);
         assert!((loss(&table).unwrap() - 0.4).abs() < 1e-9, "first sample sets it");
         assert!(table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS));
-        table.record_traffic(&key, 200_000, 40_000, 0, LOSSY_PATH_LOSS);
+        table.record_traffic(&key, 200_000, 40_000, LOSSY_PATH_LOSS);
         assert!((loss(&table).unwrap() - 0.4 * 2.0 / 3.0).abs() < 1e-9, "a clean sample pulls it down a third");
         for sent in [300_000, 400_000, 500_000] {
-            table.record_traffic(&key, sent, 40_000, 0, LOSSY_PATH_LOSS);
+            table.record_traffic(&key, sent, 40_000, LOSSY_PATH_LOSS);
         }
         assert!(
             table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS),
             "three more clean samples leave it at 7.9%, over half the line"
         );
         for sent in [600_000, 700_000] {
-            table.record_traffic(&key, sent, 40_000, 0, LOSSY_PATH_LOSS);
+            table.record_traffic(&key, sent, 40_000, LOSSY_PATH_LOSS);
         }
         assert!(!table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS), "two more clear it");
-        table.record_traffic(&key, 10, 0, 0, LOSSY_PATH_LOSS);
+        table.record_traffic(&key, 10, 0, LOSSY_PATH_LOSS);
         assert!(!table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS), "a counter reset keeps the average");
     }
 
@@ -1699,13 +1678,13 @@ mod tests {
         table.set_state(&key, PathLifecycleState::AVAILABLE);
         let lossy = |table: &MpCandidateTable| table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS);
 
-        table.record_traffic(&key, 1_000, 120, 0, LOSSY_PATH_LOSS);
+        table.record_traffic(&key, 1_000, 120, LOSSY_PATH_LOSS);
         assert!(lossy(&table), "12%");
-        table.record_traffic(&key, 2_000, 120, 0, LOSSY_PATH_LOSS);
+        table.record_traffic(&key, 2_000, 120, LOSSY_PATH_LOSS);
         assert!(lossy(&table), "a clean sample, the average at 8%");
-        table.record_traffic(&key, 3_000, 120, 0, LOSSY_PATH_LOSS);
+        table.record_traffic(&key, 3_000, 120, LOSSY_PATH_LOSS);
         assert!(lossy(&table), "a clean sample, the average at 5.3%");
-        table.record_traffic(&key, 4_000, 160, 0, LOSSY_PATH_LOSS);
+        table.record_traffic(&key, 4_000, 160, LOSSY_PATH_LOSS);
         assert!(!lossy(&table), "a sample of 4%, the average at 4.9%");
     }
 
@@ -1716,43 +1695,11 @@ mod tests {
         let key = sp.key;
         let mut table = MpCandidateTable::default();
         table.upsert(sp, Instant::now());
-        table.record_traffic(&key, 90_000, 60_000, 0, LOSSY_PATH_LOSS);
+        table.record_traffic(&key, 90_000, 60_000, LOSSY_PATH_LOSS);
         assert_eq!(table.get(&key).unwrap().recent_loss, None);
         table.set_state(&key, PathLifecycleState::AVAILABLE);
-        table.record_traffic(&key, 190_000, 61_000, 0, LOSSY_PATH_LOSS);
+        table.record_traffic(&key, 190_000, 61_000, LOSSY_PATH_LOSS);
         assert!((table.get(&key).unwrap().recent_loss.unwrap() - 0.01).abs() < 1e-9);
-    }
-
-    /// Packets declared lost and acknowledged after all (reordering, not
-    /// loss) are taken out of the sample (`tquic::PathStats::
-    /// spurious_lost_data_count`): on 2026-11-21 TQUIC declared up to 43% of
-    /// a path's packets lost where the peer had received nearly all, and ET
-    /// left the path. One recognised only in the next sample pulls that one
-    /// under zero, which counts as zero, and a counter that went back is a
-    /// new TQUIC path.
-    #[test]
-    fn spurious_losses_are_not_path_loss() {
-        let sp = spec();
-        let key = sp.key;
-        let mut table = MpCandidateTable::default();
-        table.upsert(sp, Instant::now());
-        table.set_state(&key, PathLifecycleState::AVAILABLE);
-        let loss = |table: &MpCandidateTable| table.get(&key).unwrap().recent_loss.unwrap();
-
-        table.record_traffic(&key, 100, 20, 18, LOSSY_PATH_LOSS);
-        assert!((loss(&table) - 0.02).abs() < 1e-9, "20 declared lost, 18 of them arrived after all");
-        assert!(!table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS));
-
-        // 7 earlier losses are recognised only now.
-        table.record_traffic(&key, 200, 20, 25, LOSSY_PATH_LOSS);
-        assert!((loss(&table) - 0.02 * 2.0 / 3.0).abs() < 1e-9, "the sample is 0, not negative");
-
-        // A counter that went back: a new TQUIC path behind the same key.
-        table.record_traffic(&key, 300, 20, 5, LOSSY_PATH_LOSS);
-        assert!((loss(&table) - 0.02 * 2.0 / 3.0).abs() < 1e-9, "the average is kept, sampling starts over");
-        table.record_traffic(&key, 400, 30, 5, LOSSY_PATH_LOSS);
-        let expected = 0.02 * 2.0 / 3.0;
-        assert!((loss(&table) - (expected + (0.1 - expected) / 3.0)).abs() < 1e-9);
     }
 
 }
