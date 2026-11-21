@@ -336,9 +336,9 @@ pub(crate) struct PathCandidate {
     acks: AckProgress,
 }
 
-/// TQUIC's cumulative (sent, acked) bytes of a path at the last sample where
-/// its acked count moved, and since when bytes sent after that went without
-/// any acknowledgement.
+/// TQUIC's cumulative (data packets sent, bytes acked) of a path at the last
+/// sample where its acked count moved, and since when packets sent after that
+/// went without any acknowledgement.
 #[derive(Debug, Clone, Copy, Default)]
 struct AckProgress {
     sent: u64,
@@ -579,15 +579,24 @@ impl MpCandidateTable {
         }
     }
 
-    /// Feeds TQUIC's cumulative sent and acked byte counters of an
+    /// Feeds TQUIC's cumulative count of data packets sent
+    /// (`tquic::PathStats::sent_data_count`) and acked bytes of an
     /// established path (see `PathCandidate::is_unacked`). The clock starts
-    /// at the first sample that shows bytes sent since the acked count last
+    /// at the first sample that shows packets sent since the acked count last
     /// moved, not at that acknowledgement: a path that was simply idle is
     /// not unacked the moment it sends again.
+    ///
+    /// Only the packets the peer must acknowledge count as sent (RFC 9000
+    /// Section 13.2.1): a packet of ACK frames is never acknowledged by
+    /// itself (RFC 9002 Section 2). Counting every byte sent, a path that
+    /// only answered the peer's PINGs was unacked after a second
+    /// (2026-11-21, `_closeout/stall99/ackonly`). Linux MPTCP's stale subflow
+    /// check likewise looks only at subflows with unacknowledged data
+    /// (`mptcp_pm_chk_stale`, net/mptcp/pm.c).
     pub(crate) fn record_acks(
         &mut self,
         key: &PathKey,
-        sent_bytes: u64,
+        sent_data_packets: u64,
         acked_bytes: u64,
         srtt_micros: u64,
         now: Instant,
@@ -596,18 +605,18 @@ impl MpCandidateTable {
             return;
         };
         let acks = &mut candidate.acks;
-        let restarted = sent_bytes < acks.sent || acked_bytes < acks.acked;
+        let restarted = sent_data_packets < acks.sent || acked_bytes < acks.acked;
         if !candidate.state.is_established() || restarted || acked_bytes > acks.acked {
             // (A restart is a new TQUIC path behind the same key.)
             *acks = AckProgress {
-                sent: sent_bytes,
+                sent: sent_data_packets,
                 acked: acked_bytes,
                 unacked_since: None,
                 unacked: false,
             };
             return;
         }
-        if sent_bytes > acks.sent {
+        if sent_data_packets > acks.sent {
             let since = *acks.unacked_since.get_or_insert(now);
             acks.unacked = now.saturating_duration_since(since) >= unacked_limit(srtt_micros);
         }

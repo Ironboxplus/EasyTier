@@ -928,7 +928,7 @@ fn record_path_telemetry(
         params.lossy_loss,
     );
     candidates.record_received(key, path.recv_bytes);
-    candidates.record_acks(key, path.sent_bytes, path.acked_bytes, path.srtt_micros, now);
+    candidates.record_acks(key, path.sent_data_packets, path.acked_bytes, path.srtt_micros, now);
 }
 
 async fn path_telemetry_with_deadline<F>(
