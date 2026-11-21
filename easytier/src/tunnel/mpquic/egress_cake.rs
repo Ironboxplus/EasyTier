@@ -470,6 +470,18 @@ mod tests {
             flow: Option<u32>,
             probe: Option<(Arc<OwdProbes>, u32)>,
         ) {
+            self.push_via(self.remote, marker, len, flow, probe);
+        }
+
+        /// As `push_with`, on the path to `remote`.
+        fn push_via(
+            &self,
+            remote: SocketAddr,
+            marker: u8,
+            len: usize,
+            flow: Option<u32>,
+            probe: Option<(Arc<OwdProbes>, u32)>,
+        ) {
             let mut buf = vec![0u8; len];
             buf[0] = marker;
             self.queue.enqueue(
@@ -481,7 +493,7 @@ mod tests {
                     buf,
                     wire_bytes: len as u64,
                     local: self.raw.local,
-                    remote: self.remote,
+                    remote,
                     event_tx: self.event_tx.clone(),
                     probe,
                 },
@@ -656,6 +668,47 @@ mod tests {
         let sent = rig.sent();
         let position = sent.iter().position(|&m| m == 200).expect("sparse packet sent");
         assert!(position < 5, "the sparse flow waited behind {position} bulk packets");
+    }
+
+    /// 2026-11-21: a path's packets are numbered by QUIC before they get here,
+    /// and a packet of another inner flow that overtakes the backlog has the
+    /// peer's acknowledgment of it declare the overtaken packets lost
+    /// (RFC 9002 Section 6.1.1): TQUIC announced 20-43% loss where the peer
+    /// had received nearly everything, and the PMTU black hole heuristic took
+    /// the reordering for a shrunk MTU. One path, one first-in first-out
+    /// queue, whatever the inner flow the packets were taken from. The inner
+    /// flows are kept apart in front of QUIC (`pre_quic_cake`, the stream
+    /// queues), as Linux does on a tunnel device's own qdisc.
+    #[tokio::test]
+    async fn a_path_keeps_its_packets_in_order_whatever_their_inner_flow() {
+        let rig = rig(14, 800_000);
+        for i in 0..8u8 {
+            rig.push(i, 1_000, Some(1));
+        }
+        rig.push(200, 100, Some(2));
+        rig.drain(Duration::from_secs(3)).await;
+        let mut expected: Vec<u8> = (0..8u8).collect();
+        expected.push(200);
+        assert_eq!(rig.sent(), expected);
+    }
+
+    /// Paths are what the queue still keeps apart: two paths to different
+    /// peers each keep their order and share the rate.
+    #[tokio::test]
+    async fn two_paths_each_keep_their_order_and_share_the_rate() {
+        let rig = rig(15, 800_000);
+        let other: SocketAddr = "203.0.113.10:443".parse().unwrap();
+        for i in 0..6u8 {
+            rig.push_via(rig.remote, i, 500, Some(1), None);
+            rig.push_via(other, 100 + i, 500, Some(1), None);
+        }
+        rig.drain(Duration::from_secs(3)).await;
+        let sent = rig.sent();
+        let (second, first): (Vec<u8>, Vec<u8>) = sent.iter().partition(|marker| **marker >= 100);
+        assert_eq!(first, (0..6u8).collect::<Vec<_>>(), "sent {sent:?}");
+        assert_eq!(second, (100..106u8).collect::<Vec<_>>(), "sent {sent:?}");
+        let early = sent[..8].iter().filter(|marker| **marker >= 100).count();
+        assert!((2..=6).contains(&early), "one path went first: {sent:?}");
     }
 
     /// Without an inner flow hash packets of one outer tuple stay in order.

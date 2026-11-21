@@ -1,1 +1,1 @@
-test(~mp_path) | test(~mp_session) | test(~tunnel::mpquic::tests::session_handle_forwards_path_telemetry)
+test(~egress_cake) | test(~dataplane_driver)
