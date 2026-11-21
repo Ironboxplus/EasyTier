@@ -4236,6 +4236,52 @@ mod tests {
         assert!(paths_to_retire(&paths, PATH_IDLE_TIMEOUT).is_empty());
     }
 
+    /// The keep-alive round the driver runs, `last_sent` being what it carries
+    /// from one round to the next.
+    fn keep_alive_round(
+        paths: &[((SocketAddr, SocketAddr), PathHealth)],
+        last_sent: &mut HashMap<(SocketAddr, SocketAddr), u64>,
+    ) -> Vec<(SocketAddr, SocketAddr)> {
+        paths_to_keep_alive(paths, PATH_KEEPALIVE_INTERVAL, last_sent)
+    }
+
+    /// A validated path is PINGed once nothing arrived on it for
+    /// `PATH_KEEPALIVE_INTERVAL`, as noq's per-path keep-alive timer, which a
+    /// received packet restarts (`reset_keep_alive` in `on_packet_authenticated`).
+    #[test]
+    fn a_path_is_pinged_when_nothing_arrived_on_it_for_the_keepalive_interval() {
+        let mut last_sent = HashMap::from([(spec(1), 1_000), (spec(2), 1_000), (spec(3), 1_000)]);
+        let paths = [
+            (spec(1), validated_sending(15_000, 1_000)),
+            (spec(2), validated_sending(14_900, 1_000)),
+            (spec(3), PathHealth::Pending),
+        ];
+        assert_eq!(keep_alive_round(&paths, &mut last_sent), vec![spec(1)]);
+    }
+
+    /// 2026-11-21: the packets of ACK frames a path sends in answer to the
+    /// peer's PINGs moved its sent bytes, so each round saw a path in use and
+    /// skipped it: a PING went out only every third round, 45 s, as long as
+    /// the path's idle timeout.
+    #[test]
+    fn a_path_that_only_answered_pings_is_pinged_though_its_sent_bytes_moved() {
+        let mut last_sent = HashMap::new();
+        let paths = [(spec(1), validated_sending(15_000, 1_000))];
+        keep_alive_round(&paths, &mut last_sent);
+        // 35 bytes of ACK frames answered the peer's PING.
+        let paths = [(spec(1), validated_sending(15_000, 1_035))];
+        assert_eq!(keep_alive_round(&paths, &mut last_sent), vec![spec(1)]);
+    }
+
+    /// A path that sent nothing for the interval but heard the peer a second
+    /// ago is alive on both sides' NAT mappings: its keep-alive is not due.
+    #[test]
+    fn a_path_the_peer_just_pinged_is_not_pinged() {
+        let mut last_sent = HashMap::from([(spec(1), 1_000)]);
+        let paths = [(spec(1), validated_sending(1_000, 1_000))];
+        assert!(keep_alive_round(&paths, &mut last_sent).is_empty());
+    }
+
     fn opened(spec: (SocketAddr, SocketAddr), serial: u64) -> tquic::PathLifecycleEvent {
         tquic::PathLifecycleEvent::Opened {
             local: spec.0,
