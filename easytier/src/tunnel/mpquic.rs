@@ -4283,6 +4283,32 @@ mod tests {
         assert!(keep_alive_due(&paths).is_empty());
     }
 
+    /// noq restarts a path's keep-alive timer when a packet is sent on it as
+    /// well (`packet_builder.rs`, `reset_keep_alive`), so a path that answers
+    /// nothing is PINGed once per interval, not on every check until the idle
+    /// timeout retires it. ET only knows its own keep-alive PINGs as sent:
+    /// data sent on a path that hears nothing back is what the probe is for.
+    #[test]
+    fn a_silent_path_is_pinged_once_per_interval() {
+        let now = Instant::now();
+        let paths = [(spec(1), validated(20_000))];
+        let pinged = |ago: std::time::Duration| {
+            let last_ping = HashMap::from([(spec(1), now - ago)]);
+            paths_to_keep_alive(&paths, PATH_KEEPALIVE_INTERVAL, &last_ping, now)
+        };
+        assert!(
+            pinged(std::time::Duration::from_secs(1)).is_empty(),
+            "PINGed a second ago"
+        );
+        assert!(pinged(std::time::Duration::from_millis(14_900)).is_empty());
+        assert_eq!(pinged(PATH_KEEPALIVE_INTERVAL), vec![spec(1)], "a full interval since");
+        // Never PINGed by this end: due at once.
+        assert_eq!(
+            paths_to_keep_alive(&paths, PATH_KEEPALIVE_INTERVAL, &HashMap::new(), now),
+            vec![spec(1)]
+        );
+    }
+
     fn opened(spec: (SocketAddr, SocketAddr), serial: u64) -> tquic::PathLifecycleEvent {
         tquic::PathLifecycleEvent::Opened {
             local: spec.0,
