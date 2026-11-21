@@ -1,1 +1,1 @@
-test(~egress_cake) | test(~dataplane_driver)
+test(~tunnel::mpquic) | test(~tunnel::mp_dataplane)

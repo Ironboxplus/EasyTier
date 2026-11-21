@@ -76,14 +76,6 @@ const SQM_DUPLEX_BUF: usize = 32 * 1024;
 /// sent (like TCP_NOTSENT_LOWAT): the backlog then waits in the queue in
 /// front of the stream (`fair_pipe`, `stream_queue`).
 const SQM_STREAM_NOTSENT_LOWAT: u64 = 32 * 1024;
-/// The data plane's counterpart: TQUIC queues up to 1 MiB of DATAGRAMs and
-/// then drops the oldest, so handing it frames without a bound turned the
-/// congestion window into a deep drop-tail queue (seconds of delay on a slow
-/// path, then bursts of loss for every inner flow). The data plane sends the
-/// next datagram frame only while less than this much waits; the rest waits
-/// in the queue in front of QUIC (`pre_quic_cake`), where COBALT judges it
-/// per inner flow. Always on: the queue exists whether or not SQM is.
-const DGRAM_NOTSENT_LOWAT: usize = 64 * 1024;
 /// See `apply_common_config`.
 const MP_ACTIVE_CONNECTION_ID_LIMIT: u64 = 16;
 /// Application-layer read chunk pulled from the QUIC stream per iteration.

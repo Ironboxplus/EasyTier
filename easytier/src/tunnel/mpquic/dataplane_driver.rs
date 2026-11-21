@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
+use super::governed_sender::small_queue_limit;
 use super::owd::{OwdProbes, ProbeSchedule, probe_flow};
 use super::pre_quic_cake::PreQuicCake;
 use super::stream_queue::{self, StreamAqm, StreamDrops, StreamQueue, notsent_lowat};
@@ -56,7 +57,7 @@ pub(super) struct DataPlaneDriver {
     /// The egress this session sends through, for COBALT's parameters.
     aqm: StreamAqm,
     /// The datagram classes' frames wait here per inner flow, under COBALT,
-    /// while QUIC holds `DGRAM_NOTSENT_LOWAT` unsent (`pre_quic_cake`).
+    /// while QUIC holds `handoff_limit` unsent (`pre_quic_cake`).
     dgram_queue: PreQuicCake,
     /// Frames the stream queues dropped on purpose, since the session began.
     drops: StreamDrops,
@@ -87,8 +88,10 @@ pub(super) struct Inbound {
     pub(super) more: bool,
 }
 
-/// Queues a datagram, telling TQUIC which inner flow it belongs to (if any), so
-/// that the egress queue below can isolate flows.
+/// Queues a datagram, telling TQUIC which inner flow it belongs to (if any):
+/// TQUIC keeps a flow's datagrams on one path, and a delay probe's packet is
+/// marked by its flow. The egress queue below does not isolate flows
+/// (`EgressCake::enqueue`).
 fn send_datagram(
     conn: &mut tquic::Connection,
     data: Bytes,
@@ -229,16 +232,28 @@ impl DataPlaneDriver {
         }
     }
 
+    /// How much QUIC may hold unsent of the datagram frames: what the egress
+    /// queue allows one path (`small_queue_limit`, Linux's
+    /// `tcp_small_queue_check`). QUIC's datagram queue is first in first out
+    /// for every inner flow of the session, so what sits there delays a sparse
+    /// flow like a FIFO would; it is bounded by what the egress sends in a
+    /// moment, not by one socket's own unsent data (`TCP_NOTSENT_LOWAT`, as
+    /// `stream_queue::notsent_lowat` does for a stream), which was 64 KiB:
+    /// 10 ms at 50 Mbit/s, half a second at 1 Mbit/s.
+    fn handoff_limit(&self) -> usize {
+        small_queue_limit(self.aqm.mtu as usize, self.aqm.rate_bytes_per_sec) as usize
+    }
+
     /// Sends the datagram frames that wait in front of QUIC while QUIC holds
-    /// less than `DGRAM_NOTSENT_LOWAT` unsent: the backlog waits where COBALT
+    /// less than `handoff_limit` unsent: the backlog waits where COBALT
     /// judges it, not in QUIC's drop-oldest queue (RFC 9221 section 5.4)
     /// nor, as it did, back in the pipe.
     pub(super) fn flush_datagrams(&mut self, conn: &mut tquic::Connection, now: Instant) {
-        while let Some((frame, flow)) = self.dgram_queue.dequeue_below(
-            conn.dgram_send_queue_bytes(),
-            super::DGRAM_NOTSENT_LOWAT,
-            now,
-        ) {
+        let limit = self.handoff_limit();
+        while let Some((frame, flow)) =
+            self.dgram_queue
+                .dequeue_below(conn.dgram_send_queue_bytes(), limit, now)
+        {
             self.send_queued_datagram(conn, frame, flow, now);
         }
     }
@@ -253,7 +268,7 @@ impl DataPlaneDriver {
 
     /// [`Self::datagrams_ready`] for `quic_unsent` bytes held unsent by QUIC.
     fn datagrams_ready_with(&self, quic_unsent: usize) -> bool {
-        !self.dgram_queue.is_empty() && quic_unsent < super::DGRAM_NOTSENT_LOWAT
+        !self.dgram_queue.is_empty() && quic_unsent < self.handoff_limit()
     }
 
     /// The datagram branch of the data plane, run when the frame leaves the

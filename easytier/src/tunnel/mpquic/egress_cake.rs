@@ -3,18 +3,29 @@
 //!
 //! The queue is the original `sch_cake.c` (`cake-sqm`), one instance per
 //! physical NIC, as Linux attaches one qdisc per interface -- never one per
-//! peer, per session or per public address behind the NIC. Every packet TQUIC sends is queued
-//! here with its length on the wire and the outer UDP addresses; the inner
-//! flow TQUIC took the packet from (`PacketSendMeta::flow_hash`, the
-//! WireGuard approach) isolates flows inside the one outer tuple. CAKE shapes
-//! to the egress's Autorate estimate ([`GovernedCarrier::shaping_rate`]) and
-//! signals congestion by dropping or delaying packets, which TQUIC's loss
-//! recovery turns into a smaller congestion window.
+//! peer, per session or per public address behind the NIC. Every packet TQUIC
+//! sends is queued here with its length on the wire and the outer UDP
+//! addresses: a path is a flow, first in first out. CAKE shapes to the
+//! egress's Autorate estimate ([`GovernedCarrier::shaping_rate`]) and signals
+//! congestion by dropping or delaying packets, which TQUIC's loss recovery
+//! turns into a smaller congestion window.
 //!
 //! There is no dequeue task. Each driver runs on its own thread and runtime
 //! and can end at any time, so every driver with packets in a queue drains
 //! it ([`EgressCake::pump`]) whenever it runs and wakes again at the queue's
 //! next send time.
+//!
+//! Deviation from the reference (2026-11-21): WireGuard hands the inner flow's
+//! hash to the outer qdisc (`skb->hash` survives the encapsulation), because
+//! its receiver accepts packets in any order within the replay window. QUIC
+//! numbers a packet before it gets here, and the peer's acknowledgment of a
+//! packet that overtook others has the others declared lost (RFC 9002
+//! Section 6.1.1): TQUIC announced 20-43% loss where the peer had received
+//! nearly everything, and its PMTU black hole heuristic read the reordering as
+//! a shrunk MTU. So the inner flows are kept apart in front of QUIC
+//! (`pre_quic_cake`, the stream queues), as Linux isolates them on a tunnel
+//! device's own qdisc, and below it only paths differ: no packet overtakes
+//! another of its path.
 //!
 //! The wait in the queue is counted in QUIC's round trips (a packet is
 //! timestamped when TQUIC sends it to us), which are Autorate's delay signal:
@@ -256,19 +267,14 @@ impl EgressCake {
         }
     }
 
-    /// Queue `packet`. `flow_hash` is the inner flow it belongs to, when
-    /// TQUIC knows one.
-    pub(super) fn enqueue(
-        &self,
-        carrier: &GovernedCarrier,
-        flow_hash: Option<u32>,
-        packet: QueuedPacket,
-    ) {
-        // A probe's flow hash only marks its packet (`OwdProbes::claim`); it
-        // is no inner flow. It queues with its path's own packets, in order:
-        // as a flow of its own it would overtake them, and the peer's
-        // acknowledgment of it would have QUIC declare them lost.
-        let flow_hash = if packet.probe.is_some() { None } else { flow_hash };
+    /// Queue `packet`. CAKE tells flows apart by the outer addresses only, so
+    /// a path's packets leave in the order they came: they carry QUIC packet
+    /// numbers already, and one that overtook another would have the peer's
+    /// acknowledgment of it declare the other lost (RFC 9002 Section 6.1.1).
+    /// The inner flow a packet was taken from (`PacketSendMeta::flow_hash`) is
+    /// deliberately not passed on: a one-way delay probe or any other packet
+    /// of a flow of its own would overtake the backlog of the path.
+    pub(super) fn enqueue(&self, carrier: &GovernedCarrier, packet: QueuedPacket) {
         let now = Instant::now();
         let mut inner = self.inner.lock().unwrap();
         Self::follow(&mut inner, carrier, now);
@@ -279,7 +285,7 @@ impl EgressCake {
                 dst: packet.remote,
                 dscp: 0,
             },
-            flow_hash,
+            flow_hash: None,
             mark: 0,
         };
         inner.add_queued(&packet);
@@ -459,18 +465,12 @@ mod tests {
     }
 
     impl Rig {
-        fn push(&self, marker: u8, len: usize, flow: Option<u32>) {
-            self.push_with(marker, len, flow, None);
+        fn push(&self, marker: u8, len: usize) {
+            self.push_with(marker, len, None);
         }
 
-        fn push_with(
-            &self,
-            marker: u8,
-            len: usize,
-            flow: Option<u32>,
-            probe: Option<(Arc<OwdProbes>, u32)>,
-        ) {
-            self.push_via(self.remote, marker, len, flow, probe);
+        fn push_with(&self, marker: u8, len: usize, probe: Option<(Arc<OwdProbes>, u32)>) {
+            self.push_via(self.remote, marker, len, probe);
         }
 
         /// As `push_with`, on the path to `remote`.
@@ -479,14 +479,12 @@ mod tests {
             remote: SocketAddr,
             marker: u8,
             len: usize,
-            flow: Option<u32>,
             probe: Option<(Arc<OwdProbes>, u32)>,
         ) {
             let mut buf = vec![0u8; len];
             buf[0] = marker;
             self.queue.enqueue(
                 &self.carrier,
-                flow,
                 QueuedPacket {
                     carrier: Arc::downgrade(&self.carrier),
                     id: CarrierId(1),
@@ -536,11 +534,11 @@ mod tests {
         // The first probe finds the queue empty and leaves at once.
         probes.register(0, Instant::now());
         assert_eq!(probes.claim(probe_flow(0)), Some(0));
-        rig.push_with(100, 100, Some(probe_flow(0)), probe(0));
+        rig.push_with(100, 100, probe(0));
         rig.queue.pump();
         // A bulk packet leaves; CAKE then holds everything for its 300 ms.
-        rig.push(1, 1_500, Some(7));
-        rig.push(2, 1_500, Some(7));
+        rig.push(1, 1_500);
+        rig.push(2, 1_500);
         loop {
             let next = rig.queue.pump();
             if rig.sent().contains(&1) {
@@ -552,7 +550,7 @@ mod tests {
         let queued_us = owd_clock_us().expect("measurement clock");
         probes.register(1, Instant::now());
         assert_eq!(probes.claim(probe_flow(1)), Some(1));
-        rig.push_with(101, 100, Some(probe_flow(1)), probe(1));
+        rig.push_with(101, 100, probe(1));
         rig.drain(Duration::from_secs(3)).await;
 
         let sent = rig.sent();
@@ -607,7 +605,7 @@ mod tests {
             probes.register(seq, Instant::now());
             assert_eq!(probes.claim(probe_flow(seq)), Some(seq));
             let marker = 100 + seq as u8;
-            rig.push_with(marker, 100, Some(probe_flow(seq)), Some((probes.clone(), seq)));
+            rig.push_with(marker, 100, Some((probes.clone(), seq)));
             rig.drain(Duration::from_secs(1)).await;
             let sent = rig.sent();
             let left = rig.raw.sent_us.lock().unwrap()
@@ -642,7 +640,7 @@ mod tests {
     async fn releases_packets_at_the_shaping_rate() {
         let rig = rig(3, 800_000);
         for i in 0..5u8 {
-            rig.push(i, 1_000, Some(7));
+            rig.push(i, 1_000);
         }
         let first = rig.queue.pump();
         assert!(first.is_some(), "a backlog must leave a wake-up time");
@@ -654,38 +652,21 @@ mod tests {
         assert!(rig.queue.is_empty());
     }
 
-    /// A sparse flow is served ahead of another flow's backlog: that is what
-    /// CAKE's per-flow queueing is for, and the inner flow hash is what tells
-    /// the flows apart inside one outer UDP tuple.
-    #[tokio::test]
-    async fn a_sparse_flow_overtakes_a_bulk_flows_backlog() {
-        let rig = rig(4, 800_000);
-        for i in 0..30u8 {
-            rig.push(i, 1_000, Some(1));
-        }
-        rig.push(200, 100, Some(2));
-        rig.drain(Duration::from_secs(3)).await;
-        let sent = rig.sent();
-        let position = sent.iter().position(|&m| m == 200).expect("sparse packet sent");
-        assert!(position < 5, "the sparse flow waited behind {position} bulk packets");
-    }
-
     /// 2026-11-21: a path's packets are numbered by QUIC before they get here,
-    /// and a packet of another inner flow that overtakes the backlog has the
-    /// peer's acknowledgment of it declare the overtaken packets lost
-    /// (RFC 9002 Section 6.1.1): TQUIC announced 20-43% loss where the peer
-    /// had received nearly everything, and the PMTU black hole heuristic took
-    /// the reordering for a shrunk MTU. One path, one first-in first-out
-    /// queue, whatever the inner flow the packets were taken from. The inner
-    /// flows are kept apart in front of QUIC (`pre_quic_cake`, the stream
-    /// queues), as Linux does on a tunnel device's own qdisc.
+    /// and a small packet of another inner flow that overtook the backlog of
+    /// large ones had the peer's acknowledgment of it declare the overtaken
+    /// packets lost (RFC 9002 Section 6.1.1): TQUIC announced 20-43% loss where
+    /// the peer had received nearly everything, and the PMTU black hole
+    /// heuristic took the reordering for a shrunk MTU. One path, one first-in
+    /// first-out queue: the small packet leaves last, whatever flow it was
+    /// taken from (not passed on any more, see `enqueue`).
     #[tokio::test]
     async fn a_path_keeps_its_packets_in_order_whatever_their_inner_flow() {
         let rig = rig(14, 800_000);
         for i in 0..8u8 {
-            rig.push(i, 1_000, Some(1));
+            rig.push(i, 1_000);
         }
-        rig.push(200, 100, Some(2));
+        rig.push(200, 100);
         rig.drain(Duration::from_secs(3)).await;
         let mut expected: Vec<u8> = (0..8u8).collect();
         expected.push(200);
@@ -699,8 +680,8 @@ mod tests {
         let rig = rig(15, 800_000);
         let other: SocketAddr = "203.0.113.10:443".parse().unwrap();
         for i in 0..6u8 {
-            rig.push_via(rig.remote, i, 500, Some(1), None);
-            rig.push_via(other, 100 + i, 500, Some(1), None);
+            rig.push_via(rig.remote, i, 500, None);
+            rig.push_via(other, 100 + i, 500, None);
         }
         rig.drain(Duration::from_secs(3)).await;
         let sent = rig.sent();
@@ -711,12 +692,12 @@ mod tests {
         assert!((2..=6).contains(&early), "one path went first: {sent:?}");
     }
 
-    /// Without an inner flow hash packets of one outer tuple stay in order.
+    /// Packets of one outer tuple stay in order.
     #[tokio::test]
     async fn packets_of_one_flow_keep_their_order() {
         let rig = rig(5, 800_000);
         for i in 0..10u8 {
-            rig.push(i, 400, None);
+            rig.push(i, 400);
         }
         rig.drain(Duration::from_secs(3)).await;
         assert_eq!(rig.sent(), (0..10u8).collect::<Vec<_>>());
@@ -732,11 +713,11 @@ mod tests {
         let rig = rig(12, 800_000);
         let probes = Arc::new(OwdProbes::new());
         for i in 0..10u8 {
-            rig.push(i, 400, None);
+            rig.push(i, 400);
         }
         probes.register(0, Instant::now());
         assert_eq!(probes.claim(probe_flow(0)), Some(0));
-        rig.push_with(100, 100, Some(probe_flow(0)), Some((probes.clone(), 0)));
+        rig.push_with(100, 100, Some((probes.clone(), 0)));
         rig.drain(Duration::from_secs(3)).await;
         let mut expected: Vec<u8> = (0..10u8).collect();
         expected.push(100);
@@ -749,7 +730,7 @@ mod tests {
     async fn a_full_socket_holds_the_head_and_retries() {
         let rig = rig(6, 80_000_000);
         for i in 0..3u8 {
-            rig.push(i, 500, None);
+            rig.push(i, 500);
         }
         rig.raw.full.store(true, std::sync::atomic::Ordering::SeqCst);
         let retry = rig.queue.pump().expect("a blocked head must be retried");
@@ -765,13 +746,13 @@ mod tests {
     async fn a_new_budget_changes_the_pace() {
         let rig = rig(7, 400_000);
         for i in 0..6u8 {
-            rig.push(i, 1_000, Some(3));
+            rig.push(i, 1_000);
         }
         rig.carrier
             .bottleneck()
             .set_budget(Some(WireBitrate(80_000_000)))
             .unwrap();
-        rig.push(99, 1_000, Some(3));
+        rig.push(99, 1_000);
         let took = rig.drain(Duration::from_secs(3)).await;
         let status = rig.queue.status();
         assert_eq!(
