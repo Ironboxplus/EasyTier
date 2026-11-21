@@ -1,1 +1,1 @@
-test(~egress_cake) | test(~dataplane_driver)
+test(~connector::mp_path) | test(~connector::mp_session) | test(~tunnel::mpquic) | test(~tunnel::mp_dataplane) | test(~instance::instance)
