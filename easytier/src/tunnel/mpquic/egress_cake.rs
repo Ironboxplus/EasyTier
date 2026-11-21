@@ -663,8 +663,10 @@ mod tests {
     #[tokio::test]
     async fn a_path_keeps_its_packets_in_order_whatever_their_inner_flow() {
         let rig = rig(14, 800_000);
+        // (A backlog of 400 byte packets takes 32 ms: shorter than CAKE's
+        // interval, so nothing is dropped from it.)
         for i in 0..8u8 {
-            rig.push(i, 1_000);
+            rig.push(i, 400);
         }
         rig.push(200, 100);
         rig.drain(Duration::from_secs(3)).await;
