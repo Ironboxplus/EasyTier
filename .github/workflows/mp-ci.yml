@@ -558,6 +558,7 @@ jobs:
   # two cores get et_1 and et_2. The same setup as the `windows` job.
   windows-tun:
     needs: plan
+    if: contains(needs.plan.outputs.jobs, ' all ') || contains(needs.plan.outputs.jobs, ' windows-tun ')
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v5
