@@ -6521,6 +6521,42 @@ mod tests {
         assert!(candidates.get(&clean).unwrap().is_unacked());
     }
 
+    /// From TQUIC's counters to the path's loss level: 20% of the packets
+    /// declared lost, 19 of every 20 of those acknowledged after all, is a
+    /// clean path (2026-11-21: ET left a direct path for the relay over
+    /// reordering it had caused itself).
+    #[test]
+    fn a_path_whose_declared_losses_arrived_after_all_is_not_lossy() {
+        let (mut candidates, _lossy, clean) = lossy_and_clean_paths();
+        let params = SelectionParams::default();
+        let telemetry = |sent: u64, lost: u64, spurious: u64| {
+            let stats = tquic::PathStats {
+                sent_data_count: sent,
+                lost_data_count: lost,
+                spurious_lost_data_count: spurious,
+                ..Default::default()
+            };
+            crate::tunnel::mpquic::path_telemetry_from_stats(
+                clean.local_addr,
+                clean.remote_addr,
+                tquic::PathState::Validated,
+                &stats,
+            )
+        };
+        let now = Instant::now();
+        record_path_telemetry(&mut candidates, &clean, &telemetry(1_000, 200, 190), &params, now);
+        assert!(!candidates.get(&clean).unwrap().is_lossy(params.lossy_loss));
+        record_path_telemetry(&mut candidates, &clean, &telemetry(2_000, 400, 380), &params, now);
+        assert!(!candidates.get(&clean).unwrap().is_lossy(params.lossy_loss));
+
+        // Really lost packets still make it lossy: samples of 19.8% pull the
+        // average over the line.
+        for (sent, lost, spurious) in [(3_000, 600, 382), (4_000, 800, 384), (5_000, 1_000, 386)] {
+            record_path_telemetry(&mut candidates, &clean, &telemetry(sent, lost, spurious), &params, now);
+        }
+        assert!(candidates.get(&clean).unwrap().is_lossy(params.lossy_loss));
+    }
+
     /// The incident on a lossy mobile uplink under Brutal: both punched paths
     /// lost ~30% and the only clean path was a relay that had carried
     /// nothing. A clean path the selector cannot use must not keep the lossy

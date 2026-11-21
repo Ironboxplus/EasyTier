@@ -1711,4 +1711,36 @@ mod tests {
         assert!((table.get(&key).unwrap().recent_loss.unwrap() - 0.01).abs() < 1e-9);
     }
 
+    /// Packets declared lost and acknowledged after all (reordering, not
+    /// loss) are taken out of the sample (`tquic::PathStats::
+    /// spurious_lost_data_count`): on 2026-11-21 TQUIC declared up to 43% of
+    /// a path's packets lost where the peer had received nearly all, and ET
+    /// left the path. One recognised only in the next sample pulls that one
+    /// under zero, which counts as zero, and a counter that went back is a
+    /// new TQUIC path.
+    #[test]
+    fn spurious_losses_are_not_path_loss() {
+        let sp = spec();
+        let key = sp.key;
+        let mut table = MpCandidateTable::default();
+        table.upsert(sp, Instant::now());
+        table.set_state(&key, PathLifecycleState::AVAILABLE);
+        let loss = |table: &MpCandidateTable| table.get(&key).unwrap().recent_loss.unwrap();
+
+        table.record_traffic(&key, 100, 20, 18, LOSSY_PATH_LOSS);
+        assert!((loss(&table) - 0.02).abs() < 1e-9, "20 declared lost, 18 of them arrived after all");
+        assert!(!table.get(&key).unwrap().is_lossy(LOSSY_PATH_LOSS));
+
+        // 7 earlier losses are recognised only now.
+        table.record_traffic(&key, 200, 20, 25, LOSSY_PATH_LOSS);
+        assert!((loss(&table) - 0.02 * 2.0 / 3.0).abs() < 1e-9, "the sample is 0, not negative");
+
+        // A counter that went back: a new TQUIC path behind the same key.
+        table.record_traffic(&key, 300, 20, 5, LOSSY_PATH_LOSS);
+        assert!((loss(&table) - 0.02 * 2.0 / 3.0).abs() < 1e-9, "the average is kept, sampling starts over");
+        table.record_traffic(&key, 400, 30, 5, LOSSY_PATH_LOSS);
+        let expected = 0.02 * 2.0 / 3.0;
+        assert!((loss(&table) - (expected + (0.1 - expected) / 3.0)).abs() < 1e-9);
+    }
+
 }

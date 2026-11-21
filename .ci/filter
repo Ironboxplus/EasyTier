@@ -1,1 +1,1 @@
-test(~tunnel::mpquic::tests::a_path_) | test(~tunnel::mpquic::tests::path_death) | test(~tunnel::mpquic::tests::the_last_usable_path)
+test(~spurious_losses_are_not_path_loss) | test(~a_path_whose_declared_losses)
