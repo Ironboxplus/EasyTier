@@ -196,24 +196,35 @@ const PATH_KEEPALIVE_CHECK: std::time::Duration = std::time::Duration::from_secs
 /// neither gives a rate for measuring loss.
 const LOSS_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// The validated paths that received nothing for `interval`: their keep-alive
-/// PING is due. noq does the same: a path's keep-alive timer restarts when a
-/// packet arrives on it (`reset_keep_alive` in `on_packet_authenticated`,
-/// `noq-proto/src/connection/mod.rs`) and fires a `ping_path` when it runs
-/// out. The PING has to be acknowledged within `max_ack_delay` (RFC 9000
-/// Section 13.2.1), so both ends send on the path and both NAT mappings are
-/// refreshed (RFC 4787 REQ-6). Judging by what the path sent instead (the rule
-/// until 2026-11-21) skipped a path whose ACKs answered the peer's PINGs: one
-/// PING in three rounds, 45 s.
+/// The validated paths whose keep-alive PING is due: nothing arrived on them
+/// for `interval`, and this end has not PINGed them for `interval` either.
+/// noq does the same with one timer per path: a received packet restarts it
+/// (`reset_keep_alive` in `on_packet_authenticated`,
+/// `noq-proto/src/connection/mod.rs`), so does a packet sent on the path
+/// (`packet_builder.rs`), and it fires a `ping_path` when it runs out. A path
+/// that answers nothing is thereby PINGed once per interval, not on every
+/// check until it is retired. ET cannot read TQUIC's last send time, and only
+/// its own keep-alive PINGs (`last_ping`) stand for "sent": data sent on a
+/// path that hears nothing for the interval is what the PING is to probe.
+/// The PING has to be acknowledged within `max_ack_delay` (RFC 9000 Section
+/// 13.2.1), so both ends send on the path and both NAT mappings are refreshed
+/// (RFC 4787 REQ-6). Judging by what the path sent instead (the rule until
+/// 2026-11-21) skipped a path whose ACKs answered the peer's PINGs: one PING
+/// in three rounds, 45 s.
 fn paths_to_keep_alive(
     paths: &[((SocketAddr, SocketAddr), PathHealth)],
     interval: std::time::Duration,
-    _last_ping: &HashMap<(SocketAddr, SocketAddr), Instant>,
-    _now: Instant,
+    last_ping: &HashMap<(SocketAddr, SocketAddr), Instant>,
+    now: Instant,
 ) -> Vec<(SocketAddr, SocketAddr)> {
     paths
         .iter()
-        .filter(|(_, health)| matches!(health, PathHealth::Validated { idle } if *idle >= interval))
+        .filter(|(spec, health)| {
+            matches!(health, PathHealth::Validated { idle } if *idle >= interval)
+                && last_ping
+                    .get(spec)
+                    .is_none_or(|at| now.saturating_duration_since(*at) >= interval)
+        })
         .map(|&(spec, _)| spec)
         .collect()
 }
