@@ -1,1 +1,0 @@
-test(~connector::direct) | test(~connector::udp_hole_punch) | test(~peers::peer_task)
