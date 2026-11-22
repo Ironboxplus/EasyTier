@@ -185,8 +185,7 @@ fn udp_direct_retry_after(failures: usize, rejected: bool) -> Duration {
 /// networks changed since the last failure, or the wait is over.
 #[cfg(feature = "mpquic")]
 fn udp_direct_due(state: Option<&UdpDirectRetry>, fingerprint: u64, now: Instant) -> bool {
-    let _ = (state, fingerprint, now);
-    true
+    state.is_none_or(|state| state.fingerprint != fingerprint || now >= state.next_try)
 }
 
 /// What the local and the peer's networks looked like: the usable interface
