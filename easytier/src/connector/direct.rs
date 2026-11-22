@@ -1859,7 +1859,12 @@ mod tests {
         remote_flags.disable_upnp = true;
         remote.get_global_ctx().set_flags(remote_flags);
 
-        connect_peer_manager(local.clone(), remote.clone()).await;
+        // A directly connected tunnel, as the non-MP peer test above makes it.
+        let (client_ring, server_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
+        let client = local.clone();
+        tokio::spawn(async move { client.add_client_tunnel(client_ring, true).await.unwrap() });
+        let server = remote.clone();
+        tokio::spawn(async move { server.add_tunnel_as_server(server_ring, true).await.unwrap() });
         wait_route_appear(local.clone(), remote.clone())
             .await
             .unwrap();
@@ -1868,6 +1873,26 @@ mod tests {
                 let local = local.clone();
                 let remote_id = remote.my_peer_id();
                 async move { local.has_directly_connected_conn(remote_id) }
+            },
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+
+        // The remote's MP flag travels with its route info.
+        wait_for_condition(
+            || {
+                let local = local.clone();
+                let remote_id = remote.my_peer_id();
+                async move {
+                    super::super::peer_runs_mp(
+                        local
+                            .get_peer_map()
+                            .get_route_peer_info(remote_id)
+                            .await
+                            .and_then(|info| info.feature_flag)
+                            .as_ref(),
+                    )
+                }
             },
             std::time::Duration::from_secs(10),
         )
