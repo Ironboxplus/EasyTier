@@ -1461,6 +1461,104 @@ mod tests {
         assert!(!super::should_skip_existing_direct_peer(false, true, false));
     }
 
+    /// A failure state as `record_udp_direct_round` stores it.
+    #[cfg(feature = "mpquic")]
+    fn retry_state(
+        now: hotpath::instant::Instant,
+        failures: usize,
+        rejected: bool,
+        fingerprint: u64,
+    ) -> super::UdpDirectRetry {
+        super::UdpDirectRetry {
+            failures,
+            next_try: now
+                .checked_add(super::udp_direct_retry_after(failures, rejected))
+                .unwrap(),
+            fingerprint,
+        }
+    }
+
+    #[cfg(feature = "mpquic")]
+    #[test]
+    fn udp_direct_retry_backs_off_along_the_ladder() {
+        use std::time::Duration;
+        let now = hotpath::instant::Instant::now();
+        let at = |offset: Duration| now.checked_add(offset).unwrap();
+
+        // The first failure waits 1 s.
+        let first = retry_state(now, 1, false, 7);
+        assert!(!super::udp_direct_due(Some(&first), 7, now));
+        assert!(!super::udp_direct_due(
+            Some(&first),
+            7,
+            at(Duration::from_millis(500))
+        ));
+        assert!(super::udp_direct_due(Some(&first), 7, at(Duration::from_secs(1))));
+
+        // Each further failure waits its step, the 8th and later 60 s.
+        let ladder_secs = [1, 2, 2, 5, 5, 10, 30, 60, 60, 60];
+        for (index, secs) in ladder_secs.into_iter().enumerate() {
+            let state = retry_state(now, index + 1, false, 7);
+            let wait = Duration::from_secs(secs);
+            assert!(
+                !super::udp_direct_due(Some(&state), 7, at(wait - Duration::from_millis(1))),
+                "failure {} is not due {secs} s - 1 ms later",
+                index + 1
+            );
+            assert!(
+                super::udp_direct_due(Some(&state), 7, at(wait)),
+                "failure {} is due {secs} s later",
+                index + 1
+            );
+        }
+    }
+
+    #[cfg(feature = "mpquic")]
+    #[test]
+    fn udp_direct_retry_waits_ten_minutes_after_every_candidate_was_rejected() {
+        use std::time::Duration;
+        let now = hotpath::instant::Instant::now();
+        let at = |offset: Duration| now.checked_add(offset).unwrap();
+
+        for failures in [1, 5, 30] {
+            let state = retry_state(now, failures, true, 7);
+            assert!(!super::udp_direct_due(
+                Some(&state),
+                7,
+                at(Duration::from_secs(9 * 60))
+            ));
+            assert!(super::udp_direct_due(
+                Some(&state),
+                7,
+                at(Duration::from_secs(10 * 60))
+            ));
+        }
+    }
+
+    #[cfg(feature = "mpquic")]
+    #[test]
+    fn udp_direct_retry_is_due_at_once_without_state_or_after_a_network_change() {
+        let now = hotpath::instant::Instant::now();
+        assert!(super::udp_direct_due(None, 7, now));
+
+        let rejected = retry_state(now, 3, true, 7);
+        assert!(!super::udp_direct_due(Some(&rejected), 7, now));
+        assert!(super::udp_direct_due(Some(&rejected), 8, now));
+
+        // Any part of the fingerprint changes it.
+        let base = super::udp_direct_fingerprint(&[1, 2], Some(9), 1, 2, "inst");
+        assert_eq!(base, super::udp_direct_fingerprint(&[2, 1], Some(9), 1, 2, "inst"));
+        for changed in [
+            super::udp_direct_fingerprint(&[1, 2, 3], Some(9), 1, 2, "inst"),
+            super::udp_direct_fingerprint(&[1, 2], None, 1, 2, "inst"),
+            super::udp_direct_fingerprint(&[1, 2], Some(9), 3, 2, "inst"),
+            super::udp_direct_fingerprint(&[1, 2], Some(9), 1, 3, "inst"),
+            super::udp_direct_fingerprint(&[1, 2], Some(9), 1, 2, "other"),
+        ] {
+            assert_ne!(base, changed);
+        }
+    }
+
     #[cfg(feature = "mpquic")]
     #[test]
     fn udp_direct_candidates_reject_ipv4_link_local_addresses() {
@@ -1738,6 +1836,86 @@ mod tests {
             "a direct peer without MP can never hold a udp-direct carrier"
         );
         assert!(data.direct_goal_satisfied(plain.my_peer_id()).await);
+    }
+
+    /// A direct MP peer without the udp-direct provider rejects every attempt.
+    /// The task manager picks the peer again every 5 s, each round a new task,
+    /// so the retry state has to live outside the task: after the first round
+    /// no further `select_punch_listener` may go out.
+    #[cfg(feature = "mpquic")]
+    #[tokio::test]
+    async fn udp_direct_rejected_by_a_direct_peer_is_not_retried_every_round() {
+        TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
+        let local = create_mock_peer_manager().await;
+        let remote = create_mock_peer_manager().await;
+        let mut local_flags = local.get_global_ctx().get_flags();
+        local_flags.mp.as_mut().unwrap().enabled = true;
+        local_flags.mp.as_mut().unwrap().providers = vec!["udp-direct".into()];
+        local_flags.disable_upnp = true;
+        local.get_global_ctx().set_flags(local_flags);
+        let mut remote_flags = remote.get_global_ctx().get_flags();
+        remote_flags.mp.as_mut().unwrap().enabled = true;
+        remote_flags.mp.as_mut().unwrap().providers = Vec::new();
+        remote_flags.disable_upnp = true;
+        remote.get_global_ctx().set_flags(remote_flags);
+
+        connect_peer_manager(local.clone(), remote.clone()).await;
+        wait_route_appear(local.clone(), remote.clone())
+            .await
+            .unwrap();
+        wait_for_condition(
+            || {
+                let local = local.clone();
+                let remote_id = remote.my_peer_id();
+                async move { local.has_directly_connected_conn(remote_id) }
+            },
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+
+        // Let both address caches settle so the networks look the same each round.
+        local.get_global_ctx().get_ip_collector().collect_ip_addrs().await;
+        remote.get_global_ctx().get_ip_collector().collect_ip_addrs().await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let mut udp_server = UdpHolePunchConnector::new(remote.clone());
+        udp_server.run_as_server().await.unwrap();
+        let mut dm_remote = DirectConnectorManager::new(remote.get_global_ctx(), remote.clone());
+        dm_remote.run_as_server();
+        let mut dm_local = DirectConnectorManager::new(local.get_global_ctx(), local.clone());
+        dm_local.run_as_client();
+
+        let select_punch_listener_calls = || {
+            local
+                .get_global_ctx()
+                .stats_manager()
+                .get_all_metrics()
+                .into_iter()
+                .filter(|metric| {
+                    metric.name == crate::common::stats_manager::MetricName::PeerRpcClientTx
+                        && metric.labels.to_key().contains("select_punch_listener")
+                })
+                .map(|metric| metric.value)
+                .sum::<u64>()
+        };
+
+        wait_for_condition(
+            || async { select_punch_listener_calls() > 0 },
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+        // The rejected candidates of the first round all answer at once.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let first_round = select_punch_listener_calls();
+        assert!(first_round > 0);
+
+        // Three more task-manager rounds (every 5 s) would have run by now.
+        tokio::time::sleep(std::time::Duration::from_secs(14)).await;
+        assert_eq!(
+            select_punch_listener_calls(),
+            first_round,
+            "a peer that rejected the udp-direct provider was asked again within 14 s"
+        );
     }
 
     #[tokio::test]
