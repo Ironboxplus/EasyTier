@@ -282,7 +282,7 @@ async fn get_dual_stack_listener(
 async fn get_config_server_listeners(
     protocol: &str,
     port: u16,
-    _address: Option<IpAddr>,
+    address: Option<IpAddr>,
 ) -> Result<
     (
         Option<Box<dyn TunnelListener>>,
@@ -290,7 +290,25 @@ async fn get_config_server_listeners(
     ),
     Error,
 > {
-    get_dual_stack_listener(protocol, port).await
+    let Some(address) = address else {
+        return get_dual_stack_listener(protocol, port).await;
+    };
+
+    let scheme = protocol
+        .parse()
+        .map_err(|_| Error::InvalidUrl(protocol.to_string()))?;
+    let host = match address {
+        IpAddr::V4(address) => address.to_string(),
+        IpAddr::V6(address) => format!("[{address}]"),
+    };
+    let listener = get_listener_by_url(
+        scheme,
+        &format!("{protocol}://{host}:{port}").parse().unwrap(),
+    );
+    Ok(match address {
+        IpAddr::V4(_) => (None, listener),
+        IpAddr::V6(_) => (listener, None),
+    })
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
