@@ -1,0 +1,285 @@
+{
+ "note": "local hit instance, 2026-10-26 08:25:10-08:25:58, easytier-cli stats mp polled ~1/s; MP ticks are 0.5 s, so each row stands for ~2 ticks",
+ "rows": [
+  {
+   "t": "08:25:10",
+   "achieved_bps": 349667,
+   "autorate_estimate_bps": 4501800,
+   "queue_delay_us": 28292,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:11",
+   "achieved_bps": 314592,
+   "autorate_estimate_bps": 4455992,
+   "queue_delay_us": 72648,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:13",
+   "achieved_bps": 762170,
+   "autorate_estimate_bps": 4500664,
+   "queue_delay_us": 77385,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:14",
+   "achieved_bps": 522773,
+   "autorate_estimate_bps": 2818385,
+   "queue_delay_us": 15989,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:15",
+   "achieved_bps": 199354,
+   "autorate_estimate_bps": 2846640,
+   "queue_delay_us": 75187,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:16",
+   "achieved_bps": 240091,
+   "autorate_estimate_bps": 2772961,
+   "queue_delay_us": 50409,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:18",
+   "achieved_bps": 235088,
+   "autorate_estimate_bps": 1935707,
+   "queue_delay_us": 69205,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:19",
+   "achieved_bps": 220962,
+   "autorate_estimate_bps": 1212170,
+   "queue_delay_us": 82821,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:20",
+   "achieved_bps": 229215,
+   "autorate_estimate_bps": 1224322,
+   "queue_delay_us": 92806,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:21",
+   "achieved_bps": 237955,
+   "autorate_estimate_bps": 762875,
+   "queue_delay_us": 93782,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:22",
+   "achieved_bps": 221729,
+   "autorate_estimate_bps": 774375,
+   "queue_delay_us": 26530,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:24",
+   "achieved_bps": 399341,
+   "autorate_estimate_bps": 782138,
+   "queue_delay_us": 6229,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:25",
+   "achieved_bps": 1209078,
+   "autorate_estimate_bps": 868977,
+   "queue_delay_us": 22995,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:26",
+   "achieved_bps": 1992286,
+   "autorate_estimate_bps": 1051462,
+   "queue_delay_us": 57410,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:27",
+   "achieved_bps": 263809,
+   "autorate_estimate_bps": 1035585,
+   "queue_delay_us": 69686,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:28",
+   "achieved_bps": 291592,
+   "autorate_estimate_bps": 1051197,
+   "queue_delay_us": 37354,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:30",
+   "achieved_bps": 369510,
+   "autorate_estimate_bps": 1061735,
+   "queue_delay_us": 31077,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:31",
+   "achieved_bps": 317246,
+   "autorate_estimate_bps": 1077741,
+   "queue_delay_us": 6649,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:32",
+   "achieved_bps": 262523,
+   "autorate_estimate_bps": 1088545,
+   "queue_delay_us": 37679,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:33",
+   "achieved_bps": 352207,
+   "autorate_estimate_bps": 1104955,
+   "queue_delay_us": 36145,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:35",
+   "achieved_bps": 208169,
+   "autorate_estimate_bps": 1116032,
+   "queue_delay_us": 38855,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:36",
+   "achieved_bps": 214206,
+   "autorate_estimate_bps": 1132857,
+   "queue_delay_us": 43256,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:37",
+   "achieved_bps": 207949,
+   "autorate_estimate_bps": 980939,
+   "queue_delay_us": 92240,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:38",
+   "achieved_bps": 514165,
+   "autorate_estimate_bps": 614279,
+   "queue_delay_us": 82912,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:40",
+   "achieved_bps": 2522773,
+   "autorate_estimate_bps": 614279,
+   "queue_delay_us": 76194,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:41",
+   "achieved_bps": 4846087,
+   "autorate_estimate_bps": 503464,
+   "queue_delay_us": 77157,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:42",
+   "achieved_bps": 3203296,
+   "autorate_estimate_bps": 461576,
+   "queue_delay_us": 118757,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:43",
+   "achieved_bps": 1960697,
+   "autorate_estimate_bps": 287608,
+   "queue_delay_us": 110855,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:44",
+   "achieved_bps": 2039035,
+   "autorate_estimate_bps": 289046,
+   "queue_delay_us": 88331,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:46",
+   "achieved_bps": 335034,
+   "autorate_estimate_bps": 288762,
+   "queue_delay_us": 86368,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:47",
+   "achieved_bps": 348854,
+   "autorate_estimate_bps": 290456,
+   "queue_delay_us": 61739,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:48",
+   "achieved_bps": 1204156,
+   "autorate_estimate_bps": 345376,
+   "queue_delay_us": 26487,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:49",
+   "achieved_bps": 939313,
+   "autorate_estimate_bps": 410523,
+   "queue_delay_us": 58399,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:51",
+   "achieved_bps": 181592,
+   "autorate_estimate_bps": 456103,
+   "queue_delay_us": 6744,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:52",
+   "achieved_bps": 205709,
+   "autorate_estimate_bps": 460675,
+   "queue_delay_us": 3795,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:53",
+   "achieved_bps": 214994,
+   "autorate_estimate_bps": 467620,
+   "queue_delay_us": 10314,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:54",
+   "achieved_bps": 195808,
+   "autorate_estimate_bps": 472308,
+   "queue_delay_us": 3731,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:56",
+   "achieved_bps": 120578,
+   "autorate_estimate_bps": 574350,
+   "queue_delay_us": 3795,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:57",
+   "achieved_bps": 248332,
+   "autorate_estimate_bps": 634943,
+   "queue_delay_us": 3098,
+   "source": "one-way"
+  },
+  {
+   "t": "08:25:58",
+   "achieved_bps": 131848,
+   "autorate_estimate_bps": 705440,
+   "queue_delay_us": 24526,
+   "source": "one-way"
+  }
+ ]
+}
