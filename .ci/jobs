@@ -1,1 +1,1 @@
-test
+test windows-test blackbox:s32_multi_egress blackbox:s32_mwan3 blackbox:s32_path_policy blackbox:s31_native_punch blackbox:s47_mixed_fork_versions linux
