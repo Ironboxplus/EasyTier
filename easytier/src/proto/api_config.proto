@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+import "common.proto";
+import "acl.proto";
+import "api_instance.proto";
+import "api_manage.proto";
+// `InstanceConfigPatch` and its own patch messages live there (split out
+// specifically to avoid a cycle with api_manage.proto -- see the note
+// there); this file still declares the same `api.config` package.
+import "api_config_patch.proto";
+
+package api.config;
+
+message MpTunableSchema {
+  string key = 1;
+  string label = 2;
+  string kind = 3;
+  optional double min = 4;
+  optional double max = 5;
+  optional double step = 6;
+  repeated string options = 7;
+  string default_json = 8;
+  string help = 9;
+}
+
+message MpSchedulerPluginSchema {
+  string name = 1;
+  string description = 2;
+  repeated MpTunableSchema tunables = 3;
+  // scheduler|congestion_control (MP_SQM_PLAN.md S2.7): lets the GUI split
+  // the packet-scheduler dropdown from the congestion-control dropdown out
+  // of one flat plugin list.
+  string kind = 4;
+}
+
+message PatchConfigRequest {
+  InstanceConfigPatch patch = 1;
+  api.instance.InstanceIdentifier instance = 2;
+}
+
+message PatchConfigResponse {}
+
+message GetConfigRequest {
+  api.instance.InstanceIdentifier instance = 1;
+}
+
+message GetConfigResponse {
+  api.manage.NetworkConfig config = 1;
+  // Fork-only fields live at 1001+ so upstream can keep adding its own
+  // numbers; the old 2/4/5 are retired (upstream owns 2 as toml_config).
+  repeated MpSchedulerPluginSchema mp_scheduler_plugins = 1001;
+  // The optimizer list is gone (phase 4); its number is never reused.
+  reserved 3;
+  reserved "mp_optimizers";
+  reserved 2, 4, 5;
+  repeated string mp_providers = 1002;
+  repeated string tcp_hole_punch_modes = 1003;
+}
+
+service ConfigRpc {
+  rpc PatchConfig(PatchConfigRequest) returns (PatchConfigResponse);
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+}

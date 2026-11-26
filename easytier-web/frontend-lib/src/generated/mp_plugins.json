@@ -1,0 +1,101 @@
+[
+  {
+    "name": "min-rtt",
+    "kind": "scheduler",
+    "description": "Send on the lowest-RTT path (stock, proven).",
+    "tunables": []
+  },
+  {
+    "name": "round-robin",
+    "kind": "scheduler",
+    "description": "Rotate packets evenly across all paths.",
+    "tunables": []
+  },
+  {
+    "name": "redundant",
+    "kind": "scheduler",
+    "description": "Duplicate packets on every path (lowest loss/latency, no aggregation).",
+    "tunables": []
+  },
+  {
+    "name": "sqm-weighted",
+    "kind": "scheduler",
+    "description": "Per-link SQM residual-bandwidth weighted split with a latency↔bandwidth slider.",
+    "tunables": [
+      {
+        "key": "latency_bandwidth",
+        "label": "Latency ↔ Bandwidth",
+        "kind": "slider",
+        "min": 0,
+        "max": 1,
+        "step": 0.01,
+        "options": [],
+        "default_json": "0.5",
+        "help": "0 = concentrate on the lowest-latency path; 1 = spread for maximum aggregate bandwidth."
+      }
+    ]
+  },
+  {
+    "name": "engine-default",
+    "kind": "congestion_control",
+    "description": "TQUIC default congestion control (BBR).",
+    "tunables": []
+  },
+  {
+    "name": "bbr",
+    "kind": "congestion_control",
+    "description": "BBR v1: model-based, keeps queues short on stable links.",
+    "tunables": []
+  },
+  {
+    "name": "bbr3",
+    "kind": "congestion_control",
+    "description": "BBR v3: BBR with loss/ECN-aware bandwidth probing.",
+    "tunables": []
+  },
+  {
+    "name": "cubic",
+    "kind": "congestion_control",
+    "description": "CUBIC: loss-based, the conventional TCP default.",
+    "tunables": []
+  },
+  {
+    "name": "copa",
+    "kind": "congestion_control",
+    "description": "COPA: delay-based, targets low queueing delay.",
+    "tunables": []
+  },
+  {
+    "name": "brutal",
+    "kind": "congestion_control",
+    "description": "Brutal (Hysteria): sends at the rate Autorate allocates from the egress estimate, starting from the upload rate, under the peer's download, and compensates for loss.",
+    "tunables": [
+      {
+        "key": "up_mbps",
+        "label": "Upload (Mbps)",
+        "kind": "number",
+        "min": 0.1,
+        "options": [],
+        "default_json": "50.0",
+        "help": "Where the send rate starts until Autorate measures the link. Default 50."
+      },
+      {
+        "key": "down_mbps",
+        "label": "Download (Mbps)",
+        "kind": "number",
+        "min": 0,
+        "options": [],
+        "default_json": "0",
+        "help": "Receive rate advertised to peers (0 = no limit advertised)."
+      },
+      {
+        "key": "disable_loss_compensation",
+        "label": "Disable loss compensation",
+        "kind": "toggle",
+        "options": [],
+        "default_json": "false",
+        "help": "When on, the send rate is not raised to make up for lost packets."
+      }
+    ]
+  }
+]
