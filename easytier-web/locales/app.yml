@@ -16,6 +16,9 @@ cli:
   config_server_port:
     en: "The port to listen for the config server, used by the easytier-core to connect to"
     zh-CN: "配置服务器的监听端口，用于被 easytier-core 连接"
+  config_server_addr:
+    en: "Optional IP address for the config server listener; when set, only that address family is bound"
+    zh-CN: "配置服务器监听地址（可选）；设置后只绑定该 IP 及其地址族"
   config_server_protocol:
     en: "The protocol to listen for the config server, used by the easytier-core to connect to, possible values: udp, tcp, ws"
     zh-CN: "配置服务器的监听协议，用于被 easytier-core 连接, 可能的值：udp, tcp, ws"
