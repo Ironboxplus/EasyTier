@@ -23,10 +23,12 @@ use easytier::{
         peer_manager::{PeerManager, RouteAlgoType},
         rpc_service::PeerManagerRpcService,
     },
-    proto::{
+        connector::create_connector_by_url,
+        proto::{
         api::instance::{GetEgressInventoryRequest, PeerManageRpc, ResolveEgressRouteRequest},
         rpc_types::controller::BaseController,
     },
+    tunnel::{IpVersion, TcpTunnelListener, TunnelConnector, TunnelListener},
 };
 use serial_test::serial;
 
@@ -278,18 +280,25 @@ async fn current_ip_collection_does_not_reuse_stale_bind_address_after_handoff()
     namespace.remove_address("192.0.2.10/24");
     namespace.add_address("198.51.100.10/24");
 
-    let current = global_ctx
-        .get_ip_collector()
-        .collect_current_ip_addrs()
+    let mut listener = TcpTunnelListener::new("tcp://198.51.100.10:0".parse().unwrap());
+    namespace
+        .et_netns()
+        .run_async(|| listener.listen())
+        .await
+        .expect("listener did not bind to the replacement address");
+    let port = listener.local_url().port().unwrap();
+    let accept = tokio::spawn(async move { listener.accept().await });
+
+    let url = format!("tcp://198.51.100.10:{port}");
+    let connector = create_connector_by_url(&url, &global_ctx, IpVersion::V4)
+        .await
+        .expect("connector creation failed");
+    let result = namespace
+        .et_netns()
+        .run_async(|| connector.connect())
         .await;
-    assert!(current
-        .interface_ipv4s
-        .iter()
-        .any(|address| Ipv4Addr::from(*address) == Ipv4Addr::new(198, 51, 100, 10)));
-    assert!(!current
-        .interface_ipv4s
-        .iter()
-        .any(|address| Ipv4Addr::from(*address) == Ipv4Addr::new(192, 0, 2, 10)));
+    assert!(result.is_ok(), "stale bind address prevented reconnect: {result:?}");
+    accept.await.unwrap().expect("listener did not accept reconnect");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
