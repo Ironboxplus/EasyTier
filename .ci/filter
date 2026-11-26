@@ -1,1 +1,1 @@
-test(~current_ip_collection_does_not_reuse_stale_bind_address_after_handoff) | test(~custom_bind_)
+test(~connector::manual) | test(~connector::tests) | test(~common::network) | test(~tunnel::tcp) | binary(egress_inventory_linux)
