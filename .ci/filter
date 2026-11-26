@@ -1,1 +1,1 @@
-binary(iface_snapshot_linux)
+binary(iface_snapshot_linux) | test(~common::network)

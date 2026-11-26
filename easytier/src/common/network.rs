@@ -1,10 +1,12 @@
 use std::{
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     ops::Deref,
+    panic::AssertUnwindSafe,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex, Weak,
         atomic::{AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 #[cfg(target_os = "windows")]
@@ -21,9 +23,19 @@ use tokio::{
 
 use crate::proto::peer_rpc::GetIpListResponse;
 
-use super::{netns::NetNS, stun::StunInfoCollectorTrait};
+#[allow(unused_imports)]
+use super::{
+    egress_inventory::{EgressInterfaceSnapshot, EgressInventory, EgressInventorySnapshot, OperState},
+    netns::NetNS,
+    stun::StunInfoCollectorTrait,
+};
 
 pub const CACHED_IP_LIST_TIMEOUT_SEC: u64 = 60;
+
+/// Without an inventory, attempts within this window share one full collection.
+const FALLBACK_COALESCE: Duration = Duration::from_secs(1);
+/// A failed bind asks the inventory for a refresh at most this often.
+const STALE_BIND_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Whether an IPv4 interface address can be advertised to another peer as a
 /// direct-connect candidate. IPv4 link-local addresses are scoped to one L2
@@ -245,11 +257,271 @@ pub(crate) fn enumerate_interfaces() -> Vec<NetworkInterface> {
     }
 }
 
+/// What the connect path knows about the interfaces of one network namespace:
+/// the event-driven inventory it reads, and the addresses derived from the
+/// snapshot revision it last saw. Links are also listed process-wide so code
+/// without a collector at hand (the device lookup in `bind`) can read the
+/// same snapshots.
+struct InventoryLink {
+    net_ns: NetNS,
+    state: StdMutex<LinkState>,
+    /// Used only while no inventory is attached.
+    fallback: Mutex<Option<(Instant, GetIpListResponse)>>,
+}
+
+#[derive(Default)]
+struct LinkState {
+    inventory: Option<EgressInventory>,
+    /// Inode of the namespace the inventory describes, to match the
+    /// namespace of the thread that binds a socket.
+    netns_id: Option<u64>,
+    derived: Option<(u64, GetIpListResponse)>,
+    last_stale_refresh: Option<Instant>,
+}
+
+static INVENTORY_LINKS: StdMutex<Vec<Weak<InventoryLink>>> = StdMutex::new(Vec::new());
+
+impl InventoryLink {
+    fn new(net_ns: NetNS) -> Arc<Self> {
+        let link = Arc::new(Self {
+            net_ns,
+            state: StdMutex::new(LinkState::default()),
+            fallback: Mutex::new(None),
+        });
+        let mut links = INVENTORY_LINKS.lock().unwrap();
+        links.retain(|link| link.strong_count() > 0);
+        links.push(Arc::downgrade(&link));
+        link
+    }
+
+    fn inventory(&self) -> Option<EgressInventory> {
+        self.state.lock().unwrap().inventory.clone()
+    }
+
+    fn memo(&self, revision: u64) -> Option<GetIpListResponse> {
+        match &self.state.lock().unwrap().derived {
+            Some((memo_revision, derived)) if *memo_revision == revision => Some(derived.clone()),
+            _ => None,
+        }
+    }
+
+    fn store(&self, revision: u64, derived: GetIpListResponse) {
+        self.state.lock().unwrap().derived = Some((revision, derived));
+    }
+
+    fn in_namespace(&self, current: Option<u64>) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            current.is_some() && self.state.lock().unwrap().netns_id == current
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = current;
+            true
+        }
+    }
+
+    /// A bind failed because the address is gone: the snapshot is behind the
+    /// system. Ask for a refresh (the next attempt reads the new snapshot) and
+    /// drop the coalesced fallback result.
+    fn note_stale_bind(&self) {
+        let inventory = {
+            let mut state = self.state.lock().unwrap();
+            if state
+                .last_stale_refresh
+                .is_some_and(|last| last.elapsed() < STALE_BIND_REFRESH_INTERVAL)
+            {
+                return;
+            }
+            state.last_stale_refresh = Some(Instant::now());
+            state.inventory.clone()
+        };
+        if let Some(inventory) = inventory {
+            inventory.request_refresh();
+        }
+        if let Ok(mut fallback) = self.fallback.try_lock() {
+            *fallback = None;
+        }
+    }
+}
+
+fn live_links() -> Vec<Arc<InventoryLink>> {
+    let mut links = INVENTORY_LINKS.lock().unwrap();
+    links.retain(|link| link.strong_count() > 0);
+    links.iter().filter_map(Weak::upgrade).collect()
+}
+
+/// Inode of the network namespace the calling thread is in. `/proc/self` would
+/// name the main thread's namespace, which differs inside `NetNS::guard`.
+fn current_thread_netns_id() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/proc/thread-self/ns/net")
+            .ok()
+            .map(|meta| meta.ino())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+fn netns_id_of(net_ns: &NetNS) -> Option<u64> {
+    std::panic::catch_unwind(AssertUnwindSafe(|| net_ns.run(current_thread_netns_id)))
+        .ok()
+        .flatten()
+}
+
+/// A bind failed with "address not available". Every attached inventory is
+/// refreshed (rate limited); a refresh is one debounced enumeration.
+pub(crate) fn note_stale_bind_address() {
+    for link in live_links() {
+        link.note_stale_bind();
+    }
+}
+
+/// The name of the interface that holds `ip`, read from the inventory snapshot
+/// of the calling thread's network namespace. `None` when no inventory covers
+/// this namespace or the snapshot does not know the address (it is then
+/// refreshed, and the caller falls back to one full enumeration).
+pub(crate) fn interface_name_from_inventory(ip: &IpAddr) -> Option<String> {
+    let current = current_thread_netns_id();
+    let links: Vec<_> = live_links()
+        .into_iter()
+        .filter(|link| link.inventory().is_some() && link.in_namespace(current))
+        .collect();
+    for link in &links {
+        let snapshot = link.inventory()?.snapshot();
+        let name = snapshot
+            .interfaces
+            .values()
+            .find(|interface| interface.addresses.iter().any(|addr| addr.ip == *ip))
+            .map(|interface| interface.platform_name.clone());
+        if name.is_some() {
+            return name;
+        }
+    }
+    for link in &links {
+        link.note_stale_bind();
+    }
+    None
+}
+
+/// Whether the platform's old `InterfaceFilter` would offer this interface as
+/// a bind candidate. Linux checks the flags pnet used to read (point-to-point,
+/// tun/tap) in sysfs; both are fixed for the life of an interface.
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+fn interface_is_bind_candidate(interface: &EgressInterfaceSnapshot) -> bool {
+    const IFF_POINTOPOINT: u32 = 0x10;
+    let sysfs = |file: &str| format!("/sys/class/net/{}/{file}", interface.platform_name);
+    let point_to_point = std::fs::read_to_string(sysfs("flags"))
+        .ok()
+        .and_then(|flags| u32::from_str_radix(flags.trim().trim_start_matches("0x"), 16).ok())
+        .is_some_and(|flags| flags & IFF_POINTOPOINT != 0);
+    interface.oper_state == OperState::Up
+        && interface.kind != super::egress_inventory::EgressKind::Loopback
+        && has_valid_ip(interface)
+        && !point_to_point
+        && !std::path::Path::new(&sysfs("tun_flags")).exists()
+}
+
+#[cfg(target_os = "windows")]
+fn interface_is_bind_candidate(interface: &EgressInterfaceSnapshot) -> bool {
+    use pnet::util::MacAddr;
+    has_valid_ip(interface)
+        && interface
+            .hardware_address
+            .as_deref()
+            .and_then(|mac| mac.parse::<MacAddr>().ok())
+            .is_some_and(|mac| !mac.is_zero())
+}
+
+#[allow(dead_code)]
+fn has_valid_ip(interface: &EgressInterfaceSnapshot) -> bool {
+    interface
+        .addresses
+        .iter()
+        .any(|addr| !addr.ip.is_loopback() && !addr.ip.is_unspecified() && !addr.ip.is_multicast())
+}
+
+/// The interface addresses a new socket may bind, from one snapshot. IPv4
+/// comes from interfaces `candidate` accepts; IPv6 from every interface, as
+/// the enumeration it replaces did.
+#[allow(dead_code)]
+fn derive_interface_addrs(
+    snapshot: &EgressInventorySnapshot,
+    candidate: impl Fn(&EgressInterfaceSnapshot) -> bool,
+) -> GetIpListResponse {
+    let mut ret = GetIpListResponse::default();
+    for interface in snapshot.interfaces.values() {
+        if !candidate(interface) {
+            continue;
+        }
+        for addr in &interface.addresses {
+            if let IpAddr::V4(v4) = addr.ip
+                && is_usable_interface_ipv4(v4)
+            {
+                ret.interface_ipv4s.push(v4.into());
+            }
+        }
+    }
+    for interface in snapshot.interfaces.values() {
+        for addr in &interface.addresses {
+            if let IpAddr::V6(v6) = addr.ip
+                && !(v6.is_multicast() || v6.is_loopback() || v6.is_unicast_link_local())
+            {
+                ret.interface_ipv6s.push(v6.into());
+            }
+        }
+    }
+    ret
+}
+
+/// Source addresses of the default routes. A route lookup, not an
+/// enumeration: it also finds the egress a filter rejected (Android's cellular
+/// interface) and follows a default-network switch that changed no address.
+fn probe_default_route_addrs(net_ns: &NetNS) -> (Option<Ipv4Addr>, Option<Ipv6Addr>) {
+    fn probe(bind: &str, target: &str) -> Option<IpAddr> {
+        let socket = std::net::UdpSocket::bind(bind).ok()?;
+        socket.connect(target).ok()?;
+        socket.local_addr().ok().map(|addr| addr.ip())
+    }
+    let _g = net_ns.guard();
+    let v4 = match probe("0.0.0.0:0", "8.8.8.8:80") {
+        Some(IpAddr::V4(ip)) => Some(ip),
+        _ => None,
+    };
+    let v6 = match probe("[::]:0", "[2001:4860:4860:0000:0000:0000:0000:8888]:80") {
+        Some(IpAddr::V6(ip)) => Some(ip),
+        _ => None,
+    };
+    (v4, v6)
+}
+
+fn add_default_route_addrs(
+    ret: &mut GetIpListResponse,
+    (v4, v6): (Option<Ipv4Addr>, Option<Ipv6Addr>),
+) {
+    if let Some(v4_addr) = v4
+        && is_usable_interface_ipv4(v4_addr)
+        && !ret.interface_ipv4s.contains(&v4_addr.into())
+    {
+        ret.interface_ipv4s.push(v4_addr.into());
+    }
+    if let Some(v6_addr) = v6
+        && !ret.interface_ipv6s.contains(&v6_addr.into())
+    {
+        ret.interface_ipv6s.push(v6_addr.into());
+    }
+}
+
 pub struct IPCollector {
     cached_ip_list: Arc<RwLock<GetIpListResponse>>,
     collect_ip_task: Mutex<JoinSet<()>>,
     net_ns: NetNS,
     stun_info_collector: Arc<Box<dyn StunInfoCollectorTrait>>,
+    link: Arc<InventoryLink>,
 }
 
 impl IPCollector {
@@ -257,8 +529,29 @@ impl IPCollector {
         Self {
             cached_ip_list: Arc::new(RwLock::new(GetIpListResponse::default())),
             collect_ip_task: Mutex::new(JoinSet::new()),
+            link: InventoryLink::new(net_ns.clone()),
             net_ns,
             stun_info_collector: Arc::new(Box::new(stun_info_collector)),
+        }
+    }
+
+    /// Let [`Self::collect_current_ip_addrs`] and the device lookup of `bind`
+    /// read this inventory's snapshot instead of enumerating interfaces.
+    /// Only the first inventory is kept.
+    pub async fn attach_inventory(&self, inventory: EgressInventory) {
+        if self.link.inventory().is_some() {
+            return;
+        }
+        // The namespace switch must not nest in the caller's guard.
+        let net_ns = self.net_ns.clone();
+        let netns_id = tokio::task::spawn_blocking(move || netns_id_of(&net_ns))
+            .await
+            .ok()
+            .flatten();
+        let mut state = self.link.state.lock().unwrap();
+        if state.inventory.is_none() {
+            state.inventory = Some(inventory);
+            state.netns_id = netns_id;
         }
     }
 
@@ -308,15 +601,75 @@ impl IPCollector {
     /// Return the current interface addresses for a new socket bind.
     ///
     /// The cached list above is for peer advertisement and may legitimately
-    /// lag a link handoff. A fresh transport must inspect the namespace again
-    /// so it never binds an address that has already been removed.
+    /// lag a link handoff. A fresh transport must not bind an address that has
+    /// already been removed, so this follows the inventory's snapshot, which
+    /// the system's address and route events keep current. The addresses are
+    /// derived once per snapshot revision; only the default-route probe runs
+    /// per call. Without an inventory this collects in full, shared between
+    /// attempts within one second.
     pub async fn collect_current_ip_addrs(&self) -> GetIpListResponse {
-        let mut current = Self::do_collect_local_ip_addrs(self.net_ns.clone()).await;
+        let mut current = match self.link.inventory() {
+            Some(inventory) => self.addrs_from_snapshot(&inventory).await,
+            None => self.collect_coalesced().await,
+        };
         Self::merge_public_ips(
             &mut current,
             &self.stun_info_collector.get_stun_info().public_ip,
         );
         current
+    }
+
+    async fn addrs_from_snapshot(&self, inventory: &EgressInventory) -> GetIpListResponse {
+        let snapshot = inventory.snapshot();
+        let mut ret = match self.link.memo(snapshot.revision) {
+            Some(derived) => derived,
+            None => {
+                let derived = self.derive_interface_addrs(&snapshot).await;
+                self.link.store(snapshot.revision, derived.clone());
+                derived
+            }
+        };
+        // A route lookup in a namespace-local thread: the namespace switch
+        // must not nest in this task's thread.
+        let net_ns = self.net_ns.clone();
+        let probed = tokio::task::spawn_blocking(move || probe_default_route_addrs(&net_ns)).await;
+        if let Ok(probed) = probed {
+            add_default_route_addrs(&mut ret, probed);
+        }
+        ret
+    }
+
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
+    async fn derive_interface_addrs(&self, snapshot: &EgressInventorySnapshot) -> GetIpListResponse {
+        derive_interface_addrs(snapshot, interface_is_bind_candidate)
+    }
+
+    /// macOS and FreeBSD filter on facts the snapshot does not carry (the
+    /// hardware port list), so they enumerate once per snapshot revision.
+    #[cfg(not(any(
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )))]
+    async fn derive_interface_addrs(
+        &self,
+        _snapshot: &EgressInventorySnapshot,
+    ) -> GetIpListResponse {
+        Self::collect_interface_addrs_by_enumeration(self.net_ns.clone()).await
+    }
+
+    async fn collect_coalesced(&self) -> GetIpListResponse {
+        let mut fallback = self.link.fallback.lock().await;
+        if let Some((at, collected)) = fallback.as_ref()
+            && at.elapsed() < FALLBACK_COALESCE
+        {
+            return collected.clone();
+        }
+        let collected = Self::do_collect_local_ip_addrs(self.net_ns.clone()).await;
+        *fallback = Some((Instant::now(), collected.clone()));
+        collected
     }
 
     fn merge_public_ips(result: &mut GetIpListResponse, ips: &[String]) {
@@ -456,6 +809,30 @@ impl IPCollector {
     }
 
     async fn collect_local_ip_addrs_in_namespace(net_ns: NetNS) -> GetIpListResponse {
+        let mut ret = Self::collect_interface_addrs_by_enumeration(net_ns.clone()).await;
+
+        // The enumeration's guards switched back on drop; probe inside the namespace.
+        let _g = net_ns.guard();
+        if let Ok(v4_addr) = local_ipv4().await {
+            tracing::trace!("got local ipv4: {}", v4_addr);
+            if is_usable_interface_ipv4(v4_addr) && !ret.interface_ipv4s.contains(&v4_addr.into()) {
+                ret.interface_ipv4s.push(v4_addr.into());
+            }
+        }
+
+        if let Ok(v6_addr) = local_ipv6().await {
+            tracing::trace!("got local ipv6: {}", v6_addr);
+            if !ret.interface_ipv6s.contains(&v6_addr.into()) {
+                ret.interface_ipv6s.push(v6_addr.into());
+            }
+        }
+
+        ret
+    }
+
+    /// Enumerate the namespace's interfaces and filter them (twice, as the
+    /// IPv4 and IPv6 lists use different filters).
+    async fn collect_interface_addrs_by_enumeration(net_ns: NetNS) -> GetIpListResponse {
         let mut ret = GetIpListResponse::default();
 
         let ifaces = Self::collect_interfaces(net_ns.clone(), true).await;
@@ -486,27 +863,168 @@ impl IPCollector {
             }
         }
 
-        if let Ok(v4_addr) = local_ipv4().await {
-            tracing::trace!("got local ipv4: {}", v4_addr);
-            if is_usable_interface_ipv4(v4_addr) && !ret.interface_ipv4s.contains(&v4_addr.into()) {
-                ret.interface_ipv4s.push(v4_addr.into());
-            }
-        }
-
-        if let Ok(v6_addr) = local_ipv6().await {
-            tracing::trace!("got local ipv6: {}", v6_addr);
-            if !ret.interface_ipv6s.contains(&v6_addr.into()) {
-                ret.interface_ipv6s.push(v6_addr.into());
-            }
-        }
-
         ret
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_usable_interface_ipv4;
+    use std::{collections::BTreeMap, net::IpAddr};
+
+    use super::*;
+    use crate::common::egress_inventory::{
+        EgressInventoryConfig, EgressKind, EgressStableId, InterfaceAddress, WatchMode,
+    };
+    use crate::common::stun::MockStunInfoCollector;
+    use crate::proto::common::NatType;
+
+    fn test_interface(
+        ifindex: u32,
+        name: &str,
+        oper_state: OperState,
+        kind: EgressKind,
+        addresses: &[&str],
+    ) -> EgressInterfaceSnapshot {
+        let id = EgressStableId::Linux {
+            netns_inode: 1,
+            ifindex,
+        };
+        EgressInterfaceSnapshot {
+            id,
+            revision: 1,
+            generation: 1,
+            platform_name: name.to_owned(),
+            display_name: name.to_owned(),
+            aliases: vec![name.to_owned()],
+            hardware_address: None,
+            runtime_ifindex: ifindex,
+            kind,
+            oper_state,
+            addresses: addresses
+                .iter()
+                .map(|ip| InterfaceAddress {
+                    ip: ip.parse::<IpAddr>().unwrap(),
+                    prefix_len: 24,
+                })
+                .collect(),
+            mtu: Some(1500),
+            transmit_speed_bps: None,
+            receive_speed_bps: None,
+            is_eligible: true,
+            exclusion_reasons: Vec::new(),
+            watch_mode: WatchMode::Native,
+        }
+    }
+
+    fn test_snapshot(interfaces: Vec<EgressInterfaceSnapshot>) -> EgressInventorySnapshot {
+        EgressInventorySnapshot {
+            revision: 1,
+            observed_at_unix_ms: 1,
+            interfaces: interfaces
+                .into_iter()
+                .map(|interface| (interface.id.clone(), interface))
+                .collect::<BTreeMap<_, _>>(),
+        }
+    }
+
+    #[test]
+    fn snapshot_derivation_matches_the_enumeration_filters() {
+        let snapshot = test_snapshot(vec![
+            test_interface(
+                1,
+                "lo",
+                OperState::Up,
+                EgressKind::Loopback,
+                &["127.0.0.1", "::1"],
+            ),
+            test_interface(
+                2,
+                "eth0",
+                OperState::Up,
+                EgressKind::Unknown,
+                &["192.168.1.5", "169.254.9.9", "2001:db8::5", "fe80::1"],
+            ),
+            test_interface(
+                3,
+                "wlan0",
+                OperState::Down,
+                EgressKind::Unknown,
+                &["10.0.0.7", "2001:db8::7"],
+            ),
+        ]);
+
+        let derived = derive_interface_addrs(&snapshot, |interface| {
+            interface.oper_state == OperState::Up && interface.kind != EgressKind::Loopback
+        });
+
+        // IPv4 only from interfaces the filter accepts, never link-local;
+        // IPv6 from every interface, never loopback or link-local.
+        assert_eq!(
+            derived.interface_ipv4s,
+            vec![Ipv4Addr::new(192, 168, 1, 5).into()]
+        );
+        assert_eq!(
+            derived.interface_ipv6s,
+            vec![
+                "2001:db8::5".parse::<Ipv6Addr>().unwrap().into(),
+                "2001:db8::7".parse::<Ipv6Addr>().unwrap().into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn derived_addresses_are_kept_per_snapshot_revision() {
+        let link = InventoryLink::new(NetNS::new(None));
+        assert!(link.memo(1).is_none());
+
+        let mut derived = GetIpListResponse::default();
+        derived.interface_ipv4s.push(Ipv4Addr::new(192, 0, 2, 1).into());
+        link.store(1, derived.clone());
+
+        assert_eq!(link.memo(1), Some(derived));
+        assert!(link.memo(2).is_none(), "a new revision must derive again");
+    }
+
+    #[tokio::test]
+    async fn current_addresses_after_the_first_read_do_not_enumerate() {
+        let inventory = EgressInventory::start(NetNS::new(None), EgressInventoryConfig::default())
+            .await
+            .unwrap();
+        let collector = IPCollector::new(
+            NetNS::new(None),
+            MockStunInfoCollector {
+                udp_nat_type: NatType::Unknown,
+            },
+        );
+        collector.attach_inventory(inventory).await;
+
+        collector.collect_current_ip_addrs().await;
+        let before = interface_enumeration_count();
+        for _ in 0..5 {
+            collector.collect_current_ip_addrs().await;
+        }
+        assert_eq!(
+            interface_enumeration_count(),
+            before,
+            "an unchanged snapshot must not trigger enumeration"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_an_inventory_attempts_within_a_second_share_one_collection() {
+        let collector = IPCollector::new(
+            NetNS::new(None),
+            MockStunInfoCollector {
+                udp_nat_type: NatType::Unknown,
+            },
+        );
+        collector.collect_current_ip_addrs().await;
+        let before = interface_enumeration_count();
+        for _ in 0..5 {
+            collector.collect_current_ip_addrs().await;
+        }
+        assert_eq!(interface_enumeration_count(), before);
+    }
 
     #[test]
     fn interface_ipv4_advertisement_rejects_link_local_but_keeps_lan_addresses() {

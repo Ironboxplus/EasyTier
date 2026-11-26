@@ -87,10 +87,11 @@ async fn set_bind_addr_for_peer_connector(
         return;
     }
 
-    let ips = global_ctx
-        .get_ip_collector()
-        .collect_current_ip_addrs()
-        .await;
+    let ip_collector = global_ctx.get_ip_collector();
+    if let Some(inventory) = global_ctx.get_egress_inventory() {
+        ip_collector.attach_inventory(inventory).await;
+    }
+    let ips = ip_collector.collect_current_ip_addrs().await;
     if is_ipv4 {
         let mut bind_addrs = vec![];
         for ipv4 in ips.interface_ipv4s {

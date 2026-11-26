@@ -342,6 +342,12 @@ pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     }
     #[cfg(not(target_os = "windows"))]
     {
+        // The inventory snapshot knows every address of the namespace this
+        // thread is in; a miss means the snapshot is behind and was asked to
+        // refresh, so look once at the system itself.
+        if let Some(name) = crate::common::network::interface_name_from_inventory(local_ip) {
+            return Some(name);
+        }
         crate::common::network::note_interface_enumeration();
         let ifaces = network_interface::NetworkInterface::show().ok()?;
         for iface in ifaces {
@@ -473,6 +479,10 @@ pub(crate) fn setup_socket2_ext(
     apply_socket_mark(socket2_socket, socket_mark)?;
 
     if let Err(e) = socket2_socket.bind(&socket2::SockAddr::from(*bind_addr)) {
+        if e.kind() == std::io::ErrorKind::AddrNotAvailable {
+            // The address left its interface: the interface snapshot is stale.
+            crate::common::network::note_stale_bind_address();
+        }
         if bind_addr.is_ipv4() {
             return Err(e.into());
         } else {
