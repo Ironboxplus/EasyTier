@@ -262,19 +262,9 @@ impl IPCollector {
                     }
 
                     let stun_info = stun_info_collector.get_stun_info();
-                    for ip in stun_info.public_ip.iter() {
-                        let Ok(ip_addr) = ip.parse::<IpAddr>() else {
-                            continue;
-                        };
-
-                        match ip_addr {
-                            IpAddr::V4(v) => {
-                                cached_ip_list.write().await.public_ipv4.replace(v.into());
-                            }
-                            IpAddr::V6(v) => {
-                                cached_ip_list.write().await.public_ipv6.replace(v.into());
-                            }
-                        }
+                    {
+                        let mut cached = cached_ip_list.write().await;
+                        Self::merge_public_ips(&mut cached, &stun_info.public_ip);
                     }
 
                     tracing::debug!(
@@ -296,8 +286,32 @@ impl IPCollector {
         self.cached_ip_list.read().await.deref().clone()
     }
 
+    /// Return the current interface addresses for a new socket bind.
+    ///
+    /// The cached list above is for peer advertisement and may legitimately
+    /// lag a link handoff. A fresh transport must inspect the namespace again
+    /// so it never binds an address that has already been removed.
     pub async fn collect_current_ip_addrs(&self) -> GetIpListResponse {
-        self.collect_ip_addrs().await
+        let mut current = Self::do_collect_local_ip_addrs(self.net_ns.clone()).await;
+        Self::merge_public_ips(
+            &mut current,
+            &self.stun_info_collector.get_stun_info().public_ip,
+        );
+        current
+    }
+
+    fn merge_public_ips(result: &mut GetIpListResponse, ips: &[String]) {
+        for ip in ips {
+            match ip.parse::<IpAddr>() {
+                Ok(IpAddr::V4(ip)) => {
+                    result.public_ipv4.replace(ip.into());
+                }
+                Ok(IpAddr::V6(ip)) => {
+                    result.public_ipv6.replace(ip.into());
+                }
+                Err(_) => {}
+            }
+        }
     }
 
     pub async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<NetworkInterface> {
@@ -401,6 +415,28 @@ impl IPCollector {
 
     #[tracing::instrument(skip(net_ns))]
     async fn do_collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
+        #[cfg(target_os = "linux")]
+        {
+            // setns is thread-local. Like upstream collect_local_ip_addrs,
+            // keep the guard and every await on a namespace-local runtime.
+            return tokio::task::spawn_blocking(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build namespace-local runtime");
+                let collect_ns = net_ns.clone();
+                net_ns.run(move || {
+                    runtime.block_on(Self::collect_local_ip_addrs_in_namespace(collect_ns))
+                })
+            })
+            .await
+            .expect("namespace-local address collection panicked");
+        }
+        #[cfg(not(target_os = "linux"))]
+        Self::collect_local_ip_addrs_in_namespace(net_ns).await
+    }
+
+    async fn collect_local_ip_addrs_in_namespace(net_ns: NetNS) -> GetIpListResponse {
         let mut ret = GetIpListResponse::default();
 
         let ifaces = Self::collect_interfaces(net_ns.clone(), true).await;

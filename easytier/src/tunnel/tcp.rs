@@ -190,6 +190,7 @@ impl TcpTunnelConnector {
         addr: SocketAddr,
     ) -> Result<TcpStream, super::TunnelError> {
         let futures = FuturesUnordered::new();
+        let mut last_bind_error = None;
 
         for bind_addr in self.bind_addrs.iter() {
             tracing::info!(?bind_addr, ?addr, "bind addr");
@@ -202,11 +203,15 @@ impl TcpTunnelConnector {
                 Ok(socket) => futures.push(socket.connect(addr)),
                 Err(error) => {
                     tracing::error!(?bind_addr, ?addr, ?error, "bind addr fail");
+                    last_bind_error = Some(error.into());
                     continue;
                 }
             }
         }
 
+        if futures.is_empty() {
+            return Err(last_bind_error.unwrap_or(TunnelError::Shutdown));
+        }
         Ok(wait_for_connect_futures(futures).await?)
     }
 
@@ -296,8 +301,11 @@ mod tests {
             "192.0.2.231:0".parse().unwrap(),
         ]);
         let error = connector.connect_stream().await.unwrap_err();
-        assert!(matches!(error, TunnelError::IOError(ref e)
-            if e.kind() == std::io::ErrorKind::ConnectionRefused), "{error:?}");
+        assert!(
+            matches!(error, TunnelError::IOError(ref e)
+            if e.kind() == std::io::ErrorKind::ConnectionRefused),
+            "{error:?}"
+        );
     }
 
     #[tokio::test]

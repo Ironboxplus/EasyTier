@@ -18,17 +18,17 @@ use easytier::{
         },
         netns::NetNS,
     },
+    connector::create_connector_by_url,
     peers::{
         create_packet_recv_chan,
         peer_manager::{PeerManager, RouteAlgoType},
         rpc_service::PeerManagerRpcService,
     },
-    connector::create_connector_by_url,
     proto::{
         api::instance::{GetEgressInventoryRequest, PeerManageRpc, ResolveEgressRouteRequest},
         rpc_types::controller::BaseController,
     },
-    tunnel::{IpVersion, TunnelListener, tcp::TcpTunnelListener},
+    tunnel::{IpVersion, Tunnel, TunnelListener, tcp::TcpTunnelListener},
 };
 use serial_test::serial;
 
@@ -272,10 +272,12 @@ async fn current_ip_collection_does_not_reuse_stale_bind_address_after_handoff()
     config.set_netns(Some(namespace.name.clone()));
     let global_ctx = Arc::new(easytier::common::global_ctx::GlobalCtx::new(config));
     let cached = global_ctx.get_ip_collector().collect_ip_addrs().await;
-    assert!(cached
-        .interface_ipv4s
-        .iter()
-        .any(|address| Ipv4Addr::from(*address) == Ipv4Addr::new(192, 0, 2, 10)));
+    assert!(
+        cached
+            .interface_ipv4s
+            .iter()
+            .any(|address| Ipv4Addr::from(*address) == Ipv4Addr::new(192, 0, 2, 10))
+    );
 
     namespace.remove_address("192.0.2.10/24");
     namespace.add_address("198.51.100.10/24");
@@ -293,21 +295,33 @@ async fn current_ip_collection_does_not_reuse_stale_bind_address_after_handoff()
     let mut connector = create_connector_by_url(&url, &global_ctx, IpVersion::V4)
         .await
         .expect("connector creation failed");
-    let result = namespace
-        .et_netns()
-        .run_async(|| connector.connect())
-        .await;
-    let client = result.unwrap_or_else(|error| panic!("stale bind address prevented reconnect: {error:?}"));
+    let result = namespace.et_netns().run_async(|| connector.connect()).await;
+    let client =
+        result.unwrap_or_else(|error| panic!("stale bind address prevented reconnect: {error:?}"));
     let server = tokio::time::timeout(Duration::from_secs(3), accept)
-        .await.unwrap().unwrap().expect("listener did not accept reconnect");
-    use futures::{SinkExt, StreamExt};
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("listener did not accept reconnect");
     use easytier::tunnel::packet_def::ZCPacket;
+    use futures::{SinkExt, StreamExt};
     let (mut client_recv, mut client_send) = client.split();
     let (mut server_recv, mut server_send) = server.split();
-    client_send.send(ZCPacket::new_with_payload(b"handoff")).await.unwrap();
-    let packet = tokio::time::timeout(Duration::from_secs(3), server_recv.next()).await.unwrap().unwrap().unwrap();
+    client_send
+        .send(ZCPacket::new_with_payload(b"handoff"))
+        .await
+        .unwrap();
+    let packet = tokio::time::timeout(Duration::from_secs(3), server_recv.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     server_send.send(packet).await.unwrap();
-    let echoed = tokio::time::timeout(Duration::from_secs(3), client_recv.next()).await.unwrap().unwrap().unwrap();
+    let echoed = tokio::time::timeout(Duration::from_secs(3), client_recv.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     assert_eq!(echoed.payload(), b"handoff");
 }
 
