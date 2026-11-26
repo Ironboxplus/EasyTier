@@ -993,6 +993,18 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - working-directory: et
         run: cargo nextest run --locked --package easytier-web --no-fail-fast
+      - name: Check explicit loopback listeners without an underlay
+        working-directory: et
+        run: |
+          sudo env "PATH=$PATH" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            unshare --net -- bash -eu -c '
+              ip link set lo up
+              if ip route get 8.8.8.8; then
+                echo "unexpected underlay route in isolated network namespace" >&2
+                exit 1
+              fi
+              cargo nextest run --locked --offline --package easytier-web --no-fail-fast -E "test(~listener_tests::explicit_)"
+            '
 
   # Opt in explicitly: building a core must not also build the dashboard.
   linux-web:
