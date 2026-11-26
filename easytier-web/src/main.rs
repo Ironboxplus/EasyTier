@@ -83,7 +83,7 @@ struct Cli {
     #[arg(
         long,
         env = "ET_CONFIG_SERVER_ADDR",
-        help = "Bind the config server to this IP instead of auto-detected wildcard listeners"
+        help = t!("cli.config_server_addr").to_string(),
     )]
     config_server_addr: Option<IpAddr>,
 
